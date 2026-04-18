@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   Building2, ExternalLink, Trash2, Plus, X,
-  ClipboardList, Upload, AlertCircle, Pencil, CheckSquare, Download,
+  ClipboardList, Upload, AlertCircle, Pencil, CheckSquare, Download, FileText, Maximize2,
 } from "lucide-react";
 import {
   Application, Status,
@@ -220,16 +220,6 @@ function AppForm({
           </select>
         </div>
       </div>
-      <div className="mt-3">
-        <label className="text-xs font-medium text-slate-500 block mb-1">Job Description</label>
-        <textarea
-          placeholder="Paste the full job description here — used to personalise your AI cover letter for this role"
-          value={value.job_description ?? ""}
-          onChange={(e) => onChange({ ...value, job_description: e.target.value })}
-          rows={4}
-          className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 resize-none"
-        />
-      </div>
       <div className="flex justify-end gap-2 mt-4">
         <button onClick={onCancel} className="text-sm text-slate-500 hover:text-slate-700 px-4 py-2 rounded-lg hover:bg-slate-100 transition-colors">
           Cancel
@@ -241,6 +231,112 @@ function AppForm({
         >
           {isPending ? "Saving…" : submitLabel}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Job Description Modal ─────────────────────────────────────────────────────
+
+function JobDescriptionModal({
+  app,
+  onClose,
+  onSave,
+}: {
+  app: Application;
+  onClose: () => void;
+  onSave: (text: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(app.job_description ?? "");
+  const [isPending, startTransition] = useTransition();
+
+  function handleSave() {
+    startTransition(async () => {
+      await onSave(text);
+      setEditing(false);
+    });
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-6">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col" style={{ height: "85vh" }}>
+        {/* Header */}
+        <div className="flex items-start justify-between px-7 py-5 border-b border-slate-100 shrink-0">
+          <div>
+            <h2 className="font-bold text-slate-900 text-lg leading-tight">{app.role}</h2>
+            <p className="text-slate-500 text-sm mt-0.5">{app.company}{app.location ? ` · ${app.location}` : ""}</p>
+          </div>
+          <div className="flex items-center gap-2 ml-4">
+            {!editing ? (
+              <button
+                onClick={() => setEditing(true)}
+                className="flex items-center gap-1.5 text-sm font-medium text-slate-600 hover:text-blue-600 px-3 py-1.5 rounded-lg hover:bg-blue-50 border border-slate-200 hover:border-blue-200 transition-colors"
+              >
+                <Pencil size={13} /> {app.job_description ? "Edit" : "Add JD"}
+              </button>
+            ) : (
+              <>
+                <button onClick={() => { setEditing(false); setText(app.job_description ?? ""); }} className="text-sm text-slate-500 hover:text-slate-700 px-3 py-1.5 rounded-lg hover:bg-slate-100 transition-colors">
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSave}
+                  disabled={isPending}
+                  className="flex items-center gap-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-medium px-4 py-1.5 rounded-lg transition-colors"
+                >
+                  {isPending ? "Saving…" : "Save"}
+                </button>
+              </>
+            )}
+            <button onClick={onClose} className="text-slate-400 hover:text-slate-600 ml-1 p-1">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-hidden px-7 py-5">
+          {editing ? (
+            <textarea
+              autoFocus
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="Paste the full job description here — the AI will use this to write a tailored cover letter for this specific role."
+              className="w-full h-full text-sm border border-slate-200 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 resize-none leading-relaxed"
+            />
+          ) : app.job_description ? (
+            <div className="h-full overflow-y-auto">
+              <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{app.job_description}</p>
+            </div>
+          ) : (
+            <div className="h-full flex flex-col items-center justify-center text-center">
+              <div className="w-14 h-14 bg-slate-100 rounded-2xl flex items-center justify-center mb-4">
+                <FileText size={22} className="text-slate-400" />
+              </div>
+              <p className="text-slate-700 font-semibold mb-1">No job description yet</p>
+              <p className="text-slate-400 text-sm mb-5 max-w-sm">
+                Paste the job description and the AI will use it to write a cover letter perfectly tailored to this role.
+              </p>
+              <button
+                onClick={() => setEditing(true)}
+                className="flex items-center gap-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white font-medium px-4 py-2 rounded-lg transition-colors"
+              >
+                <Plus size={14} /> Add Job Description
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        {app.job_description && !editing && (
+          <div className="px-7 py-3 border-t border-slate-100 bg-slate-50 rounded-b-2xl shrink-0 flex items-center justify-between">
+            <p className="text-xs text-slate-400">{app.job_description.split(/\s+/).filter(Boolean).length} words</p>
+            <p className="text-xs text-slate-400 flex items-center gap-1">
+              <Maximize2 size={11} /> This will be used to personalise your AI cover letter
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -265,6 +361,7 @@ export default function ApplicationTable({ initialApps }: { initialApps: Applica
   const [preview, setPreview]       = useState<FormData[] | null>(null);
   const [csvError, setCsvError]     = useState<string | null>(null);
   const [legacyCount, setLegacyCount] = useState(0);
+  const [jdApp, setJdApp]           = useState<Application | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { setApps(initialApps); }, [initialApps]);
@@ -423,6 +520,19 @@ export default function ApplicationTable({ initialApps }: { initialApps: Applica
 
   return (
     <div>
+      {/* Job Description Modal */}
+      {jdApp && (
+        <JobDescriptionModal
+          app={jdApp}
+          onClose={() => setJdApp(null)}
+          onSave={async (text) => {
+            await updateApplication(jdApp.id, { job_description: text });
+            setJdApp({ ...jdApp, job_description: text });
+            router.refresh();
+          }}
+        />
+      )}
+
       {/* Toolbar */}
       <div className="flex items-center justify-between mb-4 gap-4 flex-wrap">
         <div className="flex items-center gap-2 flex-wrap">
@@ -664,6 +774,18 @@ export default function ApplicationTable({ initialApps }: { initialApps: Applica
                     <td className="px-4 py-3.5 text-slate-500 text-xs whitespace-nowrap">{displayDate(app.applied_date)}</td>
                     <td className="px-4 py-3.5">
                       <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => setJdApp(app)}
+                          className={`flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border transition-colors ${
+                            app.job_description
+                              ? "bg-blue-50 text-blue-600 border-blue-200 hover:bg-blue-100"
+                              : "bg-slate-50 text-slate-400 border-slate-200 hover:bg-slate-100 hover:text-slate-600"
+                          }`}
+                          title={app.job_description ? "View job description" : "Add job description"}
+                        >
+                          <FileText size={11} />
+                          JD
+                        </button>
                         {app.url && (
                           <a href={app.url} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-blue-500 transition-colors">
                             <ExternalLink size={14} />

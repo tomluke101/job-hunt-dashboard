@@ -19,6 +19,7 @@ export interface Application {
   url?: string;
   notes?: string;
   category?: string;
+  work_location?: "onsite" | "remote" | "hybrid";
   created_at: string;
 }
 

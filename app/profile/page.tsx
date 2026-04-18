@@ -1,0 +1,89 @@
+import { User, FileText, Sparkles, Pencil } from "lucide-react";
+import PageHeader from "@/app/_components/PageHeader";
+import ProfileCompletion from "./_components/ProfileCompletion";
+import ConstantsForm from "./_components/ConstantsForm";
+import CVManager from "./_components/CVManager";
+import SkillsManager from "./_components/SkillsManager";
+import WritingExamples from "./_components/WritingExamples";
+import {
+  getProfile, getCVs, getSkills, getWritingExamples, getProfileCompleteness,
+} from "@/app/actions/profile";
+
+function Section({ icon: Icon, title, description, children }: {
+  icon: React.ElementType;
+  title: string;
+  description: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      <div className="px-6 py-5 border-b border-slate-100">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-slate-100 rounded-lg flex items-center justify-center">
+            <Icon size={16} className="text-slate-600" />
+          </div>
+          <div>
+            <h3 className="font-semibold text-slate-900 text-sm">{title}</h3>
+            <p className="text-xs text-slate-500 mt-0.5">{description}</p>
+          </div>
+        </div>
+      </div>
+      <div className="px-6 py-5">{children}</div>
+    </div>
+  );
+}
+
+export default async function ProfilePage() {
+  const [profile, cvs, skills, writingExamples, completeness] = await Promise.all([
+    getProfile(),
+    getCVs(),
+    getSkills(),
+    getWritingExamples(),
+    getProfileCompleteness(),
+  ]);
+
+  return (
+    <div className="p-8 max-w-3xl">
+      <PageHeader
+        title="My Profile"
+        description="Everything the AI needs to write cover letters that sound like you"
+      />
+
+      <ProfileCompletion completeness={completeness} />
+
+      <div className="space-y-6">
+        <Section
+          icon={User}
+          title="Your Details"
+          description="Name, contact info, and how you sign off — used across every cover letter automatically"
+        >
+          <ConstantsForm initial={profile} />
+        </Section>
+
+        <Section
+          icon={FileText}
+          title="Your CV"
+          description="The foundation of every cover letter — upload once and use across all applications"
+        >
+          <CVManager initial={cvs} />
+        </Section>
+
+        <Section
+          icon={Sparkles}
+          title="Skills & Experience"
+          description="Achievements and experiences beyond your CV — this is what makes your cover letters stand out"
+        >
+          <SkillsManager initial={skills} />
+        </Section>
+
+        <Section
+          icon={Pencil}
+          title="Your Writing Style"
+          description="Optional — paste a cover letter you've written before so the AI can match your voice"
+        >
+          <WritingExamples initial={writingExamples} />
+        </Section>
+      </div>
+    </div>
+  );
+}

@@ -44,6 +44,7 @@ const emptyForm: FormData = {
   status: "applied", stage: "Application Sent",
   applied_date: new Date().toISOString().split("T")[0],
   salary: "", url: "", notes: "", category: "",
+  work_location: undefined,
 };
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
@@ -203,6 +204,19 @@ function AppForm({
             {Object.entries(statusLabels).map(([v, l]) => (
               <option key={v} value={v}>{l}</option>
             ))}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-medium text-slate-500 block mb-1">Work Location</label>
+          <select
+            value={value.work_location ?? ""}
+            onChange={(e) => onChange({ ...value, work_location: (e.target.value || undefined) as FormData["work_location"] })}
+            className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 bg-white"
+          >
+            <option value="">Not specified</option>
+            <option value="remote">Remote</option>
+            <option value="hybrid">Hybrid</option>
+            <option value="onsite">On-site</option>
           </select>
         </div>
       </div>
@@ -623,7 +637,12 @@ export default function ApplicationTable({ initialApps }: { initialApps: Applica
                         </div>
                       </div>
                     </td>
-                    <td className="px-4 py-3.5 text-slate-600 text-sm">{app.location || "—"}</td>
+                    <td className="px-4 py-3.5 text-slate-600 text-sm">
+                      <span>{app.location || "—"}</span>
+                      {app.work_location && (
+                        <span className="ml-2 text-xs px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200 capitalize">{app.work_location}</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3.5 text-slate-600 text-sm">{app.salary ?? "—"}</td>
                     <td className="px-4 py-3.5">
                       <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${statusStyles[app.status]}`}>

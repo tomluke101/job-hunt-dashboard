@@ -13,6 +13,7 @@ import {
   ClipboardList,
   BriefcaseBusiness,
   Settings,
+  UserCircle,
 } from "lucide-react";
 
 const mainNav = [
@@ -29,7 +30,8 @@ const toolsNav = [
 ];
 
 const bottomNav = [
-  { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/profile",  label: "My Profile", icon: UserCircle },
+  { href: "/settings", label: "Settings",   icon: Settings },
 ];
 
 function NavLink({ href, label, icon: Icon, active }: { href: string; label: string; icon: React.ElementType; active: boolean }) {

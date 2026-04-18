@@ -33,6 +33,7 @@ export async function getApplications(): Promise<Application[]> {
     .from("applications")
     .select("*")
     .eq("user_id", userId)
+    .order("applied_date", { ascending: false })
     .order("created_at", { ascending: false });
 
   if (error) { console.error(error); return []; }

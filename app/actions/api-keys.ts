@@ -3,14 +3,9 @@
 import { auth } from "@clerk/nextjs/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 import { revalidatePath } from "next/cache";
+import type { Provider } from "@/lib/ai-providers";
 
-export type Provider =
-  | "anthropic"
-  | "openai"
-  | "gemini"
-  | "mistral"
-  | "groq"
-  | "perplexity";
+export type { Provider };
 
 export interface ApiKey {
   provider: Provider;
@@ -26,9 +21,25 @@ export async function getApiKeys(): Promise<ApiKey[]> {
   const { data } = await supabase
     .from("user_api_keys")
     .select("provider, key_preview, created_at")
+    .eq("user_id", userId)
     .order("created_at", { ascending: true });
 
   return data ?? [];
+}
+
+// Returns actual key values — server-side only, never sent to client
+export async function getApiKeyValues(): Promise<Partial<Record<Provider, string>>> {
+  const { userId } = await auth();
+  if (!userId) return {};
+
+  const supabase = await createServerSupabaseClient();
+  const { data } = await supabase
+    .from("user_api_keys")
+    .select("provider, api_key")
+    .eq("user_id", userId);
+
+  if (!data) return {};
+  return Object.fromEntries(data.map((row) => [row.provider, row.api_key]));
 }
 
 export async function saveApiKey(provider: Provider, key: string) {

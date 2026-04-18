@@ -1,14 +1,27 @@
+import { FileText } from "lucide-react";
 import PageHeader from "../_components/PageHeader";
 import ComingSoon from "../_components/ComingSoon";
-import { FileText } from "lucide-react";
+import ProviderSelector from "../_components/ProviderSelector";
+import { getApiKeys } from "@/app/actions/api-keys";
+import { getTaskPreferences } from "@/app/actions/preferences";
+import type { Provider } from "@/lib/ai-providers";
 
-export default function CoverLetterPage() {
+export default async function CoverLetterPage() {
+  const [savedKeys, preferences] = await Promise.all([getApiKeys(), getTaskPreferences()]);
+  const connectedProviders = savedKeys.map((k) => k.provider as Provider);
+
   return (
     <div className="p-8">
       <PageHeader
         title="Cover Letters"
         description="AI-generated cover letters tailored to each role"
-      />
+      >
+        <ProviderSelector
+          task="cover-letter"
+          current={preferences["cover-letter"]}
+          connectedProviders={connectedProviders}
+        />
+      </PageHeader>
       <ComingSoon
         icon={FileText}
         title="Cover Letter Generator"

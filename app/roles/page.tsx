@@ -1,14 +1,27 @@
+import { Search } from "lucide-react";
 import PageHeader from "../_components/PageHeader";
 import ComingSoon from "../_components/ComingSoon";
-import { Search } from "lucide-react";
+import ProviderSelector from "../_components/ProviderSelector";
+import { getApiKeys } from "@/app/actions/api-keys";
+import { getTaskPreferences } from "@/app/actions/preferences";
+import type { Provider } from "@/lib/ai-providers";
 
-export default function RolesPage() {
+export default async function RolesPage() {
+  const [savedKeys, preferences] = await Promise.all([getApiKeys(), getTaskPreferences()]);
+  const connectedProviders = savedKeys.map((k) => k.provider as Provider);
+
   return (
     <div className="p-8">
       <PageHeader
         title="Ideal Roles"
         description="Find roles that match your profile and goals"
-      />
+      >
+        <ProviderSelector
+          task="job-match"
+          current={preferences["job-match"]}
+          connectedProviders={connectedProviders}
+        />
+      </PageHeader>
       <ComingSoon
         icon={Search}
         title="Role Discovery"

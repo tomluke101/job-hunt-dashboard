@@ -1,14 +1,27 @@
+import { ScrollText } from "lucide-react";
 import PageHeader from "../_components/PageHeader";
 import ComingSoon from "../_components/ComingSoon";
-import { ScrollText } from "lucide-react";
+import ProviderSelector from "../_components/ProviderSelector";
+import { getApiKeys } from "@/app/actions/api-keys";
+import { getTaskPreferences } from "@/app/actions/preferences";
+import type { Provider } from "@/lib/ai-providers";
 
-export default function CVPage() {
+export default async function CVPage() {
+  const [savedKeys, preferences] = await Promise.all([getApiKeys(), getTaskPreferences()]);
+  const connectedProviders = savedKeys.map((k) => k.provider as Provider);
+
   return (
     <div className="p-8">
       <PageHeader
         title="CV Builder"
         description="Adapt your CV to every role automatically"
-      />
+      >
+        <ProviderSelector
+          task="cv-tailor"
+          current={preferences["cv-tailor"]}
+          connectedProviders={connectedProviders}
+        />
+      </PageHeader>
       <ComingSoon
         icon={ScrollText}
         title="Adaptive CV Generator"

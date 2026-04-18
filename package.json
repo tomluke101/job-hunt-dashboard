@@ -9,11 +9,15 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.90.0",
     "@clerk/nextjs": "^7.2.3",
+    "@google/generative-ai": "^0.24.1",
+    "@mistralai/mistralai": "^2.2.0",
     "@supabase/ssr": "^0.10.2",
     "@supabase/supabase-js": "^2.103.3",
     "lucide-react": "^1.8.0",
     "next": "16.2.4",
+    "openai": "^6.34.0",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },

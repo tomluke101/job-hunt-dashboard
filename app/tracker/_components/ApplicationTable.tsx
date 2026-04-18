@@ -1,26 +1,16 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import {
   Building2, ExternalLink, Trash2, Plus, X,
   ClipboardList, Upload, AlertCircle, Pencil, CheckSquare,
 } from "lucide-react";
-
-type Status = "applied" | "interview" | "offer" | "rejected" | "withdrawn";
-
-interface Application {
-  id: string;
-  role: string;
-  company: string;
-  location: string;
-  status: Status;
-  stage: string;
-  appliedDate: string;
-  salary?: string;
-  url?: string;
-}
-
-const STORAGE_KEY = "job-hunt-applications";
+import {
+  Application, Status,
+  createApplication, updateApplication, deleteApplication,
+  bulkUpdateStatus, bulkDeleteApplications, bulkImportApplications,
+} from "@/app/actions/applications";
 
 const statusStyles: Record<Status, string> = {
   applied:   "bg-blue-50 text-blue-700 border-blue-200",
@@ -39,31 +29,31 @@ const statusLabels: Record<Status, string> = {
 };
 
 const filterOptions: { label: string; value: Status | "all" }[] = [
-  { label: "All", value: "all" },
-  { label: "Applied", value: "applied" },
+  { label: "All",       value: "all" },
+  { label: "Applied",   value: "applied" },
   { label: "Interview", value: "interview" },
-  { label: "Offer", value: "offer" },
-  { label: "Rejected", value: "rejected" },
+  { label: "Offer",     value: "offer" },
+  { label: "Rejected",  value: "rejected" },
   { label: "Withdrawn", value: "withdrawn" },
 ];
 
-const emptyForm: Omit<Application, "id"> = {
+type FormData = Omit<Application, "id" | "user_id" | "created_at">;
+
+const emptyForm: FormData = {
   role: "", company: "", location: "",
   status: "applied", stage: "Application Sent",
-  appliedDate: new Date().toISOString().split("T")[0],
-  salary: "", url: "",
+  applied_date: new Date().toISOString().split("T")[0],
+  salary: "", url: "", notes: "", category: "",
 };
 
-// ── Date helpers ─────────────────────────────────────────────────────────────
+// ── Date helpers ──────────────────────────────────────────────────────────────
 
 function parseDate(raw: string): string {
   const today = new Date().toISOString().split("T")[0];
   if (!raw?.trim()) return today;
 
-  // ISO: YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw.trim())) return raw.trim();
 
-  // UK/EU slash or dot separated: DD/MM/YYYY, DD/MM/YY, DD.MM.YYYY
   const ukMatch = raw.trim().match(/^(\d{1,2})[\/.](\d{1,2})[\/.](\d{2,4})$/);
   if (ukMatch) {
     const [, d, m, y] = ukMatch;
@@ -71,14 +61,14 @@ function parseDate(raw: string): string {
     return `${year}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
   }
 
-  // Written month: "14 Apr 2025", "April 14 2025", "14-Apr-25"
-  const d = new Date(raw);
-  if (!isNaN(d.getTime())) return d.toISOString().split("T")[0];
+  const parsed = new Date(raw);
+  if (!isNaN(parsed.getTime())) return parsed.toISOString().split("T")[0];
 
   return today;
 }
 
 function displayDate(iso: string) {
+  if (!iso) return "—";
   const [y, m, d] = iso.split("-").map(Number);
   return new Date(y, m - 1, d).toLocaleDateString("en-GB", {
     day: "numeric", month: "short", year: "2-digit",
@@ -116,15 +106,16 @@ function parseCSV(text: string): Record<string, string>[] {
   });
 }
 
-const COL_ALIASES: Record<keyof Omit<Application, "id">, string[]> = {
-  role:        ["role", "jobtitle", "title", "position", "job"],
-  company:     ["company", "employer", "organisation", "organization", "firm"],
-  location:    ["location", "city", "place", "office", "country"],
-  status:      ["status", "state", "applicationstatus"],
-  stage:       ["stage", "notes", "note", "currentstage", "update"],
-  appliedDate: ["applieddate", "dateapplied", "date", "applied", "appliedon"],
-  salary:      ["salary", "salaryrange", "pay", "compensation", "comp", "tc", "package"],
-  url:         ["url", "link", "joburl", "joblink", "href", "jobposting"],
+const COL_ALIASES: Record<string, string[]> = {
+  role:         ["role", "jobtitle", "title", "position", "job"],
+  company:      ["company", "employer", "organisation", "organization", "firm"],
+  location:     ["location", "city", "place", "office", "country"],
+  status:       ["status", "state", "applicationstatus"],
+  stage:        ["stage", "currentstage", "update"],
+  applied_date: ["applieddate", "dateapplied", "date", "applied", "appliedon"],
+  salary:       ["salary", "salaryrange", "pay", "compensation", "comp", "tc", "package"],
+  url:          ["url", "link", "joburl", "joblink", "href", "jobposting"],
+  notes:        ["notes", "note", "comments", "comment"],
 };
 
 function normaliseStatus(raw: string): Status {
@@ -136,7 +127,7 @@ function normaliseStatus(raw: string): Status {
   return "applied";
 }
 
-function mapRow(row: Record<string, string>): Omit<Application, "id"> | null {
+function mapRow(row: Record<string, string>): FormData | null {
   function pick(aliases: string[]) {
     for (const a of aliases) if (row[a] !== undefined && row[a] !== "") return row[a];
     return "";
@@ -145,45 +136,43 @@ function mapRow(row: Record<string, string>): Omit<Application, "id"> | null {
   const company = pick(COL_ALIASES.company);
   if (!role && !company) return null;
   return {
-    role:        role || "Unknown Role",
-    company:     company || "Unknown Company",
-    location:    pick(COL_ALIASES.location),
-    status:      normaliseStatus(pick(COL_ALIASES.status)),
-    stage:       pick(COL_ALIASES.stage) || "Application Sent",
-    appliedDate: parseDate(pick(COL_ALIASES.appliedDate)),
-    salary:      pick(COL_ALIASES.salary) || undefined,
-    url:         pick(COL_ALIASES.url)    || undefined,
+    role:         role || "Unknown Role",
+    company:      company || "Unknown Company",
+    location:     pick(COL_ALIASES.location),
+    status:       normaliseStatus(pick(COL_ALIASES.status)),
+    stage:        pick(COL_ALIASES.stage) || "Application Sent",
+    applied_date: parseDate(pick(COL_ALIASES.applied_date)),
+    salary:       pick(COL_ALIASES.salary) || undefined,
+    url:          pick(COL_ALIASES.url)    || undefined,
+    notes:        pick(COL_ALIASES.notes)  || undefined,
+    category:     undefined,
   };
 }
 
 // ── Form fields config ────────────────────────────────────────────────────────
 
-const TEXT_FIELDS: { label: string; key: keyof Omit<Application, "id" | "status">; placeholder: string; type?: string }[] = [
-  { label: "Role *",        key: "role",        placeholder: "e.g. Senior Product Manager" },
-  { label: "Company *",     key: "company",     placeholder: "e.g. Monzo" },
-  { label: "Location",      key: "location",    placeholder: "e.g. London, UK" },
-  { label: "Salary",        key: "salary",      placeholder: "e.g. £80–100k" },
-  { label: "Stage / Notes", key: "stage",       placeholder: "e.g. 1st Interview" },
-  { label: "Date Applied",  key: "appliedDate", placeholder: "", type: "date" },
-  { label: "Job URL",       key: "url",         placeholder: "https://...", type: "url" },
+const TEXT_FIELDS: { label: string; key: keyof FormData; placeholder: string; type?: string }[] = [
+  { label: "Role *",        key: "role",         placeholder: "e.g. Senior Product Manager" },
+  { label: "Company *",     key: "company",      placeholder: "e.g. Monzo" },
+  { label: "Location",      key: "location",     placeholder: "e.g. London, UK" },
+  { label: "Salary",        key: "salary",       placeholder: "e.g. £80–100k" },
+  { label: "Stage / Notes", key: "stage",        placeholder: "e.g. 1st Interview" },
+  { label: "Date Applied",  key: "applied_date", placeholder: "", type: "date" },
+  { label: "Job URL",       key: "url",          placeholder: "https://...", type: "url" },
 ];
 
 // ── Shared form UI ────────────────────────────────────────────────────────────
 
 function AppForm({
-  title,
-  value,
-  onChange,
-  onSubmit,
-  onCancel,
-  submitLabel,
+  title, value, onChange, onSubmit, onCancel, submitLabel, isPending,
 }: {
   title: string;
-  value: Omit<Application, "id">;
-  onChange: (v: Omit<Application, "id">) => void;
+  value: FormData;
+  onChange: (v: FormData) => void;
   onSubmit: () => void;
   onCancel: () => void;
   submitLabel: string;
+  isPending: boolean;
 }) {
   return (
     <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 mb-4">
@@ -223,10 +212,10 @@ function AppForm({
         </button>
         <button
           onClick={onSubmit}
-          disabled={!value.role.trim() || !value.company.trim()}
+          disabled={isPending || !value.role.trim() || !value.company.trim()}
           className="text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium px-4 py-2 rounded-lg transition-colors"
         >
-          {submitLabel}
+          {isPending ? "Saving…" : submitLabel}
         </button>
       </div>
     </div>
@@ -235,60 +224,69 @@ function AppForm({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function ApplicationTable() {
-  const [apps, setApps]             = useState<Application[]>([]);
+export default function ApplicationTable({ initialApps }: { initialApps: Application[] }) {
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
+
+  const [apps, setApps]             = useState<Application[]>(initialApps);
   const [filter, setFilter]         = useState<Status | "all">("all");
   const [search, setSearch]         = useState("");
   const [showAdd, setShowAdd]       = useState(false);
-  const [addForm, setAddForm]       = useState<Omit<Application, "id">>(emptyForm);
+  const [addForm, setAddForm]       = useState<FormData>(emptyForm);
   const [editId, setEditId]         = useState<string | null>(null);
-  const [editForm, setEditForm]     = useState<Omit<Application, "id">>(emptyForm);
+  const [editForm, setEditForm]     = useState<FormData>(emptyForm);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [selected, setSelected]     = useState<Set<string>>(new Set());
   const [bulkStatus, setBulkStatus] = useState<Status>("applied");
-  const [preview, setPreview]       = useState<Omit<Application, "id">[] | null>(null);
+  const [preview, setPreview]       = useState<FormData[] | null>(null);
   const [csvError, setCsvError]     = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) setApps(JSON.parse(stored));
-    } catch {}
-  }, []);
-
-  function save(updated: Application[]) {
-    setApps(updated);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-  }
+  useEffect(() => { setApps(initialApps); }, [initialApps]);
 
   // ── Add ──
   function addApp() {
     if (!addForm.role.trim() || !addForm.company.trim()) return;
-    save([{ ...addForm, id: crypto.randomUUID(), salary: addForm.salary || undefined, url: addForm.url || undefined }, ...apps]);
-    setAddForm(emptyForm);
-    setShowAdd(false);
+    const payload = { ...addForm, salary: addForm.salary || undefined, url: addForm.url || undefined };
+    startTransition(async () => {
+      await createApplication(payload);
+      setAddForm(emptyForm);
+      setShowAdd(false);
+      router.refresh();
+    });
   }
 
   // ── Edit ──
   function startEdit(app: Application) {
     setEditId(app.id);
-    setEditForm({ role: app.role, company: app.company, location: app.location, status: app.status, stage: app.stage, appliedDate: app.appliedDate, salary: app.salary ?? "", url: app.url ?? "" });
+    setEditForm({
+      role: app.role, company: app.company, location: app.location,
+      status: app.status, stage: app.stage, applied_date: app.applied_date,
+      salary: app.salary ?? "", url: app.url ?? "",
+      notes: app.notes ?? "", category: app.category ?? "",
+    });
     setShowAdd(false);
     setDeleteConfirm(null);
   }
 
   function saveEdit() {
-    if (!editForm.role.trim() || !editForm.company.trim()) return;
-    save(apps.map((a) => a.id === editId ? { ...editForm, id: a.id, salary: editForm.salary || undefined, url: editForm.url || undefined } : a));
-    setEditId(null);
+    if (!editForm.role.trim() || !editForm.company.trim() || !editId) return;
+    const payload = { ...editForm, salary: editForm.salary || undefined, url: editForm.url || undefined };
+    startTransition(async () => {
+      await updateApplication(editId, payload);
+      setEditId(null);
+      router.refresh();
+    });
   }
 
   // ── Delete ──
   function deleteApp(id: string) {
-    save(apps.filter((a) => a.id !== id));
     setSelected((s) => { const n = new Set(s); n.delete(id); return n; });
     setDeleteConfirm(null);
+    startTransition(async () => {
+      await deleteApplication(id);
+      router.refresh();
+    });
   }
 
   // ── Multi-select ──
@@ -302,13 +300,21 @@ export default function ApplicationTable() {
   }
 
   function applyBulkStatus() {
-    save(apps.map((a) => selected.has(a.id) ? { ...a, status: bulkStatus } : a));
+    const ids = Array.from(selected);
     setSelected(new Set());
+    startTransition(async () => {
+      await bulkUpdateStatus(ids, bulkStatus);
+      router.refresh();
+    });
   }
 
   function bulkDelete() {
-    save(apps.filter((a) => !selected.has(a.id)));
+    const ids = Array.from(selected);
     setSelected(new Set());
+    startTransition(async () => {
+      await bulkDeleteApplications(ids);
+      router.refresh();
+    });
   }
 
   // ── CSV ──
@@ -320,7 +326,7 @@ export default function ApplicationTable() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       const rows = parseCSV(ev.target?.result as string);
-      const mapped = rows.map(mapRow).filter(Boolean) as Omit<Application, "id">[];
+      const mapped = rows.map(mapRow).filter(Boolean) as FormData[];
       if (mapped.length === 0) {
         setCsvError("No valid rows found. Make sure your CSV has at least Role and Company columns.");
         return;
@@ -333,14 +339,18 @@ export default function ApplicationTable() {
 
   function confirmImport() {
     if (!preview) return;
-    save([...preview.map((p) => ({ ...p, id: crypto.randomUUID() })), ...apps]);
-    setPreview(null);
+    startTransition(async () => {
+      await bulkImportApplications(preview);
+      setPreview(null);
+      router.refresh();
+    });
   }
 
   // ── Filtering ──
   const filtered = apps.filter((app) => {
     const matchesFilter = filter === "all" || app.status === filter;
-    const matchesSearch = app.role.toLowerCase().includes(search.toLowerCase()) || app.company.toLowerCase().includes(search.toLowerCase());
+    const q = search.toLowerCase();
+    const matchesSearch = app.role.toLowerCase().includes(q) || app.company.toLowerCase().includes(q);
     return matchesFilter && matchesSearch;
   });
 
@@ -358,7 +368,11 @@ export default function ApplicationTable() {
               className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors ${filter === opt.value ? "bg-slate-900 text-white" : "text-slate-500 hover:text-slate-800 hover:bg-slate-100"}`}
             >
               {opt.label}
-              {opt.value !== "all" && <span className="ml-1.5 text-xs opacity-60">{apps.filter((a) => a.status === opt.value).length}</span>}
+              {opt.value !== "all" && (
+                <span className="ml-1.5 text-xs opacity-60">
+                  {apps.filter((a) => a.status === opt.value).length}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -427,7 +441,7 @@ export default function ApplicationTable() {
                         </span>
                       </td>
                       <td className="px-4 py-2.5 text-slate-500">{row.stage}</td>
-                      <td className="px-4 py-2.5 text-slate-500 whitespace-nowrap">{displayDate(row.appliedDate)}</td>
+                      <td className="px-4 py-2.5 text-slate-500 whitespace-nowrap">{displayDate(row.applied_date)}</td>
                       <td className="px-4 py-2.5 text-slate-500">{row.salary || "—"}</td>
                     </tr>
                   ))}
@@ -438,8 +452,12 @@ export default function ApplicationTable() {
               <p className="text-xs text-slate-400">Dates interpreted as DD/MM/YYYY. Status auto-detected.</p>
               <div className="flex gap-2">
                 <button onClick={() => setPreview(null)} className="text-sm text-slate-500 hover:text-slate-700 px-4 py-2 rounded-lg hover:bg-slate-200 transition-colors">Cancel</button>
-                <button onClick={confirmImport} className="text-sm bg-blue-600 hover:bg-blue-700 text-white font-medium px-4 py-2 rounded-lg transition-colors">
-                  Import {preview.length} Application{preview.length !== 1 ? "s" : ""}
+                <button
+                  onClick={confirmImport}
+                  disabled={isPending}
+                  className="text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-medium px-4 py-2 rounded-lg transition-colors"
+                >
+                  {isPending ? "Importing…" : `Import ${preview.length} Application${preview.length !== 1 ? "s" : ""}`}
                 </button>
               </div>
             </div>
@@ -456,6 +474,7 @@ export default function ApplicationTable() {
           onSubmit={addApp}
           onCancel={() => setShowAdd(false)}
           submitLabel="Add Application"
+          isPending={isPending}
         />
       )}
 
@@ -468,6 +487,7 @@ export default function ApplicationTable() {
           onSubmit={saveEdit}
           onCancel={() => setEditId(null)}
           submitLabel="Save Changes"
+          isPending={isPending}
         />
       )}
 
@@ -551,7 +571,7 @@ export default function ApplicationTable() {
                       </span>
                     </td>
                     <td className="px-4 py-3.5 text-slate-500 text-xs max-w-[160px] truncate">{app.stage}</td>
-                    <td className="px-4 py-3.5 text-slate-500 text-xs whitespace-nowrap">{displayDate(app.appliedDate)}</td>
+                    <td className="px-4 py-3.5 text-slate-500 text-xs whitespace-nowrap">{displayDate(app.applied_date)}</td>
                     <td className="px-4 py-3.5">
                       <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                         {app.url && (
@@ -610,7 +630,8 @@ export default function ApplicationTable() {
             </select>
             <button
               onClick={applyBulkStatus}
-              className="text-sm bg-blue-600 hover:bg-blue-500 font-medium px-3 py-1 rounded-lg transition-colors"
+              disabled={isPending}
+              className="text-sm bg-blue-600 hover:bg-blue-500 disabled:opacity-50 font-medium px-3 py-1 rounded-lg transition-colors"
             >
               Apply
             </button>
@@ -618,7 +639,8 @@ export default function ApplicationTable() {
           <div className="w-px h-5 bg-slate-700" />
           <button
             onClick={bulkDelete}
-            className="text-sm text-red-400 hover:text-red-300 font-medium transition-colors"
+            disabled={isPending}
+            className="text-sm text-red-400 hover:text-red-300 disabled:opacity-50 font-medium transition-colors"
           >
             Delete all
           </button>

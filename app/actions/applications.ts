@@ -30,6 +30,7 @@ export async function getApplications(): Promise<Application[]> {
   const { data, error } = await supabase
     .from("applications")
     .select("*")
+    .eq("user_id", userId)
     .order("applied_date", { ascending: false });
 
   if (error) { console.error(error); return []; }

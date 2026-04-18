@@ -44,7 +44,7 @@ const emptyForm: FormData = {
   status: "applied", stage: "Application Sent",
   applied_date: new Date().toISOString().split("T")[0],
   salary: "", url: "", notes: "", category: "",
-  work_location: undefined,
+  work_location: undefined, job_description: "",
 };
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
@@ -220,6 +220,16 @@ function AppForm({
           </select>
         </div>
       </div>
+      <div className="mt-3">
+        <label className="text-xs font-medium text-slate-500 block mb-1">Job Description</label>
+        <textarea
+          placeholder="Paste the full job description here — used to personalise your AI cover letter for this role"
+          value={value.job_description ?? ""}
+          onChange={(e) => onChange({ ...value, job_description: e.target.value })}
+          rows={4}
+          className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 resize-none"
+        />
+      </div>
       <div className="flex justify-end gap-2 mt-4">
         <button onClick={onCancel} className="text-sm text-slate-500 hover:text-slate-700 px-4 py-2 rounded-lg hover:bg-slate-100 transition-colors">
           Cancel
@@ -318,6 +328,7 @@ export default function ApplicationTable({ initialApps }: { initialApps: Applica
       status: app.status, stage: app.stage, applied_date: app.applied_date,
       salary: app.salary ?? "", url: app.url ?? "",
       notes: app.notes ?? "", category: app.category ?? "",
+      work_location: app.work_location, job_description: app.job_description ?? "",
     });
     setShowAdd(false);
     setDeleteConfirm(null);

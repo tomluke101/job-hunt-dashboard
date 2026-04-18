@@ -20,6 +20,7 @@ export interface Application {
   notes?: string;
   category?: string;
   work_location?: "onsite" | "remote" | "hybrid";
+  job_description?: string;
   created_at: string;
 }
 
@@ -32,7 +33,7 @@ export async function getApplications(): Promise<Application[]> {
     .from("applications")
     .select("*")
     .eq("user_id", userId)
-    .order("applied_date", { ascending: false });
+    .order("created_at", { ascending: false });
 
   if (error) { console.error(error); return []; }
   return data ?? [];

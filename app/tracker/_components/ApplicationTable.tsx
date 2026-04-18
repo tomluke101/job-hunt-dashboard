@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   Building2, ExternalLink, Trash2, Plus, X,
-  ClipboardList, Upload, AlertCircle, Pencil, CheckSquare,
+  ClipboardList, Upload, AlertCircle, Pencil, CheckSquare, Download,
 } from "lucide-react";
 import {
   Application, Status,
@@ -240,9 +240,49 @@ export default function ApplicationTable({ initialApps }: { initialApps: Applica
   const [bulkStatus, setBulkStatus] = useState<Status>("applied");
   const [preview, setPreview]       = useState<FormData[] | null>(null);
   const [csvError, setCsvError]     = useState<string | null>(null);
+  const [legacyCount, setLegacyCount] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { setApps(initialApps); }, [initialApps]);
+
+  // detect old localStorage data
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("job-hunt-applications");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) setLegacyCount(parsed.length);
+      }
+    } catch {}
+  }, []);
+
+  function importLegacyData() {
+    try {
+      const raw = localStorage.getItem("job-hunt-applications");
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Array<Record<string, string>>;
+      const mapped: FormData[] = parsed
+        .filter((a) => a.role || a.company)
+        .map((a) => ({
+          role:         a.role        || "Unknown Role",
+          company:      a.company     || "Unknown Company",
+          location:     a.location    || "",
+          status:       (a.status as Status) || "applied",
+          stage:        a.stage       || "Application Sent",
+          applied_date: a.appliedDate || new Date().toISOString().split("T")[0],
+          salary:       a.salary      || undefined,
+          url:          a.url         || undefined,
+          notes:        undefined,
+          category:     undefined,
+        }));
+      startTransition(async () => {
+        await bulkImportApplications(mapped);
+        localStorage.removeItem("job-hunt-applications");
+        setLegacyCount(0);
+        router.refresh();
+      });
+    } catch {}
+  }
 
   // ── Add ──
   function addApp() {
@@ -396,6 +436,26 @@ export default function ApplicationTable({ initialApps }: { initialApps: Applica
           </button>
         </div>
       </div>
+
+      {/* Legacy migration banner */}
+      {legacyCount > 0 && (
+        <div className="flex items-center gap-3 bg-blue-50 border border-blue-200 rounded-xl px-4 py-3.5 mb-4">
+          <Download size={15} className="text-blue-500 shrink-0" />
+          <p className="text-sm text-blue-800 flex-1">
+            <span className="font-semibold">{legacyCount} application{legacyCount !== 1 ? "s" : ""}</span> found from before the upgrade — import them into your account?
+          </p>
+          <button
+            onClick={importLegacyData}
+            disabled={isPending}
+            className="text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-medium px-3 py-1.5 rounded-lg transition-colors shrink-0"
+          >
+            {isPending ? "Importing…" : "Import now"}
+          </button>
+          <button onClick={() => { localStorage.removeItem("job-hunt-applications"); setLegacyCount(0); }} className="text-blue-400 hover:text-blue-600">
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {/* CSV error */}
       {csvError && (

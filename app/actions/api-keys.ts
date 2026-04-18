@@ -5,8 +5,6 @@ import { createServerSupabaseClient } from "@/lib/supabase-server";
 import { revalidatePath } from "next/cache";
 import type { Provider } from "@/lib/ai-providers";
 
-export type { Provider };
-
 export interface ApiKey {
   provider: Provider;
   key_preview: string;

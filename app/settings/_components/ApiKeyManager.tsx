@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { saveApiKey, deleteApiKey, type ApiKey, type Provider } from "@/app/actions/api-keys";
+import { saveApiKey, deleteApiKey, type ApiKey } from "@/app/actions/api-keys";
+import type { Provider } from "@/lib/ai-providers";
 import { Check, Eye, EyeOff, Trash2, ExternalLink, X } from "lucide-react";
 
 interface ProviderConfig {

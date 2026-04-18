@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { UserButton, useUser } from "@clerk/nextjs";
 import {
   LayoutDashboard,
   Search,
@@ -11,6 +12,7 @@ import {
   Users,
   ClipboardList,
   BriefcaseBusiness,
+  Settings,
 } from "lucide-react";
 
 const navItems = [
@@ -21,10 +23,12 @@ const navItems = [
   { href: "/cover-letter", label: "Cover Letters", icon: FileText },
   { href: "/cv", label: "CV Builder", icon: ScrollText },
   { href: "/contacts", label: "Contacts", icon: Users },
+  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const { user } = useUser();
 
   return (
     <aside className="w-64 shrink-0 bg-slate-900 flex flex-col min-h-screen sticky top-0">
@@ -57,21 +61,30 @@ export default function Sidebar() {
             >
               <Icon size={17} className={active ? "text-blue-400" : ""} />
               {label}
-              {label === "Daily Alerts" && (
-                <span className="ml-auto bg-blue-500 text-white text-xs font-semibold px-1.5 py-0.5 rounded-full">
-                  3
-                </span>
-              )}
             </Link>
           );
         })}
       </nav>
 
-      {/* Footer */}
+      {/* User */}
       <div className="px-4 py-4 border-t border-slate-800">
-        <p className="text-slate-600 text-xs text-center">
-          Built for your job hunt
-        </p>
+        <div className="flex items-center gap-3">
+          <UserButton
+            appearance={{
+              elements: {
+                avatarBox: "w-8 h-8",
+              },
+            }}
+          />
+          <div className="flex-1 min-w-0">
+            <p className="text-white text-xs font-medium truncate">
+              {user?.firstName ?? user?.emailAddresses[0]?.emailAddress ?? "Account"}
+            </p>
+            <p className="text-slate-500 text-xs truncate">
+              {user?.emailAddresses[0]?.emailAddress}
+            </p>
+          </div>
+        </div>
       </div>
     </aside>
   );

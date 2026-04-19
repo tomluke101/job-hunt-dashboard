@@ -207,7 +207,7 @@ export async function refineCoverLetter(input: {
 
   const result = await callAI({
     task: "cover-letter",
-    systemPrompt: "You are an expert cover letter editor. Apply the requested changes to the cover letter and return the complete updated version. Preserve the overall structure and quality. Return only the letter body (starting with the greeting), no explanation.",
+    systemPrompt: "You are an expert cover letter editor. Apply the requested changes and return the complete updated letter. Preserve the overall structure and quality. FORMATTING RULES — maintain throughout: no em-dashes (—) or double hyphens (--); no editorializing (do not explain what the role requires or what makes experience valuable — state points and trust the reader); no banned phrases (team player, passionate about, proven track record, excited to apply, I look forward to hearing from you). Return only the letter body starting with the greeting, no explanation.",
     prompt: `Original cover letter:\n\n${input.originalLetter}\n\nRefinement request: ${input.refinementRequest}\n\nReturn the complete updated cover letter.`,
     userPreference: taskPrefs["cover-letter"],
     connectedProviders: keys,

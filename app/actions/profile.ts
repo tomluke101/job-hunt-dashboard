@@ -223,6 +223,43 @@ export async function deleteWritingExample(id: string) {
   revalidatePath("/profile");
 }
 
+// ── Cover letter preferences ──────────────────────────────────────────────────
+
+export interface CoverLetterPrefs {
+  salutation?: string;
+  include_header?: boolean;
+  always_mention?: string;
+  never_do?: string;
+  extra_tone_notes?: string;
+  enable_skill_discovery?: boolean;
+}
+
+export async function getCoverLetterPrefs(): Promise<CoverLetterPrefs> {
+  const { userId } = await auth();
+  if (!userId) return {};
+
+  const supabase = await createServerSupabaseClient();
+  const { data } = await supabase
+    .from("cover_letter_prefs")
+    .select("*")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  return data ?? {};
+}
+
+export async function saveCoverLetterPrefs(prefs: CoverLetterPrefs) {
+  const { userId } = await auth();
+  if (!userId) throw new Error("Unauthorised");
+
+  const supabase = await createServerSupabaseClient();
+  await supabase
+    .from("cover_letter_prefs")
+    .upsert({ user_id: userId, ...prefs }, { onConflict: "user_id" });
+
+  revalidatePath("/profile");
+}
+
 // ── Profile completeness (for progress indicator) ─────────────────────────────
 
 export interface ProfileCompleteness {

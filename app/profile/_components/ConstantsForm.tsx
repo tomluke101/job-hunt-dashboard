@@ -7,15 +7,15 @@ import { saveProfile, type UserProfile } from "@/app/actions/profile";
 const SIGN_OFFS = ["Kind regards", "Best regards", "Yours sincerely", "Many thanks", "Best wishes"];
 
 const TONES = [
-  { value: "formal",        label: "Formal",         description: "Professional and structured — suits finance, law, large corporates" },
-  { value: "balanced",      label: "Balanced",        description: "Confident and clear — works for most roles and industries" },
-  { value: "conversational", label: "Conversational", description: "Warm and direct — suits startups, creative, and tech roles" },
+  { value: "formal",         label: "Formal",         description: "Professional and structured — suits finance, law, large corporates" },
+  { value: "balanced",       label: "Balanced",        description: "Confident and clear — works for most roles and industries" },
+  { value: "conversational", label: "Conversational",  description: "Warm and direct — suits startups, creative, and tech roles" },
 ] as const;
 
 const FIELDS: { key: keyof UserProfile; label: string; placeholder: string; type?: string }[] = [
   { key: "full_name",    label: "Full Name",             placeholder: "e.g. Tom Luke" },
   { key: "headline",     label: "Professional Headline", placeholder: "e.g. Senior Product Manager" },
-  { key: "email",        label: "Email",                 placeholder: "e.g. tom@email.com",     type: "email" },
+  { key: "email",        label: "Email",                 placeholder: "e.g. tom@email.com",       type: "email" },
   { key: "phone",        label: "Phone",                 placeholder: "e.g. +44 7700 900000" },
   { key: "linkedin_url", label: "LinkedIn URL",          placeholder: "e.g. linkedin.com/in/tomluke", type: "url" },
   { key: "location",     label: "Location",              placeholder: "e.g. London, UK" },
@@ -25,6 +25,25 @@ export default function ConstantsForm({ initial }: { initial: UserProfile }) {
   const [form, setForm] = useState<UserProfile>(initial);
   const [saved, setSaved] = useState(false);
   const [isPending, startTransition] = useTransition();
+
+  const isPreset = SIGN_OFFS.includes(form.sign_off ?? "");
+  const [customActive, setCustomActive] = useState(() => !!(form.sign_off && !SIGN_OFFS.includes(form.sign_off)));
+  const [customValue, setCustomValue]   = useState(() => (form.sign_off && !SIGN_OFFS.includes(form.sign_off)) ? form.sign_off : "");
+
+  function selectPreset(s: string) {
+    setCustomActive(false);
+    setForm((f) => ({ ...f, sign_off: s }));
+  }
+
+  function activateCustom() {
+    setCustomActive(true);
+    setForm((f) => ({ ...f, sign_off: customValue || "" }));
+  }
+
+  function handleCustomChange(val: string) {
+    setCustomValue(val);
+    setForm((f) => ({ ...f, sign_off: val }));
+  }
 
   function handleSave() {
     startTransition(async () => {
@@ -57,9 +76,9 @@ export default function ConstantsForm({ initial }: { initial: UserProfile }) {
           {SIGN_OFFS.map((s) => (
             <button
               key={s}
-              onClick={() => setForm((f) => ({ ...f, sign_off: s }))}
+              onClick={() => selectPreset(s)}
               className={`text-sm px-3 py-1.5 rounded-lg border transition-colors ${
-                form.sign_off === s
+                !customActive && form.sign_off === s
                   ? "bg-slate-900 text-white border-slate-900"
                   : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"
               }`}
@@ -67,7 +86,28 @@ export default function ConstantsForm({ initial }: { initial: UserProfile }) {
               {s}
             </button>
           ))}
+          <button
+            onClick={activateCustom}
+            className={`text-sm px-3 py-1.5 rounded-lg border transition-colors ${
+              customActive
+                ? "bg-slate-900 text-white border-slate-900"
+                : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"
+            }`}
+          >
+            Custom…
+          </button>
         </div>
+
+        {customActive && (
+          <input
+            type="text"
+            autoFocus
+            placeholder="e.g. Warm regards, Cheers, All the best"
+            value={customValue}
+            onChange={(e) => handleCustomChange(e.target.value)}
+            className="mt-2.5 w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
+          />
+        )}
       </div>
 
       <div>

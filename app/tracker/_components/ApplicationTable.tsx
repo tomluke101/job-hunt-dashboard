@@ -2,9 +2,10 @@
 
 import { useState, useEffect, useRef, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   Building2, ExternalLink, Trash2, Plus, X,
-  ClipboardList, Upload, AlertCircle, Pencil, CheckSquare, Download, FileText, Maximize2,
+  ClipboardList, Upload, AlertCircle, Pencil, CheckSquare, Download, FileText, Maximize2, Sparkles,
 } from "lucide-react";
 import {
   Application, Status,
@@ -786,6 +787,14 @@ export default function ApplicationTable({ initialApps }: { initialApps: Applica
                           <FileText size={11} />
                           JD
                         </button>
+                        <Link
+                          href={`/cover-letter?applicationId=${app.id}`}
+                          className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border bg-violet-50 text-violet-600 border-violet-200 hover:bg-violet-100 transition-colors"
+                          title="Generate cover letter"
+                        >
+                          <Sparkles size={11} />
+                          CL
+                        </Link>
                         {app.url && (
                           <a href={app.url} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-blue-500 transition-colors">
                             <ExternalLink size={14} />

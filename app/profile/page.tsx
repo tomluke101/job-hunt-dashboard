@@ -1,12 +1,13 @@
-import { User, FileText, Sparkles, Pencil } from "lucide-react";
+import { User, FileText, Sparkles, Pencil, Settings2 } from "lucide-react";
 import PageHeader from "@/app/_components/PageHeader";
 import ProfileCompletion from "./_components/ProfileCompletion";
 import ConstantsForm from "./_components/ConstantsForm";
 import CVManager from "./_components/CVManager";
 import SkillsManager from "./_components/SkillsManager";
 import WritingExamples from "./_components/WritingExamples";
+import CoverLetterPrefsForm from "./_components/CoverLetterPrefsForm";
 import {
-  getProfile, getCVs, getSkills, getWritingExamples, getProfileCompleteness,
+  getProfile, getCVs, getSkills, getWritingExamples, getProfileCompleteness, getCoverLetterPrefs,
 } from "@/app/actions/profile";
 
 function Section({ icon: Icon, title, description, children }: {
@@ -34,12 +35,13 @@ function Section({ icon: Icon, title, description, children }: {
 }
 
 export default async function ProfilePage() {
-  const [profile, cvs, skills, writingExamples, completeness] = await Promise.all([
+  const [profile, cvs, skills, writingExamples, completeness, clPrefs] = await Promise.all([
     getProfile(),
     getCVs(),
     getSkills(),
     getWritingExamples(),
     getProfileCompleteness(),
+    getCoverLetterPrefs(),
   ]);
 
   return (
@@ -82,6 +84,14 @@ export default async function ProfilePage() {
           description="Optional — paste a cover letter you've written before so the AI can match your voice"
         >
           <WritingExamples initial={writingExamples} />
+        </Section>
+
+        <Section
+          icon={Settings2}
+          title="Cover Letter Preferences"
+          description="Set your greeting, contact header, things to always or never include, and tone notes — applied to every letter automatically"
+        >
+          <CoverLetterPrefsForm initial={clPrefs} />
         </Section>
       </div>
     </div>

@@ -489,6 +489,7 @@ export default function CoverLetterGenerator({
               currentLetter={output}
               onLetterUpdated={(text, provider) => { setOutput(text); setOutputProvider(provider); }}
               onDisable={handleDisableDiscovery}
+              onClose={() => setGaps([])}
             />
           )}
         </div>

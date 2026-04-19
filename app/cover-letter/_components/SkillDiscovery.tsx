@@ -1,13 +1,16 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { Sparkles, Check, ChevronDown, ChevronUp, X, Loader2, Plus, BookOpen } from "lucide-react";
+import { useState, useTransition, useEffect } from "react";
+import { Sparkles, Check, X, Loader2 } from "lucide-react";
 import { refineCoverLetter, type SkillGap } from "@/app/actions/cover-letters";
 import { addSkill, polishSkillText } from "@/app/actions/profile";
 
+type Level = "yes" | "sortof" | "no" | null;
+
 interface Answer {
-  yes: boolean;
+  level: Level;
   context: string;
+  save: boolean;
 }
 
 interface Props {
@@ -16,280 +19,288 @@ interface Props {
   currentLetter: string;
   onLetterUpdated: (text: string, provider: string) => void;
   onDisable: () => void;
+  onClose: () => void;
 }
 
-export default function SkillDiscovery({ gaps, jobDescription, currentLetter, onLetterUpdated, onDisable }: Props) {
+export default function SkillDiscovery({ gaps, jobDescription, currentLetter, onLetterUpdated, onDisable, onClose }: Props) {
+  const [isVisible, setIsVisible] = useState(false);
   const [answers, setAnswers] = useState<Record<string, Answer>>(
-    Object.fromEntries(gaps.map((g) => [g.id, { yes: false, context: "" }]))
+    Object.fromEntries(gaps.map((g) => [g.id, { level: null as Level, context: "", save: true }]))
   );
-  const [expanded, setExpanded] = useState(true);
   const [isUpdating, startUpdate] = useTransition();
-  const [updated, setUpdated] = useState(false);
+  const [done, setDone] = useState(false);
+  const [savedCount, setSavedCount] = useState(0);
 
-  // Save-to-profile state per gap
-  const [savedIds, setSavedIds]         = useState<Set<string>>(new Set());
-  const [skippedIds, setSkippedIds]     = useState<Set<string>>(new Set());
-  const [polishingId, setPolishingId]   = useState<string | null>(null);
-  const [polishedTexts, setPolishedTexts] = useState<Record<string, string>>({});
-  const [savingId, setSavingId]         = useState<string | null>(null);
-  const [, startSaving]                 = useTransition();
+  useEffect(() => {
+    const t = setTimeout(() => setIsVisible(true), 80);
+    return () => clearTimeout(t);
+  }, []);
 
-  const yesAnswers = gaps.filter((g) => answers[g.id]?.yes && answers[g.id]?.context.trim());
-  const anyAnswered = yesAnswers.length > 0;
+  function close() {
+    setIsVisible(false);
+    setTimeout(onClose, 320);
+  }
 
-  // All yes-answers either saved or skipped
-  const saveActionsDone = yesAnswers.length > 0 && yesAnswers.every(
-    (g) => savedIds.has(g.id) || skippedIds.has(g.id)
+  const activeWithContext = gaps.filter(
+    g => (answers[g.id]?.level === "yes" || answers[g.id]?.level === "sortof") && answers[g.id]?.context.trim()
   );
+  const toSaveCount = activeWithContext.filter(g => answers[g.id].save).length;
 
-  function setYes(id: string, val: boolean) {
-    setAnswers((a) => ({ ...a, [id]: { ...a[id], yes: val } }));
+  function setLevel(id: string, level: Level) {
+    setAnswers(a => ({ ...a, [id]: { ...a[id], level } }));
   }
 
   function setContext(id: string, val: string) {
-    setAnswers((a) => ({ ...a, [id]: { ...a[id], context: val } }));
+    setAnswers(a => ({ ...a, [id]: { ...a[id], context: val } }));
   }
 
-  function handleUpdate() {
-    if (!anyAnswered) return;
-    const additions = yesAnswers
-      .map((g) => `- ${g.skill}: ${answers[g.id].context.trim()}`)
-      .join("\n");
+  function toggleSave(id: string) {
+    setAnswers(a => ({ ...a, [id]: { ...a[id], save: !a[id].save } }));
+  }
 
+  function handleStrengthen() {
+    if (!activeWithContext.length) return;
     startUpdate(async () => {
-      const result = await refineCoverLetter({
+      const additions = activeWithContext
+        .map(g => `- ${g.skill} (${answers[g.id].level === "sortof" ? "adjacent experience" : "direct experience"}): ${answers[g.id].context.trim()}`)
+        .join("\n");
+
+      const updatePromise = refineCoverLetter({
         originalLetter: currentLetter,
-        refinementRequest: `Incorporate the following additional experience into the letter naturally — weave it in where it strengthens the case, don't force it or announce it:\n${additions}`,
+        refinementRequest: `Weave in the following experience naturally. For "direct experience" mention it with confidence; for "adjacent experience" draw the parallel without overclaiming:\n${additions}`,
         jobDescription,
       });
-      onLetterUpdated(result.text, result.provider);
-      setUpdated(true);
-    });
-  }
 
-  async function handlePolishAndSave(gap: SkillGap) {
-    const raw = answers[gap.id].context.trim();
-    if (!raw) return;
-    setPolishingId(gap.id);
-    try {
-      const polished = await polishSkillText(raw);
-      setPolishedTexts((p) => ({ ...p, [gap.id]: polished }));
-      setSavingId(gap.id);
-      startSaving(async () => {
-        await addSkill(raw, polished);
-        setSavedIds((s) => new Set([...s, gap.id]));
-        setSavingId(null);
+      const toSave = activeWithContext.filter(g => answers[g.id].save);
+      const savePromises = toSave.map(async g => {
+        const raw = answers[g.id].context.trim();
+        try {
+          const polished = await polishSkillText(raw);
+          await addSkill(raw, polished);
+        } catch {
+          await addSkill(raw);
+        }
       });
-    } finally {
-      setPolishingId(null);
-    }
-  }
 
-  function handleSaveAsIs(gap: SkillGap) {
-    const raw = answers[gap.id].context.trim();
-    if (!raw) return;
-    setSavingId(gap.id);
-    startSaving(async () => {
-      await addSkill(raw);
-      setSavedIds((s) => new Set([...s, gap.id]));
-      setSavingId(null);
+      const [result] = await Promise.all([updatePromise, Promise.allSettled(savePromises)]);
+      onLetterUpdated(result.text, result.provider);
+      setSavedCount(toSave.length);
+      setDone(true);
+      setTimeout(close, 2200);
     });
   }
 
   if (gaps.length === 0) return null;
 
   return (
-    <div className={`rounded-2xl border shadow-sm overflow-hidden ${updated && !saveActionsDone ? "border-blue-300 ring-2 ring-blue-100" : "border-blue-200"}`}>
-      {/* Header */}
-      <button
-        onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center justify-between px-6 py-4 bg-gradient-to-r from-blue-50 to-indigo-50 hover:from-blue-100 hover:to-indigo-100 transition-colors border-b border-blue-100"
+    <>
+      {/* Backdrop */}
+      <div
+        className={`fixed inset-0 bg-black/40 z-40 transition-opacity duration-300 ${isVisible ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        onClick={close}
+      />
+
+      {/* Bottom sheet */}
+      <div
+        className={`fixed bottom-0 left-0 right-0 z-50 transition-transform duration-300 ease-out ${isVisible ? "translate-y-0" : "translate-y-full"}`}
       >
-        <div className="flex items-center gap-3">
-          <div className="w-7 h-7 bg-blue-600 rounded-lg flex items-center justify-center shrink-0">
-            <Sparkles size={14} className="text-white" />
+        <div className="bg-white rounded-t-3xl shadow-2xl max-h-[78vh] flex flex-col">
+
+          {/* Drag handle */}
+          <div className="flex justify-center pt-3 pb-1 shrink-0">
+            <div className="w-10 h-1 bg-slate-200 rounded-full" />
           </div>
-          <div className="text-left">
-            <p className="font-semibold text-slate-900 text-sm">
-              {updated && !saveActionsDone
-                ? `Save ${yesAnswers.length} new skill${yesAnswers.length !== 1 ? "s" : ""} to your profile`
-                : `We spotted ${gaps.length} thing${gaps.length !== 1 ? "s" : ""} in this JD you haven't mentioned`}
-            </p>
-            <p className="text-xs text-slate-500 mt-0.5">
-              {updated && !saveActionsDone
-                ? "Each skill you save makes future cover letters stronger — takes 10 seconds"
-                : "Answer these quick questions to strengthen your letter"}
-            </p>
+
+          {/* Header */}
+          <div className="px-6 pt-3 pb-4 flex items-start justify-between shrink-0">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 bg-blue-600 rounded-xl flex items-center justify-center shrink-0">
+                <Sparkles size={16} className="text-white" />
+              </div>
+              <div>
+                <h2 className="font-bold text-slate-900 text-base">
+                  {done
+                    ? "Letter strengthened"
+                    : `We spotted ${gaps.length} hidden strength${gaps.length !== 1 ? "s" : ""}`}
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {done
+                    ? savedCount > 0
+                      ? `${savedCount} skill${savedCount !== 1 ? "s" : ""} saved to your profile — every future letter just got smarter`
+                      : "Your letter has been updated"
+                    : "30 seconds · strengthens this letter and every future one"}
+                </p>
+              </div>
+            </div>
+            {!done && (
+              <button onClick={close} className="text-slate-400 hover:text-slate-600 mt-0.5 transition-colors">
+                <X size={18} />
+              </button>
+            )}
           </div>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {!updated && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onDisable(); }}
-              className="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded hover:bg-white/60 transition-colors"
-            >
-              Turn off
-            </button>
+
+          {/* Done state */}
+          {done && (
+            <div className="px-6 pb-8 flex items-center gap-3">
+              <div className="w-10 h-10 bg-emerald-100 rounded-full flex items-center justify-center shrink-0">
+                <Check size={18} className="text-emerald-600" />
+              </div>
+              <p className="text-sm text-emerald-700 font-medium">
+                {savedCount > 0
+                  ? `Your profile now knows about ${savedCount} new skill${savedCount !== 1 ? "s" : ""}. The more you apply, the smarter this gets.`
+                  : "Your cover letter has been updated."}
+              </p>
+            </div>
           )}
-          {expanded ? <ChevronUp size={16} className="text-slate-400" /> : <ChevronDown size={16} className="text-slate-400" />}
-        </div>
-      </button>
 
-      {expanded && (
-        <div className="bg-white p-6 space-y-5">
-
-          {/* ── Phase 1: Q&A (before update) ── */}
-          {!updated && (
+          {/* Skills + footer */}
+          {!done && (
             <>
-              {gaps.map((gap) => {
-                const ans = answers[gap.id];
-                return (
-                  <div key={gap.id} className="space-y-2">
-                    <p className="text-sm font-medium text-slate-800">{gap.question}</p>
-                    <p className="text-xs text-slate-400 italic">From JD: "{gap.jd_context}"</p>
+              <div className="flex-1 overflow-y-auto px-6 space-y-3 pb-2">
+                {gaps.map(gap => {
+                  const ans = answers[gap.id];
+                  const isActive = ans.level === "yes" || ans.level === "sortof";
+                  const isDismissed = ans.level === "no";
 
-                    {!ans.yes ? (
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => setYes(gap.id, true)}
-                          className="text-sm font-medium px-4 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-colors"
-                        >
-                          Yes
-                        </button>
-                        <button
-                          onClick={() => setYes(gap.id, false)}
-                          className="text-sm font-medium px-4 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 transition-colors"
-                        >
-                          Skip
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-medium text-emerald-600 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full flex items-center gap-1">
-                            <Check size={10} /> Yes
-                          </span>
-                          <button onClick={() => setYes(gap.id, false)} className="text-slate-400 hover:text-slate-600">
-                            <X size={12} />
+                  return (
+                    <div
+                      key={gap.id}
+                      className={`rounded-2xl border p-4 transition-all duration-200 ${
+                        isDismissed
+                          ? "opacity-40 border-slate-100 bg-slate-50"
+                          : isActive
+                          ? "border-blue-200 bg-blue-50/40"
+                          : "border-slate-200 bg-white"
+                      }`}
+                    >
+                      <p className="text-sm font-semibold text-slate-800 mb-1">{gap.question}</p>
+                      <p className="text-xs text-slate-400 italic mb-3">From the JD: &ldquo;{gap.jd_context}&rdquo;</p>
+
+                      {!isActive && !isDismissed && (
+                        <div className="flex gap-2 flex-wrap">
+                          <button
+                            onClick={() => setLevel(gap.id, "yes")}
+                            className="text-sm font-semibold px-4 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 hover:bg-emerald-100 transition-colors"
+                          >
+                            I&apos;ve done this
+                          </button>
+                          <button
+                            onClick={() => setLevel(gap.id, "sortof")}
+                            className="text-sm font-semibold px-4 py-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 hover:bg-amber-100 transition-colors"
+                          >
+                            Sort of
+                          </button>
+                          <button
+                            onClick={() => setLevel(gap.id, "no")}
+                            className="text-sm font-medium px-4 py-2 rounded-xl bg-white border border-slate-200 text-slate-400 hover:bg-slate-50 transition-colors"
+                          >
+                            I haven&apos;t
                           </button>
                         </div>
-                        <textarea
-                          autoFocus
-                          value={ans.context}
-                          onChange={(e) => setContext(gap.id, e.target.value)}
-                          placeholder={`Tell us briefly — e.g. "Created weekly PowerPoint reports for senior stakeholders at Siemens covering KPIs across 12 markets"`}
-                          rows={2}
-                          className="w-full text-sm border border-slate-200 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 resize-none leading-relaxed placeholder-slate-300"
-                        />
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                      )}
 
-              <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-                <p className="text-xs text-slate-400">Only skills you answer "Yes" to will be added.</p>
-                <button
-                  onClick={handleUpdate}
-                  disabled={!anyAnswered || isUpdating}
-                  className="flex items-center gap-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white px-5 py-2 rounded-xl transition-colors"
-                >
-                  {isUpdating ? (
-                    <><Loader2 size={14} className="animate-spin" /> Updating letter…</>
-                  ) : (
-                    <><Sparkles size={14} /> Update my cover letter</>
-                  )}
-                </button>
+                      {isDismissed && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-slate-400">Skipped</span>
+                          <button
+                            onClick={() => setLevel(gap.id, null)}
+                            className="text-xs text-blue-500 hover:underline"
+                          >
+                            undo
+                          </button>
+                        </div>
+                      )}
+
+                      {isActive && (
+                        <div className="space-y-3">
+                          <div className="flex items-center gap-2">
+                            <span className={`text-xs font-semibold px-2.5 py-1 rounded-full flex items-center gap-1 ${
+                              ans.level === "yes"
+                                ? "bg-emerald-100 text-emerald-700"
+                                : "bg-amber-100 text-amber-700"
+                            }`}>
+                              <Check size={10} />
+                              {ans.level === "yes" ? "I've done this" : "Sort of"}
+                            </span>
+                            <button
+                              onClick={() => setLevel(gap.id, null)}
+                              className="text-slate-300 hover:text-slate-500 transition-colors"
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
+
+                          <textarea
+                            autoFocus
+                            value={ans.context}
+                            onChange={e => setContext(gap.id, e.target.value)}
+                            placeholder={
+                              ans.level === "yes"
+                                ? `e.g. "Built weekly Excel reports at Siemens tracking KPIs across 12 markets for the L&D team"`
+                                : `e.g. "Covered comparable analysis in my degree — haven't used it professionally yet"`
+                            }
+                            rows={2}
+                            className="w-full text-sm border border-slate-200 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 resize-none leading-relaxed placeholder-slate-300 bg-white"
+                          />
+
+                          <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                            <button
+                              type="button"
+                              onClick={() => toggleSave(gap.id)}
+                              className={`relative w-9 h-5 rounded-full transition-colors shrink-0 ${ans.save ? "bg-blue-500" : "bg-slate-200"}`}
+                            >
+                              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${ans.save ? "translate-x-4" : "translate-x-0.5"}`} />
+                            </button>
+                            <span className="text-xs text-slate-500">
+                              Save to my profile{" "}
+                              <span className="text-slate-400">— makes every future letter smarter</span>
+                            </span>
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Footer */}
+              <div className="px-6 pt-4 pb-6 border-t border-slate-100 shrink-0 space-y-3">
+                <div className="flex items-center justify-between">
+                  <button
+                    onClick={close}
+                    className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
+                  >
+                    Skip for now
+                  </button>
+                  <button
+                    onClick={handleStrengthen}
+                    disabled={!activeWithContext.length || isUpdating}
+                    className="flex items-center gap-2 text-sm font-bold bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white px-6 py-3 rounded-2xl transition-colors shadow-sm"
+                  >
+                    {isUpdating ? (
+                      <><Loader2 size={14} className="animate-spin" /> Strengthening…</>
+                    ) : (
+                      <>
+                        <Sparkles size={14} />
+                        Strengthen my letter{toSaveCount > 0 ? ` + save ${toSaveCount}` : ""}
+                      </>
+                    )}
+                  </button>
+                </div>
+                <p className="text-center text-xs text-slate-300">
+                  Not finding this useful?{" "}
+                  <button
+                    onClick={onDisable}
+                    className="underline hover:text-slate-400 transition-colors"
+                  >
+                    Turn off skill discovery
+                  </button>
+                </p>
               </div>
             </>
           )}
-
-          {/* ── Phase 2: Save to profile (after update) ── */}
-          {updated && (
-            <>
-              {saveActionsDone ? (
-                <div className="flex items-center gap-2 text-sm text-emerald-600 font-medium py-2">
-                  <Check size={16} />
-                  Done — your profile is now stronger for future applications
-                </div>
-              ) : (
-                <>
-                  <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 text-xs text-blue-700 leading-relaxed">
-                    <span className="font-semibold">Your cover letter has been updated.</span> Now save these skills to your profile — the AI will use them automatically in every future letter, getting sharper with every application.
-                  </div>
-
-                  <div className="space-y-3">
-                    {yesAnswers.map((gap) => {
-                      const isSaved   = savedIds.has(gap.id);
-                      const isSkipped = skippedIds.has(gap.id);
-                      const isPolishing = polishingId === gap.id;
-                      const isSavingThis = savingId === gap.id;
-                      const polished = polishedTexts[gap.id];
-
-                      if (isSkipped) return null;
-
-                      return (
-                        <div key={gap.id} className={`rounded-xl border p-4 transition-all ${isSaved ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-white"}`}>
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="flex-1 min-w-0">
-                              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">{gap.skill}</p>
-                              <p className="text-sm text-slate-700 leading-relaxed">{polished || answers[gap.id].context}</p>
-                              {polished && (
-                                <p className="text-xs text-blue-600 mt-1 flex items-center gap-1">
-                                  <Sparkles size={10} /> AI-polished version
-                                </p>
-                              )}
-                            </div>
-
-                            {isSaved ? (
-                              <span className="flex items-center gap-1 text-xs font-medium text-emerald-600 bg-emerald-100 px-2.5 py-1 rounded-full shrink-0">
-                                <Check size={11} /> Saved
-                              </span>
-                            ) : (
-                              <div className="flex items-center gap-2 shrink-0">
-                                <button
-                                  onClick={() => handlePolishAndSave(gap)}
-                                  disabled={isPolishing || isSavingThis}
-                                  className="flex items-center gap-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg transition-colors"
-                                >
-                                  {isPolishing || isSavingThis ? (
-                                    <><Loader2 size={11} className="animate-spin" /> {isPolishing ? "Polishing…" : "Saving…"}</>
-                                  ) : (
-                                    <><Sparkles size={11} /> Polish + Save</>
-                                  )}
-                                </button>
-                                <button
-                                  onClick={() => handleSaveAsIs(gap)}
-                                  disabled={isPolishing || isSavingThis}
-                                  className="text-xs text-slate-500 hover:text-slate-700 font-medium px-2.5 py-1.5 rounded-lg border border-slate-200 hover:border-slate-300 bg-white transition-colors"
-                                >
-                                  Save as-is
-                                </button>
-                                <button
-                                  onClick={() => setSkippedIds((s) => new Set([...s, gap.id]))}
-                                  className="text-slate-300 hover:text-slate-500 transition-colors"
-                                  title="Skip"
-                                >
-                                  <X size={14} />
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  <div className="flex items-center gap-2 pt-1">
-                    <BookOpen size={12} className="text-slate-400 shrink-0" />
-                    <p className="text-xs text-slate-400">Saved skills appear in your <a href="/profile" className="text-blue-500 hover:underline">Skills & Experience</a> and are used in every future cover letter.</p>
-                  </div>
-                </>
-              )}
-            </>
-          )}
         </div>
-      )}
-    </div>
+      </div>
+    </>
   );
 }

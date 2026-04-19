@@ -4,9 +4,9 @@ import { useState, useTransition, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   FileText, Sparkles, Copy, Check, RefreshCw, ChevronDown,
-  ClipboardList, AlertCircle, Loader2, Building2,
+  ClipboardList, AlertCircle, Loader2, Building2, FileDown, PlusCircle,
 } from "lucide-react";
-import { generateCoverLetter, refineCoverLetter, analyzeSkillGaps, SavedCoverLetter, type SkillGap } from "@/app/actions/cover-letters";
+import { generateCoverLetter, refineCoverLetter, analyzeSkillGaps, createApplicationFromCoverLetter, SavedCoverLetter, type SkillGap } from "@/app/actions/cover-letters";
 import { saveCoverLetterPrefs } from "@/app/actions/profile";
 import type { Application } from "@/app/actions/applications";
 import type { UserCV, UserProfile, CoverLetterPrefs } from "@/app/actions/profile";
@@ -40,8 +40,11 @@ export default function CoverLetterGenerator({
 
   const [output, setOutput] = useState("");
   const [outputProvider, setOutputProvider] = useState("");
+  const [letterId, setLetterId] = useState<string | null>(null);
+  const [trackerAdded, setTrackerAdded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [isAddingToTracker, startAddToTracker] = useTransition();
 
   const [refinementText, setRefinementText] = useState("");
   const [isGenerating, startGenerate] = useTransition();
@@ -92,6 +95,8 @@ export default function CoverLetterGenerator({
         });
         setOutput(result.text);
         setOutputProvider(result.provider);
+        setLetterId(result.letterId ?? null);
+        setTrackerAdded(false);
         setRefinementText("");
         setGaps([]);
 
@@ -149,6 +154,32 @@ export default function CoverLetterGenerator({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
+  }
+
+  function buildLetterHtml(): string {
+    return fullLetterText()
+      .split("\n\n")
+      .map((p) => `<p style="margin-bottom:1em;margin-top:0">${p.replace(/\n/g, "<br>")}</p>`)
+      .join("");
+  }
+
+  function handleDownloadWord() {
+    const filename = [companyName, roleName].filter(Boolean).join("-") || "cover-letter";
+    const html = `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word'><head><meta charset='utf-8'></head><body style="font-family:Georgia,serif;font-size:12pt;line-height:1.6;max-width:580px;margin:40px auto">${buildLetterHtml()}</body></html>`;
+    const blob = new Blob(["\ufeff", html], { type: "application/msword" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${filename.replace(/\s+/g, "-").toLowerCase()}.doc`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleDownloadPDF() {
+    const win = window.open("", "_blank", "width=800,height=900");
+    if (!win) return;
+    win.document.write(`<!DOCTYPE html><html><head><title>Cover Letter</title><style>body{font-family:Georgia,serif;font-size:12pt;line-height:1.6;max-width:580px;margin:40px auto;color:#111}p{margin-bottom:1em;margin-top:0}</style></head><body>${buildLetterHtml()}<script>window.addEventListener('load',function(){window.print();})<\/script></body></html>`);
+    win.document.close();
   }
 
   const canGenerate =
@@ -400,10 +431,20 @@ export default function CoverLetterGenerator({
                   onClick={handleGenerate}
                   disabled={isGenerating}
                   className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-700 border border-slate-200 hover:border-slate-300 bg-white px-3 py-1.5 rounded-lg transition-colors"
-                  title="Regenerate"
                 >
-                  <RefreshCw size={12} />
-                  Regenerate
+                  <RefreshCw size={12} /> Regenerate
+                </button>
+                <button
+                  onClick={handleDownloadWord}
+                  className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-700 border border-slate-200 hover:border-slate-300 bg-white px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  <FileDown size={12} /> Word
+                </button>
+                <button
+                  onClick={handleDownloadPDF}
+                  className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-700 border border-slate-200 hover:border-slate-300 bg-white px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  <FileDown size={12} /> PDF
                 </button>
                 <button
                   onClick={handleCopy}
@@ -474,6 +515,42 @@ export default function CoverLetterGenerator({
               </div>
             </div>
           </div>
+
+          {/* Add to tracker prompt — manual mode only */}
+          {mode === "manual" && manualCompany && !trackerAdded && letterId && (
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm px-5 py-4 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 bg-slate-100 rounded-lg flex items-center justify-center shrink-0">
+                  <ClipboardList size={14} className="text-slate-500" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">Add to your tracker?</p>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {manualRole ? `${manualRole} at ${manualCompany}` : manualCompany} — track this application and keep everything in one place
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => startAddToTracker(async () => {
+                  await createApplicationFromCoverLetter(manualCompany, manualRole || "Role", manualJD, letterId);
+                  setTrackerAdded(true);
+                })}
+                disabled={isAddingToTracker}
+                className="flex items-center gap-1.5 text-sm font-semibold bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white px-4 py-2 rounded-xl transition-colors shrink-0"
+              >
+                {isAddingToTracker
+                  ? <><Loader2 size={13} className="animate-spin" /> Adding…</>
+                  : <><PlusCircle size={13} /> Add to tracker</>}
+              </button>
+            </div>
+          )}
+          {mode === "manual" && trackerAdded && (
+            <div className="flex items-center gap-2 text-sm text-emerald-600 font-medium bg-emerald-50 border border-emerald-200 rounded-2xl px-5 py-4">
+              <Check size={15} />
+              Added to your tracker —{" "}
+              <a href="/tracker" className="underline hover:no-underline">view it here</a>
+            </div>
+          )}
 
           {/* Skill discovery */}
           {isAnalysing && (

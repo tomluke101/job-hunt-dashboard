@@ -30,17 +30,18 @@ export async function getSavedCoverLetters(): Promise<SavedCoverLetter[]> {
   return data ?? [];
 }
 
-export async function saveCoverLetter(content: string, applicationId?: string, provider?: string) {
+export async function saveCoverLetter(content: string, applicationId?: string, provider?: string): Promise<string | undefined> {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorised");
   const supabase = await createServerSupabaseClient();
-  await supabase.from("cover_letters").insert({
+  const { data } = await supabase.from("cover_letters").insert({
     user_id: userId,
     application_id: applicationId ?? null,
     content,
     provider: provider ?? null,
-  });
+  }).select("id").single();
   revalidatePath("/cover-letter");
+  return data?.id;
 }
 
 async function fetchCompanyResearch(companyName: string, apiKey: string): Promise<string> {
@@ -113,9 +114,9 @@ MANDATORY RULES — follow every one without exception:
 - Closing: one confident sentence — an open, warm invitation to speak. No "please", no "do get in touch", no suggesting the hiring manager would be doing the candidate a favour. Never use "I look forward to hearing from you". No location-specific phrases ("in Birmingham") in the closing.
 - Location or geography should not appear in the closing paragraph at all
 - Refer to the candidate's current employer by name AT MOST ONCE in the entire letter. After the first mention, use "the business", "the company", or "my current role"
-- Em-dashes (—): use a maximum of ONE in the entire letter. Prefer plain sentence structure
+- Em-dashes (—) and double hyphens (--): NEVER use either. Use plain sentence structure, a colon, or a new sentence instead
 - If the JD lists a specific requirement the candidate meets (licence, degree), only mention it if it weaves naturally into a relevant sentence — never as a standalone line
-- Never editorialize your own points ("These aren't academic exercises", "That's not just theory"). State the point and trust the reader
+- Never editorialize your own points. Do NOT explain what the role is, what the company does, or what makes experience valuable. Do NOT write commentary like "These aren't academic exercises", "That's not just theory", "these aren't peripheral tasks here, they're the role", "that's exactly what this role needs". State the point and trust the reader — the interpretation is theirs to make, not yours to spell out
 - BANNED PHRASES — never use: "team player", "hard worker", "passionate about", "I believe I would be a great fit", "results-oriented", "proven track record", "detail-oriented", "synergy", "I am excited to apply", "dynamic", "not just a [noun]", "that's exactly the kind of", "that's the kind of X I"
 - Vary sentence length. Use contractions where natural. Sound like a real person
 - Do NOT summarise the CV — tell a story the CV cannot tell
@@ -188,9 +189,9 @@ ${input.anythingToAdd?.trim() ? `SPECIFIC INSTRUCTIONS — the candidate has ask
   });
 
   // Auto-save (body only — header is rendered in the UI)
-  await saveCoverLetter(result.text, input.applicationId, result.provider);
+  const letterId = await saveCoverLetter(result.text, input.applicationId, result.provider);
 
-  return { text: result.text, provider: result.provider };
+  return { text: result.text, provider: result.provider, letterId };
 }
 
 export async function refineCoverLetter(input: {
@@ -280,4 +281,42 @@ If there are no meaningful gaps, return an empty array: []`;
   } catch {
     return [];
   }
+}
+
+export async function createApplicationFromCoverLetter(
+  company: string,
+  role: string,
+  jobDescription: string,
+  letterId: string,
+): Promise<string | undefined> {
+  const { userId } = await auth();
+  if (!userId) throw new Error("Unauthorised");
+  const supabase = await createServerSupabaseClient();
+
+  const { data: app } = await supabase
+    .from("applications")
+    .insert({
+      user_id: userId,
+      company,
+      role,
+      location: "",
+      status: "applied",
+      stage: "",
+      applied_date: new Date().toISOString().split("T")[0],
+      job_description: jobDescription || null,
+    })
+    .select("id")
+    .single();
+
+  if (app?.id) {
+    await supabase
+      .from("cover_letters")
+      .update({ application_id: app.id })
+      .eq("id", letterId)
+      .eq("user_id", userId);
+    revalidatePath("/tracker");
+    revalidatePath("/cover-letter");
+  }
+
+  return app?.id;
 }

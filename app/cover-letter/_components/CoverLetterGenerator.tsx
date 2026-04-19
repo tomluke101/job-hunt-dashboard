@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { generateCoverLetter, refineCoverLetter, analyzeSkillGaps, createApplicationFromCoverLetter, SavedCoverLetter, type SkillGap } from "@/app/actions/cover-letters";
 import { saveCoverLetterPrefs } from "@/app/actions/profile";
+import { updateApplication } from "@/app/actions/applications";
 import type { Application } from "@/app/actions/applications";
 import type { UserCV, UserProfile, CoverLetterPrefs } from "@/app/actions/profile";
 import type { Provider } from "@/lib/ai-providers";
@@ -47,6 +48,9 @@ export default function CoverLetterGenerator({
   const [isAddingToTracker, startAddToTracker] = useTransition();
 
   const [refinementText, setRefinementText] = useState("");
+  const [inlineJd, setInlineJd] = useState("");
+  const [jdSaved, setJdSaved] = useState(false);
+
   const [isGenerating, startGenerate] = useTransition();
   const [isRefining, startRefine] = useTransition();
   const [isAnalysing, startAnalyse] = useTransition();
@@ -61,6 +65,7 @@ export default function CoverLetterGenerator({
   }
 
   const outputRef = useRef<HTMLDivElement>(null);
+  const jdTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   const selectedApp = applications.find((a) => a.id === selectedAppId);
 
@@ -70,9 +75,14 @@ export default function CoverLetterGenerator({
     }
   }, [output]);
 
+  useEffect(() => {
+    setInlineJd("");
+    setJdSaved(false);
+  }, [selectedAppId]);
+
   const jobDescription =
     mode === "application"
-      ? (selectedApp?.job_description ?? "")
+      ? (selectedApp?.job_description || inlineJd || "")
       : manualJD;
 
   const companyName =
@@ -99,6 +109,13 @@ export default function CoverLetterGenerator({
         setTrackerAdded(false);
         setRefinementText("");
         setGaps([]);
+
+        // Silently save inline JD to tracker if user pasted it here
+        if (mode === "application" && selectedAppId && inlineJd.trim() && !selectedApp?.job_description) {
+          updateApplication(selectedAppId, { job_description: inlineJd.trim() })
+            .then(() => setJdSaved(true))
+            .catch(() => {});
+        }
 
         // Trigger skill gap analysis in background if enabled and there's a JD
         if (discoveryEnabled && jobDescription.trim().length > 50) {
@@ -188,7 +205,6 @@ export default function CoverLetterGenerator({
     cvs.length > 0;
 
   const missingCv = cvs.length === 0;
-  const missingJd = mode === "application" && selectedApp && !selectedApp.job_description;
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -270,24 +286,44 @@ export default function CoverLetterGenerator({
                   </div>
                   {selectedApp.job_description ? (
                     <span className="text-xs text-emerald-600 font-medium bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">JD ready</span>
+                  ) : jdSaved ? (
+                    <span className="text-xs text-emerald-600 font-medium bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">JD saved</span>
                   ) : (
-                    <a
-                      href="/tracker"
+                    <button
+                      onClick={() => jdTextareaRef.current?.focus()}
                       className="text-xs text-amber-600 font-medium bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full hover:bg-amber-100 transition-colors"
                     >
                       Add JD
-                    </a>
+                    </button>
                   )}
                 </div>
               )}
 
-              {missingJd && (
-                <div className="mt-3 flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-800">
-                  <AlertCircle size={12} className="mt-0.5 shrink-0 text-amber-500" />
-                  <p>
-                    No job description attached to this role. The AI will write a general letter — for best results,{" "}
-                    <a href="/tracker" className="underline font-medium">add the JD in your tracker</a> first.
-                  </p>
+              {selectedApp && !selectedApp.job_description && (
+                <div className="mt-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-amber-600 uppercase tracking-wider flex items-center gap-1.5">
+                      <AlertCircle size={11} /> Paste the job description for a tailored letter
+                    </label>
+                    {jdSaved && (
+                      <span className="text-xs text-emerald-600 flex items-center gap-1">
+                        <Check size={10} /> Saved to tracker
+                      </span>
+                    )}
+                  </div>
+                  <textarea
+                    ref={jdTextareaRef}
+                    value={inlineJd}
+                    onChange={(e) => setInlineJd(e.target.value)}
+                    placeholder="Paste the full job description here — we'll save it to your tracker automatically when you generate."
+                    rows={6}
+                    className="w-full text-sm border border-amber-200 bg-amber-50/20 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 resize-none leading-relaxed placeholder-slate-300"
+                  />
+                  {!inlineJd.trim() && (
+                    <p className="text-xs text-slate-400">
+                      No JD? You can still generate — but the letter will be general and untailored.
+                    </p>
+                  )}
                 </div>
               )}
             </div>

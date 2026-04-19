@@ -149,7 +149,7 @@ export async function generateCoverLetter(input: {
   cvId?: string;
   anythingToAdd?: string;
   applicationId?: string;
-}): Promise<{ text: string; provider: string }> {
+}): Promise<{ text: string; provider: string; letterId?: string }> {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorised");
 

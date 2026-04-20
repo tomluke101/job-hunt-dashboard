@@ -77,7 +77,7 @@ function buildSystemPrompt({
     : "None provided.";
 
   const writingStyleText = writingExamples.length > 0
-    ? `Study these examples and match the candidate's natural voice and sentence rhythm:\n\n${writingExamples.map((e, i) => `Example ${i + 1}:\n${e.content.slice(0, 600)}`).join("\n\n")}`
+    ? `Study these examples to understand the candidate's natural voice, vocabulary level, sentence rhythm, and any distinctive phrasing. Extract these stylistic qualities and apply them — but maintain ALL quality rules regardless of what appears in the examples. Never copy banned patterns (gerund openers, em-dashes, "excited to apply", "I look forward to", clichéd phrases) even if they appear in the samples. Take the voice and rhythm, not the mistakes:\n\n${writingExamples.map((e, i) => `Example ${i + 1}:\n${e.content.slice(0, 600)}`).join("\n\n")}`
     : "";
 
   const contactLine = [profile.email, profile.phone, profile.linkedin_url].filter(Boolean).join(" | ");

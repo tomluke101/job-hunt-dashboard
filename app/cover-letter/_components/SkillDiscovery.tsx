@@ -67,7 +67,7 @@ export default function SkillDiscovery({ gaps, jobDescription, currentLetter, on
 
       const updatePromise = refineCoverLetter({
         originalLetter: currentLetter,
-        refinementRequest: `Weave in the following experience naturally. For "direct experience" mention it with confidence; for "adjacent experience" draw the parallel without overclaiming:\n${additions}`,
+        refinementRequest: `Weave in the following experience naturally where it genuinely strengthens the letter. For "direct experience" mention it with confidence; for "adjacent experience" draw the parallel without overclaiming. IMPORTANT: if an example is too vague, generic, or adds no real weight (e.g. "I used Excel sometimes"), skip it entirely — do not force weak examples into the letter:\n${additions}`,
         jobDescription,
       });
 

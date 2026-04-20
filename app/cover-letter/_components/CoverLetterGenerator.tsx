@@ -397,36 +397,39 @@ export default function CoverLetterGenerator({
           )}
 
           {/* Career pivot toggle */}
-          <div className={`rounded-xl border transition-colors ${isPivot ? "border-violet-200 bg-violet-50/40" : "border-slate-200 bg-white"}`}>
+          <div className={`rounded-xl border-2 transition-all ${isPivot ? "border-violet-300 bg-violet-50" : "border-violet-100 bg-violet-50/50"}`}>
             <button
               type="button"
               onClick={() => setIsPivot(p => !p)}
-              className="w-full flex items-center justify-between px-4 py-3 text-left"
+              className="w-full flex items-center justify-between px-4 py-3.5 text-left"
             >
               <div className="flex items-center gap-3">
-                <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition-colors ${isPivot ? "bg-violet-600" : "bg-slate-100"}`}>
-                  <ArrowRightLeft size={13} className={isPivot ? "text-white" : "text-slate-500"} />
+                <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-colors ${isPivot ? "bg-violet-600" : "bg-violet-200"}`}>
+                  <ArrowRightLeft size={14} className={isPivot ? "text-white" : "text-violet-600"} />
                 </div>
                 <div>
-                  <p className={`text-sm font-semibold ${isPivot ? "text-violet-900" : "text-slate-700"}`}>
-                    This is a career change / pivot
+                  <p className="text-sm font-bold text-violet-900">
+                    Applying to a different industry or role type?
                   </p>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    Tell the AI what transfers — it will build your case without naming the gap
+                  <p className="text-xs text-violet-600/70 mt-0.5">
+                    Turn on to help the AI bridge your experience
                   </p>
                 </div>
               </div>
-              <div className={`relative w-9 h-5 rounded-full transition-colors shrink-0 ${isPivot ? "bg-violet-500" : "bg-slate-200"}`}>
-                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${isPivot ? "translate-x-4" : "translate-x-0.5"}`} />
+              <div className={`relative w-10 h-5.5 rounded-full transition-colors shrink-0 flex items-center ${isPivot ? "bg-violet-500" : "bg-violet-200"}`} style={{height: "22px", width: "40px"}}>
+                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${isPivot ? "translate-x-5" : "translate-x-0.5"}`} />
               </div>
             </button>
             {isPivot && (
-              <div className="px-4 pb-4">
+              <div className="px-4 pb-4 space-y-2">
+                <p className="text-xs font-semibold text-violet-700">
+                  What work do you do that maps to this role?
+                </p>
                 <textarea
                   autoFocus
                   value={pivotContext}
                   onChange={(e) => setPivotContext(e.target.value)}
-                  placeholder={"e.g. \"I've spent 3 years doing account management and outreach in logistics — relationship-building, objection handling, and getting people to act on recommendations. I want to do this full time in a proper sales role.\"\n\nBe specific. The AI will use this to show how your experience maps to the role — not to explain that you're changing careers."}
+                  placeholder={"e.g. \"I've spent 3 years doing account management and outreach in logistics — relationship-building, objection handling, getting people to act on recommendations. I want to do this full time in a proper sales role.\"\n\nBe specific. The AI will show the parallel work and let the hiring manager connect the dots — it won't explain that you're changing careers."}
                   rows={4}
                   className="w-full text-sm border border-violet-200 bg-white rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 resize-none leading-relaxed placeholder-slate-300"
                 />

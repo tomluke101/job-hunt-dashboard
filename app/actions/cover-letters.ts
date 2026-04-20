@@ -102,9 +102,9 @@ MANDATORY RULES — follow every one without exception:
 - Write in the FIRST PERSON throughout — "I", "my", "me". Never refer to the candidate by name or in third person ("he", "she", "they") anywhere in the letter body
 - OPENING — choose whichever strategy best fits this candidate for this specific role:
   (A) DIRECT RELEVANCE: candidate has clearly relevant experience. Lead with the experience most directly parallel to this role. Do NOT name the employer in the first sentence. Pattern: "For the past [period], I've [done X that directly mirrors what this role needs]."
-  (B) HONEST BRIDGE: candidate is cross-industry or non-traditional. Name the gap, own it, immediately close it. Pattern: "My background is in [X], not [Y] — but the core work is the same: [specific transferable skill]. I've been doing this [context]." This is more powerful than pretending the gap doesn't exist.
+  (B) HONEST BRIDGE: candidate is cross-industry or non-traditional. Open by stating the specific work they do that directly maps to this role. Do NOT name the gap and then explain how it closes. Do NOT say "that's what a [role title] does" or "which maps directly to what this role requires" or "that's a reasonable description of what X does". Show the parallel work and let the hiring manager draw the conclusion themselves. Pattern: "For the past [period], I've been [doing specific work that directly mirrors the role's core demands] — [one sentence of concrete context or achievement]."
   (C) ROLE INSIGHT: candidate has a genuine, specific insight about what this role actually demands. State it, then show you have it. Must be specific to this role, not a general industry observation.
-  HARD BANS on openings: employer/company name in sentence one; gerund openers ("Building...", "Designing..."); dramatic reveals ("— that's the kind of work I do"); industry truisms; "I am writing to apply"; personal trait lists.
+  HARD BANS on openings: employer/company name in sentence one; gerund openers ("Building...", "Designing..."); dramatic reveals ("— that's the kind of work I do"); industry truisms; "I am writing to apply"; personal trait lists; stating or explaining the parallel out loud ("that's what X does", "which is exactly what this role needs", "that maps to what you're looking for").
 - 3-4 paragraphs, 250-380 words total. Concise wins
 - Include at least one quantified achievement (numbers, percentages, scale)
 - Mirror terminology from the job description naturally — do not stuff keywords
@@ -116,7 +116,7 @@ MANDATORY RULES — follow every one without exception:
 - Refer to the candidate's current employer by name AT MOST ONCE in the entire letter. After the first mention, use "the business", "the company", or "my current role"
 - Em-dashes (—) and double hyphens (--): NEVER use either. Use plain sentence structure, a colon, or a new sentence instead
 - If the JD lists a specific requirement the candidate meets (licence, degree), only mention it if it weaves naturally into a relevant sentence — never as a standalone line
-- Never editorialize your own points. Do NOT explain what the role is, what the company does, or what makes experience valuable. Do NOT write commentary like "These aren't academic exercises", "That's not just theory", "these aren't peripheral tasks here, they're the role", "that's exactly what this role needs". State the point and trust the reader — the interpretation is theirs to make, not yours to spell out
+- Never editorialize. This means: do NOT comment on the role, the company, or the candidate's own experience. Do NOT explain why something is relevant or impressive. Do NOT say what a methodology or approach "is" or "means". Banned commentary patterns: "That's a methodology I respect", "the research element is real and substantive", "these aren't peripheral tasks here, they're the role", "that's exactly what this role needs", "that's a reasonable description of what X does", "which maps directly to", "I respect this approach". State facts and let the reader interpret them
 - BANNED PHRASES — never use: "team player", "hard worker", "passionate about", "I believe I would be a great fit", "results-oriented", "proven track record", "detail-oriented", "synergy", "I am excited to apply", "dynamic", "not just a [noun]", "that's exactly the kind of", "that's the kind of X I"
 - Vary sentence length. Use contractions where natural. Sound like a real person
 - Do NOT summarise the CV — tell a story the CV cannot tell
@@ -128,7 +128,7 @@ Location: ${profile.location ?? ""}
 Sign-off: ${profile.sign_off ?? "Kind regards"}
 Contact: ${contactLine}
 
-CV:
+CV (use the experience and achievements — ignore any stated career direction or target industry in the personal statement, which may have been written for a different role):
 ${cvContent}
 
 ADDITIONAL SKILLS & EXPERIENCE (beyond CV — draw on these where relevant; adapt, rephrase, or condense them to fit the letter's flow naturally — do not force them in or copy them rigidly):

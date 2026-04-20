@@ -4,7 +4,7 @@ import { useState, useTransition, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   FileText, Sparkles, Copy, Check, RefreshCw, ChevronDown,
-  ClipboardList, AlertCircle, Loader2, Building2, FileDown, PlusCircle,
+  ClipboardList, AlertCircle, Loader2, Building2, FileDown, PlusCircle, ArrowRightLeft,
 } from "lucide-react";
 import { generateCoverLetter, refineCoverLetter, analyzeSkillGaps, createApplicationFromCoverLetter, SavedCoverLetter, type SkillGap } from "@/app/actions/cover-letters";
 import { saveCoverLetterPrefs } from "@/app/actions/profile";
@@ -50,6 +50,8 @@ export default function CoverLetterGenerator({
   const [refinementText, setRefinementText] = useState("");
   const [inlineJd, setInlineJd] = useState("");
   const [jdSaved, setJdSaved] = useState(false);
+  const [isPivot, setIsPivot] = useState(false);
+  const [pivotContext, setPivotContext] = useState("");
 
   const [isGenerating, startGenerate] = useTransition();
   const [isRefining, startRefine] = useTransition();
@@ -101,6 +103,7 @@ export default function CoverLetterGenerator({
           roleName: roleName || undefined,
           cvId: selectedCvId || undefined,
           anythingToAdd: anythingToAdd || undefined,
+          pivotContext: isPivot && pivotContext.trim() ? pivotContext.trim() : undefined,
           applicationId: mode === "application" ? selectedAppId || undefined : undefined,
         });
         setOutput(result.text);
@@ -393,22 +396,57 @@ export default function CoverLetterGenerator({
             </div>
           )}
 
+          {/* Career pivot toggle */}
+          <div className={`rounded-xl border transition-colors ${isPivot ? "border-violet-200 bg-violet-50/40" : "border-slate-200 bg-white"}`}>
+            <button
+              type="button"
+              onClick={() => setIsPivot(p => !p)}
+              className="w-full flex items-center justify-between px-4 py-3 text-left"
+            >
+              <div className="flex items-center gap-3">
+                <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition-colors ${isPivot ? "bg-violet-600" : "bg-slate-100"}`}>
+                  <ArrowRightLeft size={13} className={isPivot ? "text-white" : "text-slate-500"} />
+                </div>
+                <div>
+                  <p className={`text-sm font-semibold ${isPivot ? "text-violet-900" : "text-slate-700"}`}>
+                    This is a career change / pivot
+                  </p>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Tell the AI what transfers — it will build your case without naming the gap
+                  </p>
+                </div>
+              </div>
+              <div className={`relative w-9 h-5 rounded-full transition-colors shrink-0 ${isPivot ? "bg-violet-500" : "bg-slate-200"}`}>
+                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${isPivot ? "translate-x-4" : "translate-x-0.5"}`} />
+              </div>
+            </button>
+            {isPivot && (
+              <div className="px-4 pb-4">
+                <textarea
+                  autoFocus
+                  value={pivotContext}
+                  onChange={(e) => setPivotContext(e.target.value)}
+                  placeholder={"e.g. \"I've spent 3 years doing account management and outreach in logistics — relationship-building, objection handling, and getting people to act on recommendations. I want to do this full time in a proper sales role.\"\n\nBe specific. The AI will use this to show how your experience maps to the role — not to explain that you're changing careers."}
+                  rows={4}
+                  className="w-full text-sm border border-violet-200 bg-white rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 resize-none leading-relaxed placeholder-slate-300"
+                />
+              </div>
+            )}
+          </div>
+
           {/* Anything to add */}
           <div>
             <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1.5">
-              Anything to add or emphasise?{" "}
-              <span className="text-slate-400 font-normal normal-case">optional — the AI only knows what's in your profile, so tell it anything else it needs</span>
+              Anything else to add or emphasise?{" "}
+              <span className="text-slate-400 font-normal normal-case">optional — specific achievements, things to mention or avoid, context the AI can&apos;t know from your profile</span>
             </label>
             <textarea
               value={anythingToAdd}
               onChange={(e) => setAnythingToAdd(e.target.value)}
-              placeholder={"Making a career change? Explain why — e.g. \"I'm moving into sales because I've been doing outreach and relationship management in my current role and want to do it full time\" — the AI will use this to frame your case honestly and powerfully.\n\nOr add anything else: specific achievements to mention, things to avoid, personal connections, context the AI can't know from your CV."}
+              placeholder={"e.g. \"Mention the Barclays project specifically\" or \"Don't reference my current employer by name\" or \"I have a personal connection to this company's mission — worked with their product at Siemens\"\n\nSpecific achievements, emphasis, things to avoid — anything the AI can't know from your profile."}
               rows={4}
               className="w-full text-sm border border-slate-200 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 resize-none leading-relaxed placeholder-slate-300"
             />
-            <p className="text-xs text-slate-400 mt-1.5">
-              Include personal stories, achievements not on your CV, specific things to mention or avoid. The AI uses everything in your profile — this is for role-specific additions.
-            </p>
           </div>
         </div>
 

@@ -116,8 +116,8 @@ MANDATORY RULES — follow every one without exception:
 - Refer to the candidate's current employer by name AT MOST ONCE in the entire letter. After the first mention, use "the business", "the company", or "my current role"
 - Em-dashes (—) and double hyphens (--): NEVER use either. Use plain sentence structure, a colon, or a new sentence instead
 - If the JD lists a specific requirement the candidate meets (licence, degree), only mention it if it weaves naturally into a relevant sentence — never as a standalone line
-- Never editorialize. This means: do NOT comment on the role, the company, or the candidate's own experience. Do NOT explain why something is relevant or impressive. Do NOT say what a methodology or approach "is" or "means". Banned commentary patterns: "That's a methodology I respect", "the research element is real and substantive", "these aren't peripheral tasks here, they're the role", "that's exactly what this role needs", "that's a reasonable description of what X does", "which maps directly to", "I respect this approach". State facts and let the reader interpret them
-- BANNED PHRASES — never use: "team player", "hard worker", "passionate about", "I believe I would be a great fit", "results-oriented", "proven track record", "detail-oriented", "synergy", "I am excited to apply", "dynamic", "not just a [noun]", "that's exactly the kind of", "that's the kind of X I"
+- Never editorialize. This means: do NOT comment on the role, the company, or the candidate's own experience. Do NOT explain why something is relevant or impressive. Do NOT say what a methodology or approach "is" or "means". Banned commentary patterns: "That's a methodology I respect", "the research element is real and substantive", "these aren't peripheral tasks here, they're the role", "that's exactly what this role needs", "that's a reasonable description of what X does", "which maps directly to", "I respect this approach", "That's how I work", "that pattern of [X] is how I've approached every role", "[X] means a [role title] needs to", "that's what a [role] does". Never end a paragraph with a self-characterizing summary sentence — state the achievement and stop; let the reader draw their own conclusion
+- BANNED PHRASES — never use: "team player", "hard worker", "passionate about", "I believe I would be a great fit", "results-oriented", "proven track record", "detail-oriented", "synergy", "I am excited to apply", "dynamic", "not just a [noun]", "that's exactly the kind of", "that's the kind of X I", "from day one"
 - Vary sentence length. Use contractions where natural. Sound like a real person
 - Do NOT summarise the CV — tell a story the CV cannot tell
 
@@ -148,6 +148,7 @@ export async function generateCoverLetter(input: {
   roleName?: string;
   cvId?: string;
   anythingToAdd?: string;
+  pivotContext?: string;
   applicationId?: string;
 }): Promise<{ text: string; provider: string; letterId?: string }> {
   const { userId } = await auth();
@@ -178,7 +179,8 @@ export async function generateCoverLetter(input: {
 JOB DESCRIPTION:
 ${input.jobDescription}
 
-${input.anythingToAdd?.trim() ? `CANDIDATE CONTEXT — treat this as high-priority framing for the letter. If the candidate explains why they are making a career change or applying to a new sector, use this to power the "Honest Bridge" opening and overall narrative. If the CV's personal statement targets a different industry or role type, IGNORE that stated direction — use the candidate's context here instead:\n${input.anythingToAdd}` : ""}`;
+${input.pivotContext?.trim() ? `CAREER PIVOT — the candidate has flagged this as a deliberate career change or sector move. Use this ONLY if it provides specific, genuine framing (transferable skills named, concrete reason for the move). If it is vague ("I want a change", "looking for something new"), ignore it entirely and silently. If specific: use the Honest Bridge opening — show the parallel work, let the hiring manager draw the connection themselves. Never explicitly name the career change ("I am moving from X to Y"). Override the CV personal statement's stated career direction with this framing:\n${input.pivotContext}` : ""}
+${input.anythingToAdd?.trim() ? `CANDIDATE CONTEXT — additional framing and emphasis. Use as high-priority context:\n${input.anythingToAdd}` : ""}`;
 
   const result = await callAI({
     task: "cover-letter",

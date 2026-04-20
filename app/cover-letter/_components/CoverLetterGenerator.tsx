@@ -397,13 +397,13 @@ export default function CoverLetterGenerator({
           <div>
             <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-1.5">
               Anything to add or emphasise?{" "}
-              <span className="text-slate-400 font-normal normal-case">optional — this is your chance to personalise</span>
+              <span className="text-slate-400 font-normal normal-case">optional — the AI only knows what's in your profile, so tell it anything else it needs</span>
             </label>
             <textarea
               value={anythingToAdd}
               onChange={(e) => setAnythingToAdd(e.target.value)}
-              placeholder="e.g. &quot;Mention my experience leading the rebrand at X — it's directly relevant&quot; or &quot;I know the VP of Product there — keep the tone confident&quot; or &quot;Add something about my side project building a fintech app&quot;"
-              rows={3}
+              placeholder={"Making a career change? Explain why — e.g. \"I'm moving into sales because I've been doing outreach and relationship management in my current role and want to do it full time\" — the AI will use this to frame your case honestly and powerfully.\n\nOr add anything else: specific achievements to mention, things to avoid, personal connections, context the AI can't know from your CV."}
+              rows={4}
               className="w-full text-sm border border-slate-200 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 resize-none leading-relaxed placeholder-slate-300"
             />
             <p className="text-xs text-slate-400 mt-1.5">

@@ -178,7 +178,7 @@ export async function generateCoverLetter(input: {
 JOB DESCRIPTION:
 ${input.jobDescription}
 
-${input.anythingToAdd?.trim() ? `SPECIFIC INSTRUCTIONS — the candidate has asked you to include or emphasise the following:\n${input.anythingToAdd}` : ""}`;
+${input.anythingToAdd?.trim() ? `CANDIDATE CONTEXT — treat this as high-priority framing for the letter. If the candidate explains why they are making a career change or applying to a new sector, use this to power the "Honest Bridge" opening and overall narrative. If the CV's personal statement targets a different industry or role type, IGNORE that stated direction — use the candidate's context here instead:\n${input.anythingToAdd}` : ""}`;
 
   const result = await callAI({
     task: "cover-letter",

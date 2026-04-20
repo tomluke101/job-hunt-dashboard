@@ -1,6 +1,5 @@
 import { Suspense } from "react";
 import PageHeader from "../_components/PageHeader";
-import ProviderSelector from "../_components/ProviderSelector";
 import CoverLetterGenerator from "./_components/CoverLetterGenerator";
 import { getApiKeys } from "@/app/actions/api-keys";
 import { getTaskPreferences } from "@/app/actions/preferences";
@@ -28,13 +27,7 @@ export default async function CoverLetterPage() {
       <PageHeader
         title="Cover Letters"
         description="AI-generated cover letters tailored to each role — written in your voice"
-      >
-        <ProviderSelector
-          task="cover-letter"
-          current={currentProvider}
-          connectedProviders={connectedProviders}
-        />
-      </PageHeader>
+      />
 
       <div className="mt-6">
         <Suspense fallback={null}>

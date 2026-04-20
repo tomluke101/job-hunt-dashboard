@@ -44,6 +44,18 @@ export async function saveCoverLetter(content: string, applicationId?: string, p
   return data?.id;
 }
 
+export async function updateCoverLetterContent(letterId: string, content: string): Promise<void> {
+  const { userId } = await auth();
+  if (!userId) return;
+  const supabase = await createServerSupabaseClient();
+  await supabase
+    .from("cover_letters")
+    .update({ content })
+    .eq("id", letterId)
+    .eq("user_id", userId);
+  revalidatePath("/cover-letter");
+}
+
 async function fetchCompanyResearch(companyName: string, apiKey: string): Promise<string> {
   try {
     const client = new OpenAI({ apiKey, baseURL: "https://api.perplexity.ai" });

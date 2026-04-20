@@ -6,7 +6,7 @@ import {
   FileText, Sparkles, Copy, Check, RefreshCw, ChevronDown,
   ClipboardList, AlertCircle, Loader2, Building2, FileDown, PlusCircle, ArrowRightLeft,
 } from "lucide-react";
-import { generateCoverLetter, refineCoverLetter, analyzeSkillGaps, createApplicationFromCoverLetter, SavedCoverLetter, type SkillGap } from "@/app/actions/cover-letters";
+import { generateCoverLetter, refineCoverLetter, updateCoverLetterContent, analyzeSkillGaps, createApplicationFromCoverLetter, SavedCoverLetter, type SkillGap } from "@/app/actions/cover-letters";
 import { saveCoverLetterPrefs } from "@/app/actions/profile";
 import { updateApplication } from "@/app/actions/applications";
 import type { Application } from "@/app/actions/applications";
@@ -146,6 +146,10 @@ export default function CoverLetterGenerator({
         setOutput(result.text);
         setOutputProvider(result.provider);
         setRefinementText("");
+        // Keep saved record in sync — fire and forget, no UI impact if it fails
+        if (letterId) {
+          updateCoverLetterContent(letterId, result.text).catch(() => {});
+        }
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : "Refinement failed. Please try again.");
       }
@@ -641,7 +645,11 @@ export default function CoverLetterGenerator({
               gaps={gaps}
               jobDescription={jobDescription}
               currentLetter={output}
-              onLetterUpdated={(text, provider) => { setOutput(text); setOutputProvider(provider); }}
+              onLetterUpdated={(text, provider) => {
+                setOutput(text);
+                setOutputProvider(provider);
+                if (letterId) updateCoverLetterContent(letterId, text).catch(() => {});
+              }}
               onDisable={handleDisableDiscovery}
               onClose={() => setGaps([])}
             />

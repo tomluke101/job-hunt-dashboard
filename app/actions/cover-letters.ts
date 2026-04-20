@@ -207,13 +207,18 @@ export async function refineCoverLetter(input: {
 
   const result = await callAI({
     task: "cover-letter",
-    systemPrompt: "You are an expert cover letter editor. Apply the requested changes and return the complete updated letter. Preserve the overall structure and quality. FORMATTING RULES — maintain throughout: no em-dashes (—) or double hyphens (--); no editorializing (do not explain what the role requires or what makes experience valuable — state points and trust the reader); no banned phrases (team player, passionate about, proven track record, excited to apply, I look forward to hearing from you). Return only the letter body starting with the greeting, no explanation.",
+    systemPrompt: "You are an expert cover letter editor. Apply the requested changes and return the complete updated letter. Preserve the overall structure and quality. FORMATTING RULES — maintain throughout: no em-dashes (—) or double hyphens (--); no editorializing; no banned phrases (team player, passionate about, proven track record, excited to apply, I look forward to hearing from you). CRITICAL OUTPUT RULE: your response must begin IMMEDIATELY with the letter greeting (e.g. 'Dear Hiring Team,') — no preamble, no explanation, no commentary before or after the letter. If you choose not to incorporate something, do so silently. Never explain what you did or did not include.",
     prompt: `Original cover letter:\n\n${input.originalLetter}\n\nRefinement request: ${input.refinementRequest}\n\nReturn the complete updated cover letter.`,
     userPreference: taskPrefs["cover-letter"],
     connectedProviders: keys,
   });
 
-  return { text: result.text, provider: result.provider };
+  // Safety strip — remove any AI commentary before the greeting
+  const text = result.text.trim();
+  const greetingMatch = text.match(/(Dear\s+\S)/);
+  const cleaned = greetingMatch ? text.slice(text.indexOf(greetingMatch[0])) : text;
+
+  return { text: cleaned, provider: result.provider };
 }
 
 // ── Skill gap discovery ───────────────────────────────────────────────────────

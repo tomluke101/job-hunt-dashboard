@@ -598,7 +598,7 @@ export default function CoverLetterGenerator({
           </div>
 
           {/* Add to tracker prompt — manual mode only */}
-          {mode === "manual" && !trackerAdded && letterId && (
+          {mode === "manual" && !trackerAdded && !!output && (
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm px-5 py-4 space-y-3">
               <div className="flex items-center justify-between gap-4">
                 <div className="flex items-center gap-3">

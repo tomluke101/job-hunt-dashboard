@@ -316,7 +316,7 @@ export async function createApplicationFromCoverLetter(
   company: string,
   role: string,
   jobDescription: string,
-  letterId: string,
+  letterId: string | null | undefined,
 ): Promise<string | undefined> {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorised");
@@ -337,7 +337,7 @@ export async function createApplicationFromCoverLetter(
     .select("id")
     .single();
 
-  if (app?.id) {
+  if (app?.id && letterId) {
     await supabase
       .from("cover_letters")
       .update({ application_id: app.id })

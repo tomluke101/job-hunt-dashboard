@@ -24,6 +24,7 @@ const FIELDS: { key: keyof UserProfile; label: string; placeholder: string; type
 export default function ConstantsForm({ initial }: { initial: UserProfile }) {
   const [form, setForm] = useState<UserProfile>(initial);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   const isPreset = SIGN_OFFS.includes(form.sign_off ?? "");
@@ -46,10 +47,15 @@ export default function ConstantsForm({ initial }: { initial: UserProfile }) {
   }
 
   function handleSave() {
+    setSaveError(null);
     startTransition(async () => {
-      await saveProfile(form);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2500);
+      const result = await saveProfile(form);
+      if (result.error) {
+        setSaveError(result.error);
+      } else {
+        setSaved(true);
+        setTimeout(() => setSaved(false), 2500);
+      }
     });
   }
 
@@ -129,6 +135,12 @@ export default function ConstantsForm({ initial }: { initial: UserProfile }) {
           ))}
         </div>
       </div>
+
+      {saveError && (
+        <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+          Save failed: {saveError}
+        </p>
+      )}
 
       <div className="flex items-center justify-between pt-2">
         <p className="text-xs text-slate-400">These details appear at the top and bottom of every cover letter automatically.</p>

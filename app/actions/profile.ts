@@ -57,16 +57,18 @@ export async function getProfile(): Promise<UserProfile> {
   return data ?? {};
 }
 
-export async function saveProfile(input: UserProfile) {
+export async function saveProfile(input: UserProfile): Promise<{ error?: string }> {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorised");
 
-  const supabase = await createServerSupabaseClient();
-  await supabase
+  const supabase = createServerSupabaseClient();
+  const { error } = await supabase
     .from("user_profile")
     .upsert({ ...input, user_id: userId, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
 
   revalidatePath("/profile");
+  if (error) return { error: error.message };
+  return {};
 }
 
 // ── CVs ───────────────────────────────────────────────────────────────────────

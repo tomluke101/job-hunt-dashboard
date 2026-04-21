@@ -57,9 +57,18 @@ export async function updateCoverLetterContent(letterId: string, content: string
 }
 
 function sanitiseLetter(text: string): string {
-  // Belt-and-braces: strip em-dashes even if the model ignored the prompt ban.
-  // A comma works for the vast majority of mid-sentence and parenthetical uses.
+  // Strip em-dashes regardless of what the model produced.
   return text.replace(/\s*—\s*/g, ", ").replace(/\s*--\s*/g, ", ");
+}
+
+function fixSignOff(text: string, signOff: string, name: string): string {
+  if (!signOff || !name) return text;
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Match "Sign-off[,?] Name" on the same line and split onto two lines with comma.
+  return text.replace(
+    new RegExp(`(${esc(signOff)},?)[ \t]+(${esc(name)})`, "g"),
+    `${signOff},\n${name}`
+  );
 }
 
 async function fetchCompanyResearch(companyName: string, apiKey: string): Promise<string> {
@@ -212,7 +221,11 @@ ${input.anythingToAdd?.trim() ? `CANDIDATE CONTEXT — additional framing and em
     connectedProviders: keys,
   });
 
-  const cleanText = sanitiseLetter(result.text);
+  const cleanText = fixSignOff(
+    sanitiseLetter(result.text),
+    profile.sign_off ?? "Kind regards",
+    profile.full_name ?? ""
+  );
 
   // Auto-save (body only — header is rendered in the UI)
   const letterId = await saveCoverLetter(cleanText, input.applicationId, result.provider);
@@ -228,7 +241,7 @@ export async function refineCoverLetter(input: {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorised");
 
-  const [taskPrefs, keys] = await Promise.all([getTaskPreferences(), getApiKeyValues()]);
+  const [taskPrefs, keys, profile] = await Promise.all([getTaskPreferences(), getApiKeyValues(), getProfile()]);
   if (Object.keys(keys).length === 0) throw new Error("No AI provider connected.");
 
   const result = await callAI({
@@ -243,7 +256,7 @@ export async function refineCoverLetter(input: {
   const text = result.text.trim();
   const greetingMatch = text.match(/(Dear\s+\S)/);
   const stripped = greetingMatch ? text.slice(text.indexOf(greetingMatch[0])) : text;
-  const cleaned = sanitiseLetter(stripped);
+  const cleaned = fixSignOff(sanitiseLetter(stripped), profile.sign_off ?? "Kind regards", profile.full_name ?? "");
 
   return { text: cleaned, provider: result.provider };
 }

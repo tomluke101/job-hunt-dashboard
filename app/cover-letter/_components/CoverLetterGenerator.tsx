@@ -553,7 +553,7 @@ export default function CoverLetterGenerator({
                 )}
                 {/* Letter paragraphs */}
                 {output.split("\n\n").map((para, i) => (
-                  <p key={i} className="text-[15px]">{para}</p>
+                  <p key={i} className="text-[15px] whitespace-pre-line">{para}</p>
                 ))}
               </div>
             </div>

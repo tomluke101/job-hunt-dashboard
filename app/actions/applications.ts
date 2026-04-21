@@ -4,7 +4,7 @@ import { auth } from "@clerk/nextjs/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 import { revalidatePath } from "next/cache";
 
-export type Status = "applied" | "interview" | "offer" | "rejected" | "withdrawn";
+export type Status = "considering" | "applied" | "interview" | "offer" | "rejected" | "withdrawn";
 
 export interface Application {
   id: string;

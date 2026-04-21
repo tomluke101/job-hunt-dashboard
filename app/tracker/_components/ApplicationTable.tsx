@@ -14,35 +14,38 @@ import {
 } from "@/app/actions/applications";
 
 const statusStyles: Record<Status, string> = {
-  applied:   "bg-blue-50 text-blue-700 border-blue-200",
-  interview: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  offer:     "bg-purple-50 text-purple-700 border-purple-200",
-  rejected:  "bg-red-50 text-red-700 border-red-200",
-  withdrawn: "bg-slate-100 text-slate-600 border-slate-200",
+  considering: "bg-amber-50 text-amber-700 border-amber-200",
+  applied:     "bg-blue-50 text-blue-700 border-blue-200",
+  interview:   "bg-emerald-50 text-emerald-700 border-emerald-200",
+  offer:       "bg-purple-50 text-purple-700 border-purple-200",
+  rejected:    "bg-red-50 text-red-700 border-red-200",
+  withdrawn:   "bg-slate-100 text-slate-600 border-slate-200",
 };
 
 const statusLabels: Record<Status, string> = {
-  applied:   "Applied",
-  interview: "Interview",
-  offer:     "Offer",
-  rejected:  "Rejected",
-  withdrawn: "Withdrawn",
+  considering: "Considering",
+  applied:     "Applied",
+  interview:   "Interview",
+  offer:       "Offer",
+  rejected:    "Rejected",
+  withdrawn:   "Withdrawn",
 };
 
 const filterOptions: { label: string; value: Status | "all" }[] = [
-  { label: "All",       value: "all" },
-  { label: "Applied",   value: "applied" },
-  { label: "Interview", value: "interview" },
-  { label: "Offer",     value: "offer" },
-  { label: "Rejected",  value: "rejected" },
-  { label: "Withdrawn", value: "withdrawn" },
+  { label: "All",         value: "all" },
+  { label: "Considering", value: "considering" },
+  { label: "Applied",     value: "applied" },
+  { label: "Interview",   value: "interview" },
+  { label: "Offer",       value: "offer" },
+  { label: "Rejected",    value: "rejected" },
+  { label: "Withdrawn",   value: "withdrawn" },
 ];
 
 type FormData = Omit<Application, "id" | "user_id" | "created_at">;
 
 const emptyForm: FormData = {
   role: "", company: "", location: "",
-  status: "applied", stage: "Application Sent",
+  status: "considering", stage: "",
   applied_date: new Date().toISOString().split("T")[0],
   salary: "", url: "", notes: "", category: "",
   work_location: undefined, job_description: "",
@@ -122,11 +125,13 @@ const COL_ALIASES: Record<string, string[]> = {
 
 function normaliseStatus(raw: string): Status {
   const s = raw.toLowerCase().trim();
+  if (s.includes("consider") || s.includes("saved") || s.includes("wishlist") || s.includes("interest")) return "considering";
   if (s.includes("interview")) return "interview";
   if (s.includes("offer"))     return "offer";
   if (s.includes("reject"))    return "rejected";
   if (s.includes("withdraw"))  return "withdrawn";
-  return "applied";
+  if (s.includes("applied") || s.includes("apply")) return "applied";
+  return "considering";
 }
 
 function mapRow(row: Record<string, string>): FormData | null {
@@ -389,8 +394,8 @@ export default function ApplicationTable({ initialApps }: { initialApps: Applica
           role:         a.role        || "Unknown Role",
           company:      a.company     || "Unknown Company",
           location:     a.location    || "",
-          status:       (a.status as Status) || "applied",
-          stage:        a.stage       || "Application Sent",
+          status:       (a.status as Status) || "considering",
+          stage:        a.stage       || "",
           applied_date: a.appliedDate || new Date().toISOString().split("T")[0],
           salary:       a.salary      || undefined,
           url:          a.url         || undefined,

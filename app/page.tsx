@@ -6,27 +6,30 @@ import { getApplications } from "@/app/actions/applications";
 import type { Status } from "@/app/actions/applications";
 
 const statusStyles: Record<Status, string> = {
-  applied:   "bg-blue-50 text-blue-700 border-blue-200",
-  interview: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  offer:     "bg-purple-50 text-purple-700 border-purple-200",
-  rejected:  "bg-red-50 text-red-700 border-red-200",
-  withdrawn: "bg-slate-100 text-slate-600 border-slate-200",
+  considering: "bg-amber-50 text-amber-700 border-amber-200",
+  applied:     "bg-blue-50 text-blue-700 border-blue-200",
+  interview:   "bg-emerald-50 text-emerald-700 border-emerald-200",
+  offer:       "bg-purple-50 text-purple-700 border-purple-200",
+  rejected:    "bg-red-50 text-red-700 border-red-200",
+  withdrawn:   "bg-slate-100 text-slate-600 border-slate-200",
 };
 
 const statusLabels: Record<Status, string> = {
-  applied:   "Applied",
-  interview: "Interview",
-  offer:     "Offer",
-  rejected:  "Rejected",
-  withdrawn: "Withdrawn",
+  considering: "Considering",
+  applied:     "Applied",
+  interview:   "Interview",
+  offer:       "Offer",
+  rejected:    "Rejected",
+  withdrawn:   "Withdrawn",
 };
 
 const breakdownColors: Record<Status, string> = {
-  applied:   "bg-blue-500",
-  interview: "bg-emerald-500",
-  offer:     "bg-purple-500",
-  rejected:  "bg-red-400",
-  withdrawn: "bg-slate-300",
+  considering: "bg-amber-400",
+  applied:     "bg-blue-500",
+  interview:   "bg-emerald-500",
+  offer:       "bg-purple-500",
+  rejected:    "bg-red-400",
+  withdrawn:   "bg-slate-300",
 };
 
 function displayDate(iso: string) {

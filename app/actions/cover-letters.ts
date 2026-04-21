@@ -158,7 +158,7 @@ ${companyResearch ? `COMPANY RESEARCH — use specific details from this:\n${com
 ${alwaysMentionSection ? `${alwaysMentionSection}\n` : ""}
 ${neverDoSection ? `${neverDoSection}\n` : ""}
 ${extraToneSection ? `${extraToneSection}\n` : ""}
-OUTPUT: Return only the complete cover letter body. Start with "${salutation}," on its own line, then a blank line, then the first paragraph. End with the sign-off and candidate name. No preamble, no explanation, no subject line. FINAL REMINDER: the em-dash character (—) must not appear anywhere in your output.`;
+OUTPUT: Return only the complete cover letter body. Start with "${salutation}," on its own line, then a blank line, then the first paragraph. ${clPrefs.include_header ? `End with the sign-off only (e.g. "${profile.sign_off ?? "Kind regards"},") on its own line — do NOT add the candidate's name after it, as it already appears in the header above the letter.` : `End with the sign-off on one line and the candidate's full name on the next line.`} No preamble, no explanation, no subject line. FINAL REMINDER: the em-dash character (—) must not appear anywhere in your output.`;
 }
 
 export async function generateCoverLetter(input: {

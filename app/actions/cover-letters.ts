@@ -56,6 +56,12 @@ export async function updateCoverLetterContent(letterId: string, content: string
   revalidatePath("/cover-letter");
 }
 
+function sanitiseLetter(text: string): string {
+  // Belt-and-braces: strip em-dashes even if the model ignored the prompt ban.
+  // A comma works for the vast majority of mid-sentence and parenthetical uses.
+  return text.replace(/\s*—\s*/g, ", ").replace(/\s*--\s*/g, ", ");
+}
+
 async function fetchCompanyResearch(companyName: string, apiKey: string): Promise<string> {
   try {
     const client = new OpenAI({ apiKey, baseURL: "https://api.perplexity.ai" });
@@ -126,9 +132,10 @@ MANDATORY RULES — follow every one without exception:
 - Closing: one confident sentence — an open, warm invitation to speak. No "please", no "do get in touch", no suggesting the hiring manager would be doing the candidate a favour. Never use "I look forward to hearing from you". No location-specific phrases ("in Birmingham") in the closing.
 - Location or geography should not appear in the closing paragraph at all
 - Refer to the candidate's current employer by name AT MOST ONCE in the entire letter. After the first mention, use "the business", "the company", or "my current role"
-- Em-dashes (—) and double hyphens (--): NEVER use either. Use plain sentence structure, a colon, or a new sentence instead
+- EM-DASH BAN — HARD RULE: The character — must not appear anywhere in your output. Not once. Not mid-sentence, not in parentheticals, not anywhere. Double hyphens (--) are also banned. This is a non-negotiable formatting requirement. Use a comma, colon, semicolon, or start a new sentence instead. There are no exceptions to this rule
 - If the JD lists a specific requirement the candidate meets (licence, degree), only mention it if it weaves naturally into a relevant sentence — never as a standalone line
-- Never editorialize. This means: do NOT comment on the role, the company, or the candidate's own experience. Do NOT explain why something is relevant or impressive. Do NOT say what a methodology or approach "is" or "means". Banned commentary patterns: "That's a methodology I respect", "the research element is real and substantive", "these aren't peripheral tasks here, they're the role", "that's exactly what this role needs", "that's a reasonable description of what X does", "which maps directly to", "I respect this approach", "That's how I work", "that pattern of [X] is how I've approached every role", "[X] means a [role title] needs to", "that's what a [role] does". Never end a paragraph with a self-characterizing summary sentence — state the achievement and stop; let the reader draw their own conclusion
+- Never editorialize. This means: do NOT comment on the role, the company, or the candidate's own experience. Do NOT explain why something is relevant or impressive. Do NOT say what a methodology or approach "is" or "means". Do NOT describe the company's own culture, values, or team structure back to them — they know what they do. Do NOT state the connection between the candidate's experience and the role — show the work and let the reader make the connection. Banned commentary patterns: "That's a methodology I respect", "the research element is real and substantive", "these aren't peripheral tasks here, they're the role", "that's exactly what this role needs", "that's a reasonable description of what X does", "which maps directly to", "sits at the exact intersection", "directly applies", "I respect this approach", "That's how I work", "that pattern of [X] is how I've approached every role", "[X] means a [role title] needs to", "that's what a [role] does", "is how I operate". Never end a paragraph with a self-characterizing summary sentence — state the achievement and stop; let the reader draw their own conclusion
+- WHY THIS COMPANY paragraph: reference something specific and concrete — a real initiative, product, market position, or aspect of how they operate. If no external research is available, use a specific detail from the job description that reveals something real about the team or role. Do NOT make generic observations about culture or values that could apply to any company ("commitment to continuous improvement", "people-first culture", "innovation at the core")
 - BANNED PHRASES — never use: "team player", "hard worker", "passionate about", "I believe I would be a great fit", "results-oriented", "proven track record", "detail-oriented", "synergy", "I am excited to apply", "dynamic", "not just a [noun]", "that's exactly the kind of", "that's the kind of X I", "from day one"
 - Vary sentence length. Use contractions where natural. Sound like a real person
 - Do NOT summarise the CV — tell a story the CV cannot tell
@@ -151,7 +158,7 @@ ${companyResearch ? `COMPANY RESEARCH — use specific details from this:\n${com
 ${alwaysMentionSection ? `${alwaysMentionSection}\n` : ""}
 ${neverDoSection ? `${neverDoSection}\n` : ""}
 ${extraToneSection ? `${extraToneSection}\n` : ""}
-OUTPUT: Return only the complete cover letter body. Start with "${salutation}," on its own line, then a blank line, then the first paragraph. End with the sign-off and candidate name. No preamble, no explanation, no subject line.`;
+OUTPUT: Return only the complete cover letter body. Start with "${salutation}," on its own line, then a blank line, then the first paragraph. End with the sign-off and candidate name. No preamble, no explanation, no subject line. FINAL REMINDER: the em-dash character (—) must not appear anywhere in your output.`;
 }
 
 export async function generateCoverLetter(input: {
@@ -202,10 +209,12 @@ ${input.anythingToAdd?.trim() ? `CANDIDATE CONTEXT — additional framing and em
     connectedProviders: keys,
   });
 
-  // Auto-save (body only — header is rendered in the UI)
-  const letterId = await saveCoverLetter(result.text, input.applicationId, result.provider);
+  const cleanText = sanitiseLetter(result.text);
 
-  return { text: result.text, provider: result.provider, letterId };
+  // Auto-save (body only — header is rendered in the UI)
+  const letterId = await saveCoverLetter(cleanText, input.applicationId, result.provider);
+
+  return { text: cleanText, provider: result.provider, letterId };
 }
 
 export async function refineCoverLetter(input: {
@@ -221,16 +230,17 @@ export async function refineCoverLetter(input: {
 
   const result = await callAI({
     task: "cover-letter",
-    systemPrompt: "You are an expert cover letter editor. Apply the requested changes and return the complete updated letter. Preserve the overall structure and quality. FORMATTING RULES — maintain throughout: no em-dashes (—) or double hyphens (--); no editorializing; no banned phrases (team player, passionate about, proven track record, excited to apply, I look forward to hearing from you). CRITICAL OUTPUT RULE: your response must begin IMMEDIATELY with the letter greeting (e.g. 'Dear Hiring Team,') — no preamble, no explanation, no commentary before or after the letter. If you choose not to incorporate something, do so silently. Never explain what you did or did not include.",
+    systemPrompt: "You are an expert cover letter editor. Apply the requested changes and return the complete updated letter. Preserve the overall structure and quality. HARD FORMATTING RULES: (1) The em-dash character (—) must not appear anywhere in your output — not once. Use a comma, colon, or new sentence instead. This is non-negotiable. (2) No double hyphens (--). (3) No editorializing or commentary. (4) No banned phrases: team player, passionate about, proven track record, excited to apply, I look forward to hearing from you, from day one. CRITICAL OUTPUT RULE: your response must begin IMMEDIATELY with the letter greeting (e.g. 'Dear Hiring Team,') — no preamble, no explanation, no commentary before or after the letter. If you choose not to incorporate something, do so silently.",
     prompt: `Original cover letter:\n\n${input.originalLetter}\n\nRefinement request: ${input.refinementRequest}\n\nReturn the complete updated cover letter.`,
     userPreference: taskPrefs["cover-letter"],
     connectedProviders: keys,
   });
 
-  // Safety strip — remove any AI commentary before the greeting
+  // Safety strip — remove any AI commentary before the greeting, then sanitise
   const text = result.text.trim();
   const greetingMatch = text.match(/(Dear\s+\S)/);
-  const cleaned = greetingMatch ? text.slice(text.indexOf(greetingMatch[0])) : text;
+  const stripped = greetingMatch ? text.slice(text.indexOf(greetingMatch[0])) : text;
+  const cleaned = sanitiseLetter(stripped);
 
   return { text: cleaned, provider: result.provider };
 }

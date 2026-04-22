@@ -38,12 +38,12 @@ export async function saveCoverLetter(content: string, applicationId?: string, p
     user_id: userId,
     application_id: applicationId ?? null,
     content,
-    provider: provider ?? null,
   }).select("id").single();
   if (error) {
     console.error("[saveCoverLetter] supabase error:", error);
     throw new Error(error.message);
   }
+  void provider;
   revalidatePath("/cover-letter");
   return data?.id;
 }
@@ -57,7 +57,6 @@ export async function saveManualCoverLetter(applicationId: string, content: stri
       user_id: userId,
       application_id: applicationId,
       content,
-      provider: null,
     }).select("id").single();
     if (error) {
       console.error("[saveManualCoverLetter] supabase error:", error);

@@ -5,13 +5,14 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   Building2, ExternalLink, Trash2, Plus, X,
-  ClipboardList, Upload, AlertCircle, Pencil, CheckSquare, Download, FileText, Maximize2, Sparkles,
+  ClipboardList, Upload, AlertCircle, Pencil, CheckSquare, Download, FileText, Maximize2, Sparkles, Copy, Check,
 } from "lucide-react";
 import {
   Application, Status,
   createApplication, updateApplication, deleteApplication,
   bulkUpdateStatus, bulkDeleteApplications, bulkImportApplications,
 } from "@/app/actions/applications";
+import type { SavedCoverLetter } from "@/app/actions/cover-letters";
 
 const statusStyles: Record<Status, string> = {
   considering: "bg-amber-50 text-amber-700 border-amber-200",
@@ -348,9 +349,80 @@ function JobDescriptionModal({
   );
 }
 
+// ── Cover Letter Modal ────────────────────────────────────────────────────────
+
+function CoverLetterModal({
+  app,
+  letter,
+  onClose,
+}: {
+  app: Application;
+  letter: SavedCoverLetter;
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  function handleCopy() {
+    navigator.clipboard.writeText(letter.content).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  const date = new Date(letter.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "2-digit" });
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-6">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col" style={{ height: "85vh" }}>
+        {/* Header */}
+        <div className="flex items-start justify-between px-7 py-5 border-b border-slate-100 shrink-0">
+          <div>
+            <h2 className="font-bold text-slate-900 text-lg leading-tight">{app.role}</h2>
+            <p className="text-slate-500 text-sm mt-0.5">{app.company} · Generated {date}</p>
+          </div>
+          <div className="flex items-center gap-2 ml-4">
+            <Link
+              href={`/cover-letter?applicationId=${app.id}`}
+              className="flex items-center gap-1.5 text-sm font-medium text-violet-600 hover:text-violet-700 px-3 py-1.5 rounded-lg bg-violet-50 hover:bg-violet-100 border border-violet-200 transition-colors"
+            >
+              <Sparkles size={13} /> Regenerate
+            </Link>
+            <button
+              onClick={handleCopy}
+              className="flex items-center gap-1.5 text-sm font-medium bg-slate-900 hover:bg-slate-800 text-white px-3 py-1.5 rounded-lg transition-colors"
+            >
+              {copied ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy</>}
+            </button>
+            <button onClick={onClose} className="text-slate-400 hover:text-slate-600 ml-1 p-1">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-8 py-7">
+          <div className="font-serif text-slate-800 leading-relaxed space-y-4">
+            {letter.content.split("\n\n").map((para, i) => (
+              <p key={i} className="text-[15px] whitespace-pre-line">{para}</p>
+            ))}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-7 py-3 border-t border-slate-100 bg-slate-50 rounded-b-2xl shrink-0">
+          <p className="text-xs text-slate-400">
+            {letter.content.split(/\s+/).filter(Boolean).length} words
+            {letter.provider ? ` · Generated with ${letter.provider}` : ""}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function ApplicationTable({ initialApps }: { initialApps: Application[] }) {
+export default function ApplicationTable({ initialApps, initialCoverLetterMap = {} }: { initialApps: Application[]; initialCoverLetterMap?: Record<string, SavedCoverLetter> }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
@@ -368,6 +440,8 @@ export default function ApplicationTable({ initialApps }: { initialApps: Applica
   const [csvError, setCsvError]     = useState<string | null>(null);
   const [legacyCount, setLegacyCount] = useState(0);
   const [jdApp, setJdApp]           = useState<Application | null>(null);
+  const [clApp, setClApp]           = useState<Application | null>(null);
+  const [coverLetterMap, setCoverLetterMap] = useState<Record<string, SavedCoverLetter>>(initialCoverLetterMap);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { setApps(initialApps); }, [initialApps]);
@@ -536,6 +610,15 @@ export default function ApplicationTable({ initialApps }: { initialApps: Applica
             setJdApp({ ...jdApp, job_description: text });
             router.refresh();
           }}
+        />
+      )}
+
+      {/* Cover Letter Modal */}
+      {clApp && coverLetterMap[clApp.id] && (
+        <CoverLetterModal
+          app={clApp}
+          letter={coverLetterMap[clApp.id]}
+          onClose={() => setClApp(null)}
         />
       )}
 
@@ -792,14 +875,25 @@ export default function ApplicationTable({ initialApps }: { initialApps: Applica
                           <FileText size={11} />
                           JD
                         </button>
-                        <Link
-                          href={`/cover-letter?applicationId=${app.id}`}
-                          className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border bg-violet-50 text-violet-600 border-violet-200 hover:bg-violet-100 transition-colors"
-                          title="Generate cover letter"
-                        >
-                          <Sparkles size={11} />
-                          CL
-                        </Link>
+                        {coverLetterMap[app.id] ? (
+                          <button
+                            onClick={() => setClApp(app)}
+                            className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border bg-violet-50 text-violet-600 border-violet-200 hover:bg-violet-100 transition-colors"
+                            title="View cover letter"
+                          >
+                            <FileText size={11} />
+                            CL
+                          </button>
+                        ) : (
+                          <Link
+                            href={`/cover-letter?applicationId=${app.id}`}
+                            className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border bg-slate-50 text-slate-400 border-slate-200 hover:bg-slate-100 hover:text-slate-600 transition-colors"
+                            title="Generate cover letter"
+                          >
+                            <Sparkles size={11} />
+                            CL
+                          </Link>
+                        )}
                         {app.url && (
                           <a href={app.url} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-blue-500 transition-colors">
                             <ExternalLink size={14} />

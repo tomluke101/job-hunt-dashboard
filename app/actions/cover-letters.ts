@@ -34,13 +34,15 @@ export async function saveCoverLetter(content: string, applicationId?: string, p
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorised");
   const supabase = await createServerSupabaseClient();
-  const { data } = await supabase.from("cover_letters").insert({
+  const { data, error } = await supabase.from("cover_letters").insert({
     user_id: userId,
     application_id: applicationId ?? null,
     content,
     provider: provider ?? null,
   }).select("id").single();
+  if (error) throw new Error(error.message);
   revalidatePath("/cover-letter");
+  revalidatePath("/tracker");
   return data?.id;
 }
 

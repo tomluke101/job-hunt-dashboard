@@ -40,10 +40,35 @@ export async function saveCoverLetter(content: string, applicationId?: string, p
     content,
     provider: provider ?? null,
   }).select("id").single();
-  if (error) throw new Error(error.message);
+  if (error) {
+    console.error("[saveCoverLetter] supabase error:", error);
+    throw new Error(error.message);
+  }
   revalidatePath("/cover-letter");
-  revalidatePath("/tracker");
   return data?.id;
+}
+
+export async function saveManualCoverLetter(applicationId: string, content: string): Promise<{ id?: string; error?: string }> {
+  try {
+    const { userId } = await auth();
+    if (!userId) return { error: "Not signed in" };
+    const supabase = await createServerSupabaseClient();
+    const { data, error } = await supabase.from("cover_letters").insert({
+      user_id: userId,
+      application_id: applicationId,
+      content,
+      provider: null,
+    }).select("id").single();
+    if (error) {
+      console.error("[saveManualCoverLetter] supabase error:", error);
+      return { error: error.message };
+    }
+    revalidatePath("/tracker");
+    return { id: data?.id };
+  } catch (e) {
+    console.error("[saveManualCoverLetter] unexpected error:", e);
+    return { error: e instanceof Error ? e.message : "Save failed" };
+  }
 }
 
 export async function updateCoverLetterContent(letterId: string, content: string): Promise<void> {

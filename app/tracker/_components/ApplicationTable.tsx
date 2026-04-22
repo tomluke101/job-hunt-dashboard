@@ -12,7 +12,7 @@ import {
   createApplication, updateApplication, deleteApplication,
   bulkUpdateStatus, bulkDeleteApplications, bulkImportApplications,
 } from "@/app/actions/applications";
-import { saveCoverLetter, type SavedCoverLetter } from "@/app/actions/cover-letters";
+import { saveManualCoverLetter, type SavedCoverLetter } from "@/app/actions/cover-letters";
 
 const statusStyles: Record<Status, string> = {
   considering: "bg-amber-50 text-amber-700 border-amber-200",
@@ -439,19 +439,19 @@ function AddCoverLetterModal({
     if (!text.trim()) return;
     setSaveError(null);
     startTransition(async () => {
-      try {
-        const id = await saveCoverLetter(text.trim(), app.id);
-        onSaved({
-          id: id ?? crypto.randomUUID(),
-          application_id: app.id,
-          content: text.trim(),
-          provider: undefined,
-          created_at: new Date().toISOString(),
-        });
-        onClose();
-      } catch (e) {
-        setSaveError(e instanceof Error ? e.message : "Save failed — please try again.");
+      const result = await saveManualCoverLetter(app.id, text.trim());
+      if (result.error) {
+        setSaveError(result.error);
+        return;
       }
+      onSaved({
+        id: result.id ?? crypto.randomUUID(),
+        application_id: app.id,
+        content: text.trim(),
+        provider: undefined,
+        created_at: new Date().toISOString(),
+      });
+      onClose();
     });
   }
 

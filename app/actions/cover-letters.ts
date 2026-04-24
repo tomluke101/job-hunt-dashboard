@@ -97,6 +97,23 @@ function fixSignOff(text: string, signOff: string, name: string): string {
   );
 }
 
+function ensureNameAfterSignOff(text: string, signOff: string, name: string): string {
+  if (!signOff || !name) return text;
+  const trimmed = text.replace(/\s+$/, "");
+  if (trimmed.endsWith(name)) return trimmed;
+  const lines = trimmed.split("\n");
+  const lastNonEmptyIdx = (() => {
+    for (let i = lines.length - 1; i >= 0; i--) if (lines[i].trim().length > 0) return i;
+    return -1;
+  })();
+  if (lastNonEmptyIdx < 0) return trimmed;
+  const lastLine = lines[lastNonEmptyIdx].trim().replace(/,\s*$/, "");
+  if (lastLine === signOff) {
+    return trimmed + "\n" + name;
+  }
+  return trimmed;
+}
+
 async function fetchCompanyResearch(companyName: string, apiKey: string): Promise<string> {
   try {
     const client = new OpenAI({ apiKey, baseURL: "https://api.perplexity.ai" });
@@ -158,13 +175,19 @@ MANDATORY RULES — follow every one without exception:
   (B) HONEST BRIDGE: candidate is cross-industry or non-traditional. Open by stating the specific work they do that directly maps to this role. Do NOT name the gap and then explain how it closes. Do NOT say "that's what a [role title] does" or "which maps directly to what this role requires" or "that's a reasonable description of what X does". Show the parallel work and let the hiring manager draw the conclusion themselves. Pattern: "For the past [period], I've been [doing specific work that directly mirrors the role's core demands] — [one sentence of concrete context or achievement]."
   (C) ROLE INSIGHT: candidate has a genuine, specific insight about what this role actually demands. State it, then show you have it. Must be specific to this role, not a general industry observation.
   HARD BANS on openings: employer/company name in sentence one; gerund openers ("Building...", "Designing..."); dramatic reveals ("— that's the kind of work I do"); industry truisms; "I am writing to apply"; personal trait lists; stating or explaining the parallel out loud ("that's what X does", "which is exactly what this role needs", "that maps to what you're looking for").
-- 3-4 paragraphs, 250-380 words total. Concise wins
+- STRUCTURE — EXACTLY 3 or 4 distinct paragraphs before the closing line, 250-380 words. Never 2 paragraphs. Never merge content that belongs in separate paragraphs into one mega-paragraph. Each paragraph must be clearly distinct and serve a different job:
+  * P1 — OPENING: one paragraph. The opening move per the rules below. Do NOT end P1 with a filler/transition sentence like "That's the day-to-day core of what I do", "That's what my role looks like", "That's the shape of my current work", or any sentence that restates/labels what the paragraph just said. End P1 on a concrete sentence of content, not a meta-comment.
+  * P2 — CORE EVIDENCE: one paragraph telling a coherent story about the candidate's most relevant work — 2 to 4 specific achievements with concrete detail. P2 has ONE theme (e.g. analytical work, operational delivery, project leadership) — do NOT try to cram every achievement in the profile into this paragraph. Leave material for P3.
+  * P3 — either a GENUINE why-this-company (conditions below) OR a second distinct experience/story paragraph. A distinct experience paragraph means: ONE story, achievement, or theme not already covered in P2, with its own coherent through-line. It is NOT a grab-bag of leftover facts. It is NOT an orphan sentence appended with "Across both roles..." or "In addition to the above..." or "Beyond that...". Do NOT use P3 to list academic grades, degree classifications, or university achievements unless the candidate is genuinely early-career (no or minimal work experience) OR the JD explicitly requires a specific qualification. Grades belong on the CV.
+  * P4 (optional) — only if there is a second genuinely distinct angle worth covering. If there is not, stop at 3 paragraphs. Do not pad.
+  * CLOSING: one sentence after the paragraphs, on its own line. See closing rules.
+- FORBIDDEN FILLER & GLUE PHRASES — do not use these to stitch sentences or pad paragraphs: "That's the day-to-day core of what I do", "That's the core of what I do", "That's what my role looks like", "That's the shape of my week", "That's the analytical side of it", "That's the [X] side of things", "Across both roles, I [unrelated fact]", "Across [X] and [Y], I [unrelated fact]" (never glue unrelated items together with "Across..."), "Beyond that, I [unrelated fact]", "In addition to the above", "On top of that", "What's more". If a sentence only exists to transition between disconnected facts, delete it. Every sentence must carry content.
 - Include at least one quantified achievement (numbers, percentages, scale)
 - Mirror terminology from the job description naturally — do not stuff keywords
 - One paragraph specifically on why THIS company — use the company research below
 - Write about what the candidate brings TO the employer, not what they want FROM the job
 - ${toneGuide}
-- Closing: one confident sentence — an open, warm invitation to speak. No "please", no "do get in touch", no suggesting the hiring manager would be doing the candidate a favour. Never use "I look forward to hearing from you". No location-specific phrases ("in Birmingham") in the closing. BANNED closing templates — do not use or paraphrase: "I'd welcome the chance to talk through how my experience translates into [X]", "talk through how my experience translates", "how my background aligns with", "how my skills align with", "how my experience maps to", "I'd welcome the opportunity to discuss how [X] could [Y]", "I'd be delighted to discuss further how". The closing should sound like something a real person would actually say: direct, short, low-formality. Good examples: "Happy to talk through any of this in more detail." "I'd be glad to discuss the role further." "Keen to discuss the role if it looks like the right fit."
+- CLOSING: exactly one short, confident sentence on its own line. The closing must sound like something a real person would actually say to a hiring manager at the end of an application. NO "please", no "do get in touch", no suggesting the hiring manager would be doing the candidate a favour, no "I look forward to hearing from you", no location-specific phrases ("in Birmingham"). BANNED closing templates: "I'd welcome the chance to talk through how my experience translates into [X]", "talk through how my experience translates", "how my background aligns with", "how my skills align with", "how my experience maps to", "I'd welcome the opportunity to discuss how [X] could [Y]", "I'd be delighted to discuss further how", "if it looks like the right fit", "if the fit looks right", "if this sounds like a good match", "if you think I'd be a good fit" (all of these make the candidate sound ambivalent about whether they want the role — the candidate has already applied, the fit question is the hiring manager's to answer, not something the candidate should ask). Good examples you may use or adapt: "Happy to talk through any of this in more detail." "I'd be glad to discuss the role further." "Happy to go into more depth on any of this." "Would be glad to take you through any of this in more detail." The closing is NOT the place to hedge, qualify, or invite the hiring manager to judge fit — it is a short, confident, open invitation to speak.
 - Location or geography should not appear in the closing paragraph at all
 - Refer to the candidate's current employer by name AT MOST ONCE in the entire letter. After the first mention, use "the business", "the company", or "my current role"
 - EM-DASH BAN — HARD RULE: The character — must not appear anywhere in your output. Not once. Not mid-sentence, not in parentheticals, not anywhere. Double hyphens (--) are also banned. This is a non-negotiable formatting requirement. Use a comma, colon, semicolon, or start a new sentence instead. There are no exceptions to this rule
@@ -253,10 +276,12 @@ ${input.anythingToAdd?.trim() ? `CANDIDATE CONTEXT — additional framing and em
     connectedProviders: keys,
   });
 
-  const cleanText = fixSignOff(
-    sanitiseLetter(result.text),
-    profile.sign_off ?? "Kind regards",
-    profile.full_name ?? ""
+  const signOff = profile.sign_off ?? "Kind regards";
+  const fullName = profile.full_name ?? "";
+  const cleanText = ensureNameAfterSignOff(
+    fixSignOff(sanitiseLetter(result.text), signOff, fullName),
+    signOff,
+    fullName
   );
 
   // Auto-save (body only — header is rendered in the UI)
@@ -288,7 +313,13 @@ export async function refineCoverLetter(input: {
   const text = result.text.trim();
   const greetingMatch = text.match(/(Dear\s+\S)/);
   const stripped = greetingMatch ? text.slice(text.indexOf(greetingMatch[0])) : text;
-  const cleaned = fixSignOff(sanitiseLetter(stripped), profile.sign_off ?? "Kind regards", profile.full_name ?? "");
+  const signOff = profile.sign_off ?? "Kind regards";
+  const fullName = profile.full_name ?? "";
+  const cleaned = ensureNameAfterSignOff(
+    fixSignOff(sanitiseLetter(stripped), signOff, fullName),
+    signOff,
+    fullName
+  );
 
   return { text: cleaned, provider: result.provider };
 }

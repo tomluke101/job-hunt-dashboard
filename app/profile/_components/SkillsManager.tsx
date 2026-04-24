@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Sparkles, Plus, Trash2, X, Check, Pencil, ChevronRight } from "lucide-react";
+import { Sparkles, Plus, Trash2, Check, Pencil, ChevronRight, RotateCcw } from "lucide-react";
 import { addSkill, updateSkill, deleteSkill, polishSkillText, type UserSkill } from "@/app/actions/profile";
 
 function SkillItem({ skill, onDelete }: { skill: UserSkill; onDelete: (id: string) => void }) {
@@ -51,14 +51,29 @@ function SkillItem({ skill, onDelete }: { skill: UserSkill; onDelete: (id: strin
 
           {polished && (
             <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3">
-              <p className="text-xs font-semibold text-emerald-700 mb-1 flex items-center gap-1"><Sparkles size={11} /> AI-polished version</p>
-              <p className="text-sm text-emerald-800">{polished}</p>
+              <div className="flex items-center justify-between mb-1.5">
+                <p className="text-xs font-semibold text-emerald-700 flex items-center gap-1"><Sparkles size={11} /> AI-polished version</p>
+                <button
+                  onClick={() => setPolished("")}
+                  className="flex items-center gap-1 text-xs font-medium text-emerald-700 hover:text-emerald-900 transition-colors"
+                  title="Remove the polished version and use your own words"
+                >
+                  <RotateCcw size={11} /> Clear polished
+                </button>
+              </div>
+              <textarea
+                value={polished}
+                onChange={(e) => setPolished(e.target.value)}
+                rows={2}
+                className="w-full text-sm text-emerald-900 bg-white/70 border border-emerald-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 resize-none leading-relaxed"
+              />
+              <p className="text-xs text-emerald-700/70 mt-1.5">Edit to fix anything the AI got wrong, or clear it to fall back to your own words.</p>
             </div>
           )}
 
           <div className="flex items-center gap-2">
             <button onClick={handlePolish} disabled={polishing || !raw.trim()} className="flex items-center gap-1.5 text-xs font-medium text-purple-600 hover:text-purple-700 px-2.5 py-1.5 rounded-lg border border-purple-200 hover:bg-purple-50 disabled:opacity-40 transition-colors">
-              <Sparkles size={12} /> {polishing ? "Polishing…" : "Polish with AI"}
+              <Sparkles size={12} /> {polishing ? "Polishing…" : polished ? "Re-polish" : "Polish with AI"}
             </button>
             <div className="ml-auto flex items-center gap-2">
               <button onClick={() => setEditing(false)} className="text-sm text-slate-500 hover:text-slate-700 px-3 py-1.5 rounded-lg hover:bg-slate-100 transition-colors">Cancel</button>

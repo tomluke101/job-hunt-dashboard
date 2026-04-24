@@ -145,14 +145,16 @@ export async function addSkill(rawText: string, polishedText?: string) {
   revalidatePath("/profile");
 }
 
-export async function updateSkill(id: string, rawText: string, polishedText?: string) {
+export async function updateSkill(id: string, rawText: string, polishedText?: string | null) {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorised");
+
+  const normalisedPolished = polishedText && polishedText.trim() ? polishedText.trim() : null;
 
   const supabase = await createServerSupabaseClient();
   await supabase
     .from("user_skills")
-    .update({ raw_text: rawText, polished_text: polishedText })
+    .update({ raw_text: rawText, polished_text: normalisedPolished })
     .eq("id", id)
     .eq("user_id", userId);
 
@@ -184,6 +186,10 @@ export async function polishSkillText(rawText: string): Promise<string> {
       "You are an expert career coach helping job seekers articulate their achievements. " +
       "Rewrite the text in clear, professional language using strong action verbs. " +
       "Keep it to 1-2 punchy sentences. Preserve every fact exactly — do not invent or embellish anything. " +
+      "CRITICAL: preserve every mention of collaborators (manager, director, team, colleague, partner) exactly as stated in the source. " +
+      "Do not drop, minimise, or obscure other people's contributions. If the source says 'with my director' or 'alongside my manager' or 'as part of the team', the rewrite must keep that. " +
+      "Do not upgrade neutral verbs into solo-claim verbs: 'built' must not become 'designed and built from scratch'; 'helped set up' must not become 'led the setup of'. " +
+      "If the source does not explicitly state solo ownership, use neutral verbs ('worked on', 'helped build', 'contributed to') rather than strong solo verbs ('I built', 'I led', 'I created'). " +
       "Return ONLY the rewritten text with no explanation or preamble.",
     prompt: `Rewrite this in professional, achievement-focused language:\n\n"${rawText}"`,
   });

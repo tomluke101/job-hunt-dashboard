@@ -97,6 +97,77 @@ function fixSignOff(text: string, signOff: string, name: string): string {
   );
 }
 
+async function reviseCoverLetter(
+  letter: string,
+  userPreference: "auto" | "anthropic" | "openai" | "gemini" | "mistral" | "groq" | "perplexity" | undefined,
+  connectedProviders: Partial<Record<"anthropic" | "openai" | "gemini" | "mistral" | "groq" | "perplexity", string>>,
+  signOff: string,
+  fullName: string,
+): Promise<string> {
+  const checklist = `You are an expert cover letter editor. Scan the letter below for any of the specific issues listed. Rewrite ONLY the offending sentences; leave everything else untouched. If no issues are found, return the letter exactly as given.
+
+ISSUES TO CHECK (rewrite any sentence that matches):
+
+1. EVASIVE EMPLOYER DESCRIPTORS in the opening ("at a product-led business", "at a small business", "at a growing company", "at a mid-sized firm", "at a fast-paced SME", "at an innovative startup"). FIX: drop the "at a [descriptor]" clause; keep just "as a [role title]".
+
+2. MEGA-SENTENCES (any sentence over 40 words). FIX: split into two sentences.
+
+3. SELF-CHARACTERISING SUMMARY SENTENCES matching these patterns:
+   - "[activity] gave me [a grounding / foundation / understanding / experience] in the kind of [abstract noun] that [verb]"
+   - "[X activity] has shaped how I [work/approach Y]"
+   - "That [pattern / approach / mindset / habit / way of working] has carried through into [my current role / every role since]"
+   - "Doing [X] taught me [abstract quality]"
+   - "[X experience] prepared me for [Y] / built the foundation for [Y]"
+   - "[X] is the kind of [Y] that translates directly to [Z]"
+   - "[X] maps to the kind of work [Z] requires / underpins [Y] / underpins both [A] and [B]"
+   FIX: delete the sentence, OR replace with a concrete continuation (one specific thing the candidate still does). Never abstract a concrete activity into a "pattern" / "approach" / "habit" and claim it transferred.
+
+4. OVERCLAIM VIA JD-NAMED SYSTEMS: sentences that compare the candidate's work to a specific JD-named system/acronym ("which required the same kind of CMMS integrity", "similar to SPEEDY", "the same kind of [named system] rigour", "which parallels [named system]"). FIX: remove the comparison; describe the work in generic functional terms only.
+
+5. AUDIENCE INFLATION: phrases like "senior stakeholders", "senior leadership", "executives", "the board", "leadership team", "C-suite" applied to the candidate's current work when not supported by context. FIX: replace with the actual audience (director, team, manager, owners) or generalise ("the business", "the team").
+
+6. CLOSING ISSUES:
+   - Over 18 words → shorten to 6-18.
+   - Starts with a summary stem ("I'd welcome a conversation about", "My experience in [list]", "I'm confident my experience", "What I can bring to [team]", "I would bring", "I can offer", "Given my background in", "With my experience in"). FIX: rewrite as a short forward-action invitation (6-18 words) that references the role or company naturally.
+   - Contains "from day one", "from an early stage", "from the outset", "hit the ground running". FIX: remove the phrase.
+   - Generic and company-agnostic ("Happy to talk through any of this in more detail"). FIX: rewrite to reference the specific role or company.
+
+7. OTHER BANNED PHRASES (anywhere): "team player", "hard worker", "passionate about", "proven track record", "detail-oriented", "results-oriented", "I believe I would be a great fit", "I am excited to apply", "dynamic", "synergy". FIX: remove or replace with concrete detail.
+
+8. EM-DASHES (—) anywhere in the output. FIX: replace with a comma or new sentence.
+
+9. FILLER/GLUE TRANSITION SENTENCES ("That's the day-to-day core of what I do", "That's the analytical side of it", "The analytical work has been the core of it", "In addition to the above", "On top of that"). FIX: delete.
+
+OUTPUT RULES:
+- Return the COMPLETE revised letter from greeting to sign-off.
+- Start IMMEDIATELY with "Dear " — no preamble, no commentary, no explanation of what you changed.
+- Preserve the 3-4 paragraph structure. Do not reduce to 2 paragraphs.
+- End with the sign-off line "${signOff}," and then the name "${fullName}" on its own line.
+- Do NOT invent new facts about the candidate. Only fix the specific issues above.
+
+LETTER TO CHECK:
+
+${letter}`;
+
+  try {
+    const result = await callAI({
+      task: "cover-letter",
+      systemPrompt: "You are an expert cover letter editor. Apply only the specific fixes requested. Return only the revised letter, with no preamble or commentary.",
+      prompt: checklist,
+      userPreference,
+      connectedProviders,
+    });
+    const revised = result.text.trim();
+    // Safety: must start with "Dear" and be at least 60% of the original length
+    if (!/^Dear\s/i.test(revised) || revised.length < letter.length * 0.6) {
+      return letter;
+    }
+    return revised;
+  } catch {
+    return letter;
+  }
+}
+
 function ensureNameAfterSignOff(text: string, signOff: string, name: string): string {
   if (!signOff || !name) return text;
   const trimmed = text.replace(/\s+$/, "");
@@ -174,7 +245,7 @@ MANDATORY RULES — follow every one without exception:
   (A) DIRECT RELEVANCE: candidate has clearly relevant experience. Lead with the experience most directly parallel to this role. Do NOT name the employer in the first sentence. Pattern: "For the past [period], I've [done X that directly mirrors what this role needs]."
   (B) HONEST BRIDGE: candidate is cross-industry or non-traditional. Open by stating the specific work they do that directly maps to this role. Do NOT name the gap and then explain how it closes. Do NOT say "that's what a [role title] does" or "which maps directly to what this role requires" or "that's a reasonable description of what X does". Show the parallel work and let the hiring manager draw the conclusion themselves. Pattern: "For the past [period], I've been [doing specific work that directly mirrors the role's core demands] — [one sentence of concrete context or achievement]."
   (C) ROLE INSIGHT: candidate has a genuine, specific insight about what this role actually demands. State it, then show you have it. Must be specific to this role, not a general industry observation.
-  HARD BANS on openings: employer/company name in sentence one; gerund openers ("Building...", "Designing..."); dramatic reveals ("— that's the kind of work I do"); industry truisms; "I am writing to apply"; personal trait lists; stating or explaining the parallel out loud ("that's what X does", "which is exactly what this role needs", "that maps to what you're looking for").
+  HARD BANS on openings: employer/company name in sentence one; gerund openers ("Building...", "Designing..."); dramatic reveals ("— that's the kind of work I do"); industry truisms; "I am writing to apply"; personal trait lists; stating or explaining the parallel out loud ("that's what X does", "which is exactly what this role needs", "that maps to what you're looking for"); evasive employer descriptors used as substitutes for the employer name ("at a product-led business", "at a small business", "at a growing company", "at a mid-sized firm", "at an innovative startup", "at a fast-paced SME", "at a product business"). If you cannot name the employer in sentence one, DO NOT use a descriptor phrase in its place — use only the role title ("as a Supply Chain Analyst") with no "at a [adjective] [noun]" clause. The employer may be named naturally later in the letter.
 - STRUCTURE — EXACTLY 3 or 4 distinct paragraphs before the closing line, 250-380 words. Never 2 paragraphs. Never merge content that belongs in separate paragraphs into one mega-paragraph. Each paragraph must be clearly distinct and serve a different job:
   * P1 — OPENING: one paragraph. The opening move per the rules below. Do NOT end P1 with a filler/transition sentence like "That's the day-to-day core of what I do", "That's what my role looks like", "That's the shape of my current work", or any sentence that restates/labels what the paragraph just said. End P1 on a concrete sentence of content, not a meta-comment.
   * P2 — CORE EVIDENCE: one paragraph telling a coherent story about the candidate's most relevant work — 2 to 4 specific achievements with concrete detail. P2 has ONE theme (e.g. analytical work, operational delivery, project leadership) — do NOT try to cram every achievement in the profile into this paragraph. Leave material for P3.
@@ -187,12 +258,12 @@ MANDATORY RULES — follow every one without exception:
 - Mirror terminology from the job description naturally — do not stuff keywords
 - FIT TO THIS ROLE — MANDATORY POSITIVE REQUIREMENTS (these override any fear of editorialising — using JD vocabulary to establish role fit is NOT editorialising, it is what a good cover letter does):
   (i) The target company's name MUST appear at least once in the letter body. It MUST NOT appear in the opening sentence (see opening bans). Natural places: a mid-sentence reference in P2 or P3, or the closing. Do not use it as flattery — use it as context ("the Release and Follow-Up function at JLR", "what [Company]'s [team] handles", "the role at [Company]").
-  (ii) Somewhere in P2 or P3 you MUST include one sentence that names a SPECIFIC function, team, process, or responsibility from the JD and grounds it in parallel work the candidate actually does. Recommended shape (adapt, do not copy verbatim): "A large part of my current role is what the [named JD function/team/process] handles: [three or four specific responsibilities drawn from the JD's language, phrased neutrally, that the candidate genuinely does]." This sentence establishes role-fit using the JD's own vocabulary WITHOUT editorialising. HARD RULES for this sentence: no "at scale", no "at this level", no "in an environment like this", no scale comparisons, no gap-naming, no commentary like "is work I understand", "is what a [role] does", "maps directly to", "is the kind of work [Z] requires" — just list the responsibilities and move on to the next point.
+  (ii) Somewhere in P2 or P3 you MUST include one sentence that names a SPECIFIC function, team, process, or responsibility from the JD and grounds it in parallel work the candidate actually does. Recommended shape (adapt, do not copy verbatim): "A large part of my current role is what the [named JD function/team/process] handles: [AT MOST THREE specific responsibilities drawn from the JD's language, phrased neutrally, each item MAX ~8 words]." HARD LENGTH LIMIT on this sentence: 35 words total, maximum. If you have more than three strong parallels, PICK THE THREE STRONGEST and stop — do not cram every JD duty into one sentence. This sentence establishes role-fit using the JD's own vocabulary WITHOUT editorialising. HARD RULES for this sentence: no "at scale", no "at this level", no "in an environment like this", no scale comparisons, no gap-naming, no commentary like "is work I understand", "is what a [role] does", "maps directly to", "is the kind of work [Z] requires" — just list the responsibilities and move on to the next point.
   (iii) Weave at least three JD-specific phrases or responsibilities naturally into P2 or P3, using the JD's own vocabulary. Not keyword-stuffing — genuine parallels. Example: if the JD says "investigate stock discrepancies" and the candidate does similar work, use that phrase or a close variant rather than a generic paraphrase.
 - These positive requirements REPLACE the old "one paragraph specifically on why THIS company" rule. You do NOT need a dedicated why-this-company paragraph. Instead, the company and the specific role are integrated into the evidence paragraphs through JD-vocabulary and one named-function sentence. A separate why-this-company paragraph is still permitted only under the STRICTER RULE below (both-conditions must be met), but the default should be integration, not a dedicated paragraph.
 - Write about what the candidate brings TO the employer, not what they want FROM the job
 - ${toneGuide}
-- CLOSING: exactly one short, confident sentence on its own line, strictly 6-18 words. STRICT LENGTH LIMIT — if the closing is longer than 18 words, shorten it. The closing MUST reference the specific role or company by name — a generic "happy to chat" is not acceptable. Write a closing that only makes sense for THIS role at THIS company. The closing is an INVITATION TO SPEAK — not a summary of qualifications, not a recap of the letter, not a three-part self-promotion. CONSTRAINTS: first-person, warm, confident, references the role/company/function specifically, is NOT a question, does NOT ask for anything, does NOT hedge on fit, does NOT list qualifications, does NOT copy a stock example. BANNED closing templates: "I'd welcome the chance to talk through how my experience translates into [X]", "talk through how my experience translates", "how my background aligns with", "how my skills align with", "how my experience maps to", "I'd welcome the opportunity to discuss how [X] could [Y]", "I'd be delighted to discuss further how", "if it looks like the right fit", "if the fit looks right", "if this sounds like a good match", "if you think I'd be a good fit", "Happy to talk through any of this in more detail", "Happy to discuss any of this further", "Happy to go into more depth", "My experience in [A], [B], and [C] would contribute directly to [team] at [Company]", "I'm confident my experience in [A], [B], and [C] [would / will] [Y]" (these are summary statements, not invitations to speak), "from day one", "from an early stage", "from the outset", "hit the ground running", "I would contribute from [time phrase]". Do not copy verbatim any closing you have seen elsewhere.
+- CLOSING: exactly one short, confident sentence on its own line, strictly 6-18 words. STRICT LENGTH LIMIT — if the closing is longer than 18 words, shorten it. STRUCTURAL CONSTRAINT: the closing must be a FORWARD-ACTION sentence (an invitation to speak, a concrete expression of interest in the role), NOT a summary statement of qualifications. BANNED STEMS for the closing (do not start the closing with any of these): "I'd welcome a conversation about", "My experience in [list]", "I'm confident my experience", "What I can bring to [team]", "I would bring", "I can offer", "I am well-placed to", "I look forward to", "Given my background in", "With my experience in". If your closing starts with "My experience" or lists qualifications, you have written a summary sentence, not a closing — delete it and write a forward-looking invitation instead. The closing MUST reference the specific role or company by name — a generic "happy to chat" is not acceptable. Write a closing that only makes sense for THIS role at THIS company. The closing is an INVITATION TO SPEAK — not a summary of qualifications, not a recap of the letter, not a three-part self-promotion. CONSTRAINTS: first-person, warm, confident, references the role/company/function specifically, is NOT a question, does NOT ask for anything, does NOT hedge on fit, does NOT list qualifications, does NOT copy a stock example. BANNED closing templates: "I'd welcome the chance to talk through how my experience translates into [X]", "talk through how my experience translates", "how my background aligns with", "how my skills align with", "how my experience maps to", "I'd welcome the opportunity to discuss how [X] could [Y]", "I'd be delighted to discuss further how", "if it looks like the right fit", "if the fit looks right", "if this sounds like a good match", "if you think I'd be a good fit", "Happy to talk through any of this in more detail", "Happy to discuss any of this further", "Happy to go into more depth", "My experience in [A], [B], and [C] would contribute directly to [team] at [Company]", "I'm confident my experience in [A], [B], and [C] [would / will] [Y]" (these are summary statements, not invitations to speak), "from day one", "from an early stage", "from the outset", "hit the ground running", "I would contribute from [time phrase]". Do not copy verbatim any closing you have seen elsewhere.
 - Location or geography should not appear in the closing paragraph at all
 - Refer to the candidate's current employer by name AT MOST ONCE in the entire letter. After the first mention, use "the business", "the company", or "my current role"
 - EM-DASH BAN — HARD RULE: The character — must not appear anywhere in your output. Not once. Not mid-sentence, not in parentheticals, not anywhere. Double hyphens (--) are also banned. This is a non-negotiable formatting requirement. Use a comma, colon, semicolon, or start a new sentence instead. There are no exceptions to this rule
@@ -285,8 +356,20 @@ ${input.anythingToAdd?.trim() ? `CANDIDATE CONTEXT — additional framing and em
 
   const signOff = profile.sign_off ?? "Kind regards";
   const fullName = profile.full_name ?? "";
+
+  // Critic pass: second model call that checks for the specific patterns that
+  // keep leaking through prompt bans, and rewrites offending sentences in place.
+  // Falls back to the original text if the critic output is malformed.
+  const revised = await reviseCoverLetter(
+    result.text,
+    taskPrefs["cover-letter"],
+    keys,
+    signOff,
+    fullName,
+  );
+
   const cleanText = ensureNameAfterSignOff(
-    fixSignOff(sanitiseLetter(result.text), signOff, fullName),
+    fixSignOff(sanitiseLetter(revised), signOff, fullName),
     signOff,
     fullName
   );

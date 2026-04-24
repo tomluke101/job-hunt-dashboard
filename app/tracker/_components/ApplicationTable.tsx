@@ -148,7 +148,7 @@ function mapRow(row: Record<string, string>): FormData | null {
     company:      company || "Unknown Company",
     location:     pick(COL_ALIASES.location),
     status:       normaliseStatus(pick(COL_ALIASES.status)),
-    stage:        pick(COL_ALIASES.stage) || "Application Sent",
+    stage:        pick(COL_ALIASES.stage),
     applied_date: parseDate(pick(COL_ALIASES.applied_date)),
     salary:       pick(COL_ALIASES.salary) || undefined,
     url:          pick(COL_ALIASES.url)    || undefined,

@@ -42,11 +42,11 @@ export default async function DashboardPage() {
   const apps = await getApplications();
 
   const total = apps.length;
+  const appliedOrLater = apps.filter((a) => a.status !== "considering").length;
   const inProgress = apps.filter((a) => a.status === "applied" || a.status === "interview").length;
   const interviews = apps.filter((a) => a.status === "interview").length;
-  const responseRate = total > 0
-    ? Math.round(((total - apps.filter((a) => a.status === "applied").length) / total) * 100)
-    : 0;
+  const responses = apps.filter((a) => a.status === "interview" || a.status === "offer" || a.status === "rejected").length;
+  const responseRate = appliedOrLater > 0 ? Math.round((responses / appliedOrLater) * 100) : 0;
 
   const recent = [...apps]
     .sort((a, b) => (b.applied_date ?? "").localeCompare(a.applied_date ?? ""))
@@ -71,10 +71,10 @@ export default async function DashboardPage() {
       </PageHeader>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <StatCard label="Total Applied"  value={total}      sub={total === 0 ? "None yet" : "All time"}               accent="blue"   />
-        <StatCard label="In Progress"    value={inProgress} sub="Applied or interviewing"                              accent="green"  />
-        <StatCard label="Interviews"     value={interviews} sub="Scheduled or completed"                               accent="purple" />
-        <StatCard label="Response Rate"  value={total > 0 ? `${responseRate}%` : "—"} sub={total > 0 ? "Of all applications" : "Add applications to track"} accent="amber" />
+        <StatCard label="Total Applications" value={total}      sub={total === 0 ? "None yet" : "All time"}                                      accent="blue"   />
+        <StatCard label="In Progress"        value={inProgress} sub="Applied or interviewing"                                                    accent="green"  />
+        <StatCard label="Interviews"         value={interviews} sub="Scheduled or completed"                                                     accent="purple" />
+        <StatCard label="Response Rate"      value={appliedOrLater > 0 ? `${responseRate}%` : "—"} sub={appliedOrLater > 0 ? "Of roles you've applied to" : "Apply to roles to track"} accent="amber" />
       </div>
 
       {isEmpty ? (
@@ -113,7 +113,7 @@ export default async function DashboardPage() {
                   </div>
                   <div className="text-right shrink-0">
                     <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${statusStyles[app.status]}`}>
-                      {app.stage || statusLabels[app.status]}
+                      {statusLabels[app.status]}
                     </span>
                     <p className="text-xs text-slate-400 mt-1">{displayDate(app.applied_date)}</p>
                   </div>

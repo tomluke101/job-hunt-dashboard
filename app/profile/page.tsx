@@ -1,13 +1,14 @@
-import { User, FileText, Sparkles, Pencil, Settings2 } from "lucide-react";
+import { User, FileText, Sparkles, Pencil, Settings2, Briefcase } from "lucide-react";
 import PageHeader from "@/app/_components/PageHeader";
 import ProfileCompletion from "./_components/ProfileCompletion";
 import ConstantsForm from "./_components/ConstantsForm";
 import CVManager from "./_components/CVManager";
+import WorkHistoryManager from "./_components/WorkHistoryManager";
 import SkillsManager from "./_components/SkillsManager";
 import WritingExamples from "./_components/WritingExamples";
 import CoverLetterPrefsForm from "./_components/CoverLetterPrefsForm";
 import {
-  getProfile, getCVs, getSkills, getWritingExamples, getProfileCompleteness, getCoverLetterPrefs,
+  getProfile, getCVs, getSkills, getWritingExamples, getProfileCompleteness, getCoverLetterPrefs, getEmployers,
 } from "@/app/actions/profile";
 
 function Section({ icon: Icon, title, description, children }: {
@@ -35,13 +36,14 @@ function Section({ icon: Icon, title, description, children }: {
 }
 
 export default async function ProfilePage() {
-  const [profile, cvs, skills, writingExamples, completeness, clPrefs] = await Promise.all([
+  const [profile, cvs, skills, writingExamples, completeness, clPrefs, employers] = await Promise.all([
     getProfile(),
     getCVs(),
     getSkills(),
     getWritingExamples(),
     getProfileCompleteness(),
     getCoverLetterPrefs(),
+    getEmployers(),
   ]);
 
   return (
@@ -71,11 +73,19 @@ export default async function ProfilePage() {
         </Section>
 
         <Section
+          icon={Briefcase}
+          title="Work History"
+          description="Your roles and dates — used by the AI to attribute skills and achievements to the right employer when writing cover letters"
+        >
+          <WorkHistoryManager initial={employers} />
+        </Section>
+
+        <Section
           icon={Sparkles}
           title="Skills & Experience"
-          description="Achievements and experiences beyond your CV — this is what makes your cover letters stand out"
+          description="Achievements and experiences beyond your CV — tag each to the right role above so the AI places them correctly"
         >
-          <SkillsManager initial={skills} />
+          <SkillsManager initial={skills} employers={employers} />
         </Section>
 
         <Section

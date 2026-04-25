@@ -32,6 +32,34 @@ export interface UserSkill {
   raw_text: string;
   polished_text?: string;
   created_at: string;
+  employer_ids?: string[];
+}
+
+export interface UserEmployer {
+  id: string;
+  company_name: string;
+  role_title: string;
+  start_date: string;
+  end_date?: string | null;
+  is_current: boolean;
+  location?: string | null;
+  employment_type?: string | null;
+  summary?: string | null;
+  salary?: string | null;
+  display_order: number;
+  created_at: string;
+}
+
+export interface UserEmployerInput {
+  company_name: string;
+  role_title: string;
+  start_date: string;
+  end_date?: string | null;
+  is_current: boolean;
+  location?: string | null;
+  employment_type?: string | null;
+  summary?: string | null;
+  salary?: string | null;
 }
 
 export interface WritingExample {
@@ -127,25 +155,45 @@ export async function getSkills(): Promise<UserSkill[]> {
   if (!userId) return [];
 
   const supabase = await createServerSupabaseClient();
-  const { data } = await supabase
-    .from("user_skills")
-    .select("*")
-    .eq("user_id", userId)
-    .order("created_at", { ascending: true });
+  const [skillsResult, linksResult] = await Promise.all([
+    supabase.from("user_skills").select("*").eq("user_id", userId).order("created_at", { ascending: true }),
+    supabase.from("user_skill_employers").select("skill_id, employer_id"),
+  ]);
 
-  return data ?? [];
+  const skills = skillsResult.data ?? [];
+  const links = linksResult.data ?? [];
+
+  const linksBySkill = new Map<string, string[]>();
+  for (const link of links) {
+    const list = linksBySkill.get(link.skill_id) ?? [];
+    list.push(link.employer_id);
+    linksBySkill.set(link.skill_id, list);
+  }
+
+  return skills.map((s) => ({ ...s, employer_ids: linksBySkill.get(s.id) ?? [] }));
 }
 
-export async function addSkill(rawText: string, polishedText?: string) {
+export async function addSkill(rawText: string, polishedText?: string, employerIds?: string[]) {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorised");
 
   const supabase = await createServerSupabaseClient();
-  await supabase.from("user_skills").insert({ user_id: userId, raw_text: rawText, polished_text: polishedText });
+  const { data } = await supabase
+    .from("user_skills")
+    .insert({ user_id: userId, raw_text: rawText, polished_text: polishedText })
+    .select("id")
+    .single();
+
+  if (data?.id && employerIds && employerIds.length > 0) {
+    await supabase.from("user_skill_employers").insert(
+      employerIds.map((employer_id) => ({ skill_id: data.id, employer_id }))
+    );
+  }
+
   revalidatePath("/profile");
 }
 
-export async function updateSkill(id: string, rawText: string, polishedText?: string | null) {
+export async function updateSkill(id: string, rawText: string, polishedText?: string | null, employerIds?: string[]) {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorised");
 
@@ -158,6 +206,15 @@ export async function updateSkill(id: string, rawText: string, polishedText?: st
     .eq("id", id)
     .eq("user_id", userId);
 
+  if (employerIds !== undefined) {
+    await supabase.from("user_skill_employers").delete().eq("skill_id", id);
+    if (employerIds.length > 0) {
+      await supabase.from("user_skill_employers").insert(
+        employerIds.map((employer_id) => ({ skill_id: id, employer_id }))
+      );
+    }
+  }
+
   revalidatePath("/profile");
 }
 
@@ -167,6 +224,111 @@ export async function deleteSkill(id: string) {
 
   const supabase = await createServerSupabaseClient();
   await supabase.from("user_skills").delete().eq("id", id).eq("user_id", userId);
+  revalidatePath("/profile");
+}
+
+// ── Work history (employers) ──────────────────────────────────────────────────
+
+export async function getEmployers(): Promise<UserEmployer[]> {
+  const { userId } = await auth();
+  if (!userId) return [];
+
+  const supabase = await createServerSupabaseClient();
+  const { data } = await supabase
+    .from("user_employers")
+    .select("*")
+    .eq("user_id", userId)
+    .order("is_current", { ascending: false })
+    .order("end_date", { ascending: false, nullsFirst: true })
+    .order("start_date", { ascending: false });
+
+  return data ?? [];
+}
+
+export async function addEmployer(input: UserEmployerInput): Promise<{ id?: string; error?: string }> {
+  try {
+    const { userId } = await auth();
+    if (!userId) return { error: "Not signed in" };
+    if (!input.company_name?.trim() || !input.role_title?.trim() || !input.start_date) {
+      return { error: "Company, role, and start date are required" };
+    }
+
+    const supabase = await createServerSupabaseClient();
+    const payload = {
+      user_id: userId,
+      company_name: input.company_name.trim(),
+      role_title: input.role_title.trim(),
+      start_date: input.start_date,
+      end_date: input.is_current ? null : (input.end_date || null),
+      is_current: !!input.is_current,
+      location: input.location?.trim() || null,
+      employment_type: input.employment_type || null,
+      summary: input.summary?.trim() || null,
+      salary: input.salary?.trim() || null,
+    };
+
+    const { data, error } = await supabase
+      .from("user_employers")
+      .insert(payload)
+      .select("id")
+      .single();
+
+    if (error) {
+      console.error("[addEmployer] supabase error:", error);
+      return { error: error.message };
+    }
+    revalidatePath("/profile");
+    return { id: data?.id };
+  } catch (e) {
+    console.error("[addEmployer] unexpected:", e);
+    return { error: e instanceof Error ? e.message : "Failed to add" };
+  }
+}
+
+export async function updateEmployer(id: string, input: UserEmployerInput): Promise<{ error?: string }> {
+  try {
+    const { userId } = await auth();
+    if (!userId) return { error: "Not signed in" };
+    if (!input.company_name?.trim() || !input.role_title?.trim() || !input.start_date) {
+      return { error: "Company, role, and start date are required" };
+    }
+
+    const supabase = await createServerSupabaseClient();
+    const { error } = await supabase
+      .from("user_employers")
+      .update({
+        company_name: input.company_name.trim(),
+        role_title: input.role_title.trim(),
+        start_date: input.start_date,
+        end_date: input.is_current ? null : (input.end_date || null),
+        is_current: !!input.is_current,
+        location: input.location?.trim() || null,
+        employment_type: input.employment_type || null,
+        summary: input.summary?.trim() || null,
+        salary: input.salary?.trim() || null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .eq("user_id", userId);
+
+    if (error) {
+      console.error("[updateEmployer] supabase error:", error);
+      return { error: error.message };
+    }
+    revalidatePath("/profile");
+    return {};
+  } catch (e) {
+    console.error("[updateEmployer] unexpected:", e);
+    return { error: e instanceof Error ? e.message : "Failed to update" };
+  }
+}
+
+export async function deleteEmployer(id: string): Promise<void> {
+  const { userId } = await auth();
+  if (!userId) throw new Error("Unauthorised");
+
+  const supabase = await createServerSupabaseClient();
+  await supabase.from("user_employers").delete().eq("id", id).eq("user_id", userId);
   revalidatePath("/profile");
 }
 

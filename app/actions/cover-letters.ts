@@ -6,7 +6,7 @@ import { revalidatePath } from "next/cache";
 import OpenAI from "openai";
 import { callAI } from "@/lib/ai-router";
 import { getApiKeyValues } from "@/app/actions/api-keys";
-import { getProfile, getCVs, getSkills, getWritingExamples, getCoverLetterPrefs } from "@/app/actions/profile";
+import { getProfile, getCVs, getSkills, getEmployers, getWritingExamples, getCoverLetterPrefs } from "@/app/actions/profile";
 import { getTaskPreferences } from "@/app/actions/preferences";
 import type { CoverLetterPrefs } from "@/app/actions/profile";
 
@@ -234,11 +234,12 @@ async function fetchCompanyResearch(companyName: string, apiKey: string): Promis
 }
 
 function buildSystemPrompt({
-  profile, cvContent, skills, writingExamples, companyResearch, clPrefs,
+  profile, cvContent, skills, employers, writingExamples, companyResearch, clPrefs,
 }: {
   profile: Awaited<ReturnType<typeof getProfile>>;
   cvContent: string;
   skills: Awaited<ReturnType<typeof getSkills>>;
+  employers: Awaited<ReturnType<typeof getEmployers>>;
   writingExamples: Awaited<ReturnType<typeof getWritingExamples>>;
   companyResearch: string;
   clPrefs: CoverLetterPrefs;
@@ -249,8 +250,28 @@ function buildSystemPrompt({
     tone === "conversational" ? "Write in a warm, direct, conversational tone — confident but human." :
     "Write in a clear, confident, professional-but-human tone.";
 
+  const employerLookup = new Map(employers.map((e) => [e.id, e]));
+
+  const formatEmployerLine = (e: typeof employers[number]) => {
+    const dates = e.is_current
+      ? `${e.start_date} → present`
+      : `${e.start_date} → ${e.end_date ?? "?"}`;
+    const summary = e.summary ? ` — ${e.summary}` : "";
+    return `- ${e.role_title} at ${e.company_name} (${dates})${summary}`;
+  };
+
+  const workHistoryText = employers.length > 0
+    ? employers.map(formatEmployerLine).join("\n")
+    : "None provided.";
+
   const skillsText = skills.length > 0
-    ? skills.map((s) => `- ${s.polished_text || s.raw_text}`).join("\n")
+    ? skills.map((s) => {
+        const tags = (s.employer_ids ?? [])
+          .map((id) => employerLookup.get(id)?.company_name)
+          .filter(Boolean);
+        const attribution = tags.length > 0 ? ` [from: ${tags.join(", ")}]` : " [general / not employer-specific]";
+        return `- ${s.polished_text || s.raw_text}${attribution}`;
+      }).join("\n")
     : "None provided.";
 
   const writingStyleText = writingExamples.length > 0
@@ -336,11 +357,20 @@ Location: ${profile.location ?? ""}
 Sign-off: ${profile.sign_off ?? "Kind regards"}
 Contact: ${contactLine}
 
+WORK HISTORY (structured — use this as the canonical source of truth for which employer the candidate worked for and when. The CV may have additional context but this list is authoritative for employer names, role titles, and dates. P2 should usually focus on the FIRST entry below — the current/most recent employer. P3 should cover the SECOND entry where applicable.):
+${workHistoryText}
+
 CV (use the experience and achievements — ignore any stated career direction or target industry in the personal statement, which may have been written for a different role):
 ${cvContent}
 
-ADDITIONAL SKILLS & EXPERIENCE (beyond CV — draw on these where relevant; adapt, rephrase, or condense them to fit the letter's flow naturally — do not force them in or copy them rigidly):
+ADDITIONAL SKILLS & EXPERIENCE (beyond CV — each item is tagged with the employer(s) it relates to, or marked "general / not employer-specific"):
 ${skillsText}
+
+SKILL ATTRIBUTION RULES (CRITICAL):
+- A skill tagged [from: Employer X] describes work the candidate did AT Employer X. When you reference that achievement in the letter, it MUST appear in the paragraph about Employer X — never in a different employer's paragraph.
+- A skill tagged [from: Employer X, Employer Y] applies to both — use it in whichever paragraph fits the letter's flow, but do not invent a new employer for it.
+- A skill tagged [general / not employer-specific] is a transferable / innate skill. Use it where natural — usually woven into the most relevant paragraph as supporting evidence, never attributed to a specific employer.
+- NEVER place a skill from one employer's paragraph into another employer's paragraph. This is the most common attribution error and the work history above exists to prevent it.
 
 ${writingStyleText ? `WRITING STYLE — match this voice:\n${writingStyleText}\n` : ""}
 ${companyResearch ? `COMPANY RESEARCH — use specific details from this:\n${companyResearch}\n` : ""}
@@ -365,8 +395,8 @@ export async function generateCoverLetter(input: {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorised");
 
-  const [profile, allCVs, skills, writingExamples, taskPrefs, keys, clPrefs] = await Promise.all([
-    getProfile(), getCVs(), getSkills(), getWritingExamples(), getTaskPreferences(), getApiKeyValues(), getCoverLetterPrefs(),
+  const [profile, allCVs, skills, employers, writingExamples, taskPrefs, keys, clPrefs] = await Promise.all([
+    getProfile(), getCVs(), getSkills(), getEmployers(), getWritingExamples(), getTaskPreferences(), getApiKeyValues(), getCoverLetterPrefs(),
   ]);
 
   if (Object.keys(keys).length === 0) throw new Error("No AI provider connected. Add an API key in Settings.");
@@ -383,7 +413,7 @@ export async function generateCoverLetter(input: {
     companyResearch = await fetchCompanyResearch(input.companyName, keys.perplexity);
   }
 
-  const systemPrompt = buildSystemPrompt({ profile, cvContent: cv.content, skills, writingExamples, companyResearch, clPrefs });
+  const systemPrompt = buildSystemPrompt({ profile, cvContent: cv.content, skills, employers, writingExamples, companyResearch, clPrefs });
 
   const userPrompt = `Write a cover letter for this role:
 

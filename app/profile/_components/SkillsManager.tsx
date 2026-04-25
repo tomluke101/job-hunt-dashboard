@@ -2,14 +2,53 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Sparkles, Plus, Trash2, Check, Pencil, ChevronRight, RotateCcw } from "lucide-react";
-import { addSkill, updateSkill, deleteSkill, polishSkillText, type UserSkill } from "@/app/actions/profile";
+import { Sparkles, Plus, Trash2, Check, Pencil, ChevronRight, RotateCcw, Briefcase } from "lucide-react";
+import { addSkill, updateSkill, deleteSkill, polishSkillText, type UserSkill, type UserEmployer } from "@/app/actions/profile";
 
-function SkillItem({ skill, onDelete }: { skill: UserSkill; onDelete: (id: string) => void }) {
+function EmployerChips({
+  employers,
+  selectedIds,
+  onToggle,
+}: {
+  employers: UserEmployer[];
+  selectedIds: string[];
+  onToggle: (id: string) => void;
+}) {
+  if (employers.length === 0) {
+    return (
+      <p className="text-xs text-slate-400 italic">Add a role in Work History above to tag skills to it.</p>
+    );
+  }
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {employers.map((emp) => {
+        const selected = selectedIds.includes(emp.id);
+        return (
+          <button
+            key={emp.id}
+            type="button"
+            onClick={() => onToggle(emp.id)}
+            className={`flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full border transition-colors ${
+              selected
+                ? "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100"
+                : "bg-white text-slate-500 border-slate-200 hover:bg-slate-50 hover:text-slate-700"
+            }`}
+          >
+            {selected && <Check size={10} />}
+            {emp.company_name}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function SkillItem({ skill, employers, onDelete }: { skill: UserSkill; employers: UserEmployer[]; onDelete: (id: string) => void }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [raw, setRaw] = useState(skill.raw_text);
   const [polished, setPolished] = useState(skill.polished_text ?? "");
+  const [employerIds, setEmployerIds] = useState<string[]>(skill.employer_ids ?? []);
   const [polishing, startPolishing] = useTransition();
   const [saving, startSaving] = useTransition();
 
@@ -24,15 +63,22 @@ function SkillItem({ skill, onDelete }: { skill: UserSkill; onDelete: (id: strin
     });
   }
 
+  function toggleEmployer(id: string) {
+    setEmployerIds((ids) => ids.includes(id) ? ids.filter((i) => i !== id) : [...ids, id]);
+  }
+
   function handleSave() {
     startSaving(async () => {
-      await updateSkill(skill.id, raw, polished || undefined);
+      await updateSkill(skill.id, raw, polished || undefined, employerIds);
       setEditing(false);
       router.refresh();
     });
   }
 
   const display = skill.polished_text || skill.raw_text;
+  const skillEmployers = (skill.employer_ids ?? [])
+    .map((id) => employers.find((e) => e.id === id))
+    .filter((e): e is UserEmployer => !!e);
 
   if (editing) {
     return (
@@ -71,6 +117,14 @@ function SkillItem({ skill, onDelete }: { skill: UserSkill; onDelete: (id: strin
             </div>
           )}
 
+          <div>
+            <label className="text-xs font-semibold text-slate-500 block mb-1.5 flex items-center gap-1">
+              <Briefcase size={11} /> Where did you do this?
+              <span className="text-slate-400 font-normal normal-case ml-1">optional — leave blank for general / innate skills</span>
+            </label>
+            <EmployerChips employers={employers} selectedIds={employerIds} onToggle={toggleEmployer} />
+          </div>
+
           <div className="flex items-center gap-2">
             <button onClick={handlePolish} disabled={polishing || !raw.trim()} className="flex items-center gap-1.5 text-xs font-medium text-purple-600 hover:text-purple-700 px-2.5 py-1.5 rounded-lg border border-purple-200 hover:bg-purple-50 disabled:opacity-40 transition-colors">
               <Sparkles size={12} /> {polishing ? "Polishing…" : polished ? "Re-polish" : "Polish with AI"}
@@ -91,9 +145,20 @@ function SkillItem({ skill, onDelete }: { skill: UserSkill; onDelete: (id: strin
     <div className="flex items-start gap-3 bg-white border border-slate-200 rounded-xl p-4 group">
       <div className="flex-1 min-w-0">
         <p className="text-sm text-slate-800 leading-relaxed">{display}</p>
-        {skill.polished_text && skill.polished_text !== skill.raw_text && (
-          <p className="text-xs text-slate-400 mt-1 flex items-center gap-1"><Sparkles size={10} className="text-purple-400" /> AI-polished from your original</p>
-        )}
+        <div className="flex items-center gap-2 flex-wrap mt-1.5">
+          {skill.polished_text && skill.polished_text !== skill.raw_text && (
+            <p className="text-xs text-slate-400 flex items-center gap-1"><Sparkles size={10} className="text-purple-400" /> AI-polished</p>
+          )}
+          {skillEmployers.length > 0 && (
+            <div className="flex items-center gap-1 flex-wrap">
+              {skillEmployers.map((emp) => (
+                <span key={emp.id} className="text-xs font-medium text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded-full">
+                  {emp.company_name}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
         <button onClick={() => setEditing(true)} className="text-slate-400 hover:text-blue-500 transition-colors p-1"><Pencil size={13} /></button>
@@ -103,10 +168,11 @@ function SkillItem({ skill, onDelete }: { skill: UserSkill; onDelete: (id: strin
   );
 }
 
-function AddSkillForm({ onDone }: { onDone: () => void }) {
+function AddSkillForm({ employers, onDone }: { employers: UserEmployer[]; onDone: () => void }) {
   const router = useRouter();
   const [raw, setRaw] = useState("");
   const [polished, setPolished] = useState("");
+  const [employerIds, setEmployerIds] = useState<string[]>([]);
   const [polishing, startPolishing] = useTransition();
   const [saving, startSaving] = useTransition();
 
@@ -121,10 +187,14 @@ function AddSkillForm({ onDone }: { onDone: () => void }) {
     });
   }
 
+  function toggleEmployer(id: string) {
+    setEmployerIds((ids) => ids.includes(id) ? ids.filter((i) => i !== id) : [...ids, id]);
+  }
+
   function handleSave() {
     if (!raw.trim()) return;
     startSaving(async () => {
-      await addSkill(raw.trim(), polished || undefined);
+      await addSkill(raw.trim(), polished || undefined, employerIds);
       router.refresh();
       onDone();
     });
@@ -158,6 +228,14 @@ function AddSkillForm({ onDone }: { onDone: () => void }) {
           </div>
         )}
 
+        <div>
+          <label className="text-xs font-semibold text-slate-600 block mb-1.5 flex items-center gap-1">
+            <Briefcase size={11} /> Where did you do this?
+            <span className="text-slate-400 font-normal normal-case ml-1">optional — leave blank for general / innate skills</span>
+          </label>
+          <EmployerChips employers={employers} selectedIds={employerIds} onToggle={toggleEmployer} />
+        </div>
+
         <div className="flex items-center gap-2 pt-1">
           <button
             onClick={handlePolish}
@@ -186,7 +264,7 @@ function AddSkillForm({ onDone }: { onDone: () => void }) {
   );
 }
 
-export default function SkillsManager({ initial }: { initial: UserSkill[] }) {
+export default function SkillsManager({ initial, employers }: { initial: UserSkill[]; employers: UserEmployer[] }) {
   const router = useRouter();
   const [skills, setSkills] = useState<UserSkill[]>(initial);
   const [showAdd, setShowAdd] = useState(false);
@@ -224,9 +302,9 @@ export default function SkillsManager({ initial }: { initial: UserSkill[] }) {
           </div>
         )}
         {initial.map((skill) => (
-          <SkillItem key={skill.id} skill={skill} onDelete={handleDelete} />
+          <SkillItem key={skill.id} skill={skill} employers={employers} onDelete={handleDelete} />
         ))}
-        {showAdd && <AddSkillForm onDone={() => setShowAdd(false)} />}
+        {showAdd && <AddSkillForm employers={employers} onDone={() => setShowAdd(false)} />}
       </div>
 
       {!showAdd && (

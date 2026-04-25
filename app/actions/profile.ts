@@ -424,27 +424,38 @@ export async function polishSkillText(rawText: string): Promise<string> {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorised");
 
+  if (!rawText || !rawText.trim()) {
+    throw new Error("Cannot polish empty text.");
+  }
+
   const keys = await getApiKeyValues();
   if (Object.keys(keys).length === 0) {
     throw new Error("No AI provider connected. Add an API key in Settings.");
   }
 
-  const result = await callAI({
-    task: "cover-letter",
-    connectedProviders: keys,
-    systemPrompt:
-      "You are an expert career coach helping job seekers articulate their achievements. " +
-      "Rewrite the text in clear, professional language using strong action verbs. " +
-      "Keep it to 1-2 punchy sentences. Preserve every fact exactly — do not invent or embellish anything. " +
-      "CRITICAL: preserve every mention of collaborators (manager, director, team, colleague, partner) exactly as stated in the source. " +
-      "Do not drop, minimise, or obscure other people's contributions. If the source says 'with my director' or 'alongside my manager' or 'as part of the team', the rewrite must keep that. " +
-      "Do not upgrade neutral verbs into solo-claim verbs: 'built' must not become 'designed and built from scratch'; 'helped set up' must not become 'led the setup of'. " +
-      "If the source does not explicitly state solo ownership, use neutral verbs ('worked on', 'helped build', 'contributed to') rather than strong solo verbs ('I built', 'I led', 'I created'). " +
-      "Return ONLY the rewritten text with no explanation or preamble.",
-    prompt: `Rewrite this in professional, achievement-focused language:\n\n"${rawText}"`,
-  });
+  try {
+    const result = await callAI({
+      task: "cover-letter",
+      connectedProviders: keys,
+      systemPrompt:
+        "You are an expert career coach helping job seekers articulate their achievements. " +
+        "Rewrite the text in clear, professional language using strong action verbs. " +
+        "Keep it to 1-2 punchy sentences. Preserve every fact exactly — do not invent or embellish anything. " +
+        "CRITICAL: preserve every mention of collaborators (manager, director, team, colleague, partner) exactly as stated in the source. " +
+        "Do not drop, minimise, or obscure other people's contributions. If the source says 'with my director' or 'alongside my manager' or 'as part of the team', the rewrite must keep that. " +
+        "Do not upgrade neutral verbs into solo-claim verbs: 'built' must not become 'designed and built from scratch'; 'helped set up' must not become 'led the setup of'. " +
+        "If the source does not explicitly state solo ownership, use neutral verbs ('worked on', 'helped build', 'contributed to') rather than strong solo verbs ('I built', 'I led', 'I created'). " +
+        "Return ONLY the rewritten text with no explanation or preamble.",
+      prompt: `Rewrite this in professional, achievement-focused language:\n\n"${rawText}"`,
+    });
 
-  return result.text.trim().replace(/^["']|["']$/g, "");
+    const cleaned = result.text.trim().replace(/^["']|["']$/g, "");
+    if (!cleaned) throw new Error("AI returned an empty response.");
+    return cleaned;
+  } catch (e) {
+    console.error("[polishSkillText] AI call failed:", e);
+    throw new Error(e instanceof Error ? e.message : "Polish failed. Check your API key and try again.");
+  }
 }
 
 // ── Writing examples ──────────────────────────────────────────────────────────

@@ -51,14 +51,22 @@ function SkillItem({ skill, employers, onDelete }: { skill: UserSkill; employers
   const [employerIds, setEmployerIds] = useState<string[]>(skill.employer_ids ?? []);
   const [polishing, startPolishing] = useTransition();
   const [saving, startSaving] = useTransition();
+  const [polishError, setPolishError] = useState<string | null>(null);
 
   function handlePolish() {
+    setPolishError(null);
     startPolishing(async () => {
       try {
         const result = await polishSkillText(raw);
+        if (!result || !result.trim()) {
+          setPolishError("Polish returned an empty result. Try again.");
+          return;
+        }
         setPolished(result);
-      } catch {
-        // No key connected — leave polished empty
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Polish failed.";
+        setPolishError(msg);
+        console.error("[polishSkillText]", e);
       }
     });
   }
@@ -125,6 +133,10 @@ function SkillItem({ skill, employers, onDelete }: { skill: UserSkill; employers
             <EmployerChips employers={employers} selectedIds={employerIds} onToggle={toggleEmployer} />
           </div>
 
+          {polishError && (
+            <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-2 py-1.5">{polishError}</p>
+          )}
+
           <div className="flex items-center gap-2">
             <button onClick={handlePolish} disabled={polishing || !raw.trim()} className="flex items-center gap-1.5 text-xs font-medium text-purple-600 hover:text-purple-700 px-2.5 py-1.5 rounded-lg border border-purple-200 hover:bg-purple-50 disabled:opacity-40 transition-colors">
               <Sparkles size={12} /> {polishing ? "Polishing…" : polished ? "Re-polish" : "Polish with AI"}
@@ -175,14 +187,22 @@ function AddSkillForm({ employers, onDone }: { employers: UserEmployer[]; onDone
   const [employerIds, setEmployerIds] = useState<string[]>([]);
   const [polishing, startPolishing] = useTransition();
   const [saving, startSaving] = useTransition();
+  const [polishError, setPolishError] = useState<string | null>(null);
 
   function handlePolish() {
+    setPolishError(null);
     startPolishing(async () => {
       try {
         const result = await polishSkillText(raw);
+        if (!result || !result.trim()) {
+          setPolishError("Polish returned an empty result. Try again.");
+          return;
+        }
         setPolished(result);
-      } catch {
-        // Silently fail — save raw only
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Polish failed.";
+        setPolishError(msg);
+        console.error("[polishSkillText]", e);
       }
     });
   }
@@ -235,6 +255,10 @@ function AddSkillForm({ employers, onDone }: { employers: UserEmployer[]; onDone
           </label>
           <EmployerChips employers={employers} selectedIds={employerIds} onToggle={toggleEmployer} />
         </div>
+
+        {polishError && (
+          <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-2 py-1.5">{polishError}</p>
+        )}
 
         <div className="flex items-center gap-2 pt-1">
           <button

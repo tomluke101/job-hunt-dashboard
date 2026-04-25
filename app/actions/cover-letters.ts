@@ -325,6 +325,13 @@ POSITIVE FIT REQUIREMENTS:
 - Use the JD's own vocabulary for at least three specific responsibilities/processes/functions naturally (not keyword-stuffing).
 - If the JD names a specific scheme/system/function AND the candidate has parallel evidence in their profile, OPTIONALLY weave one 1-2 sentence integration into a topic-matched paragraph. MAX ONE such hook per letter, never bolt on a separate paragraph for it. Skip if no natural fit exists.
 
+JD-RELEVANCE RANKING — CRITICAL FOR ACHIEVEMENT SELECTION:
+Before drafting P2, read the JD and identify its TOP 3-5 specific requirements, methodologies, or named criteria — especially ones listed as "essential", "key responsibilities", or "desirable" (e.g. "lean principles", "process improvement methodologies", "demand forecasting", "supplier performance tracking", "data analysis tools", a specific named system). Then rank the candidate's available skills/achievements by direct match to those requirements. P2 MUST lead with the candidate's STRONGEST 2-3 matches — not whichever achievements seem generally impressive. Specifically:
+- If the JD names a methodology (e.g. "lean principles", "Six Sigma", "process improvement") and the candidate has a parallel concrete achievement (e.g. led a courier migration after data analysis, redesigned a process), that achievement MUST appear in P2. Never deprioritise it for a generic inventory-management or stakeholder sentence.
+- If the JD lists named tools / data-analysis software (e.g. Excel, Power BI, SQL) and the candidate's profile names matching tools, mention them by name in P2 or P3 — but only ones the candidate actually has. Never claim tools the profile doesn't list.
+- If two achievements compete for space in P2 and one is a stronger JD match, the stronger match wins. Drop the weaker one (it can go in P3, or be omitted) — do not cram both in.
+- This ranking applies to BOTH explicit Skills entries AND CV content. The candidate's strongest JD-aligned achievement may live in either source.
+
 ATTRIBUTION HONESTY:
 - If the candidate's profile says they collaborated with someone (manager, director, team), preserve that EXACTLY. "Collaborated with the director to build" stays "collaborated with the director to build" — never rewrite as solo.
 - Never insert solo-claim modifiers ("from scratch", "single-handedly", "independently", "on my own", "from the ground up") unless the source text explicitly states solo authorship.

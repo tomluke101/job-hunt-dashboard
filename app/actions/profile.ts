@@ -438,15 +438,16 @@ export async function polishSkillText(rawText: string): Promise<string> {
       task: "cover-letter",
       connectedProviders: keys,
       systemPrompt:
-        "You are an expert career coach helping job seekers articulate their achievements. " +
-        "Rewrite the text in clear, professional language using strong action verbs. " +
-        "Keep it to 1-2 punchy sentences. Preserve every fact exactly — do not invent or embellish anything. " +
-        "CRITICAL: preserve every mention of collaborators (manager, director, team, colleague, partner) exactly as stated in the source. " +
-        "Do not drop, minimise, or obscure other people's contributions. If the source says 'with my director' or 'alongside my manager' or 'as part of the team', the rewrite must keep that. " +
-        "Do not upgrade neutral verbs into solo-claim verbs: 'built' must not become 'designed and built from scratch'; 'helped set up' must not become 'led the setup of'. " +
-        "If the source does not explicitly state solo ownership, use neutral verbs ('worked on', 'helped build', 'contributed to') rather than strong solo verbs ('I built', 'I led', 'I created'). " +
+        "You are an expert career coach helping job seekers articulate their achievements clearly. Rewrite the text in plain, professional language a human would actually write — not corporate-AI prose. " +
+        "LENGTH RULE: match the substance of the source. If the source has ONE achievement, return 1 sentence. If the source has 2-3 achievements, 1-2 sentences. If the source LISTS multiple distinct items (e.g. four or more wins, projects, or initiatives), you MUST preserve ALL of them — do NOT compress a list of 6 things into 2 sentences. Length follows content, not the other way round. " +
+        "PRESERVE EVERY FACT exactly — do not invent, embellish, or drop details. " +
+        "PRESERVE COLLABORATORS exactly: if the source says 'with my director', 'alongside my manager', 'as part of the team', the rewrite must keep that. Never rewrite collaborative work as solo. " +
+        "ATTRIBUTION: do not upgrade neutral verbs to solo-claim verbs ('built' → 'designed and built from scratch'; 'helped set up' → 'led the setup of'). If the source does not explicitly state solo ownership, use neutral verbs ('worked on', 'helped build', 'contributed to'). " +
+        "BANNED OPENERS — never start the rewritten sentence with any of these (these are AI clichés that read as corporate fluff): 'Spearheaded', 'Spearhead', 'Drove', 'Drives', 'Driving', 'Demonstrated ability to', 'Rapidly masters', 'Rapidly mastered', 'Consistently delivers', 'Successfully delivered' (the 'successfully' is filler). Open with the actual concrete verb of what was done ('Built', 'Designed', 'Worked on', 'Helped build', 'Coordinated', 'Investigated', 'Resolved', 'Reduced', 'Recovered', 'Analysed', 'Migrated', 'Improved'). " +
+        "BANNED PHRASES — never include: 'data-driven analysis and strategic implementation', 'strategic communication and collaborative problem-solving', 'driving measurable improvements', 'achieving full productivity ahead of schedule', 'reducing onboarding time', 'hits the ground running', 'streamlining operations', 'enhance organizational efficiency', 'cross-functional excellence', 'best-in-class', 'world-class', 'value-add'. These are corporate-AI fluff that read as inauthentic. " +
+        "BANNED PIVOTS — never write the fast-learner pivot ('rapidly masters', 'consistently picks up', 'fast learner') or self-characterising summaries ('demonstrated ability to', 'proven track record of'). Just state the concrete fact. " +
         "Return ONLY the rewritten text with no explanation or preamble.",
-      prompt: `Rewrite this in professional, achievement-focused language:\n\n"${rawText}"`,
+      prompt: `Rewrite this in plain, professional, concrete language. Preserve every fact and every collaborator exactly:\n\n"${rawText}"`,
     });
 
     const cleaned = result.text.trim().replace(/^["']|["']$/g, "");

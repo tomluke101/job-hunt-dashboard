@@ -229,6 +229,18 @@ export async function deleteSkill(id: string) {
 
 // ── Work history (employers) ──────────────────────────────────────────────────
 
+// Normalise a month-precision date string (YYYY-MM) to a Postgres-acceptable
+// full date (YYYY-MM-01). Pass through valid YYYY-MM-DD strings as-is. Returns
+// null for empty / invalid input so we never write garbage.
+function normaliseMonthDate(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  if (/^\d{4}-\d{2}$/.test(trimmed)) return `${trimmed}-01`;
+  return null;
+}
+
 export async function getEmployers(): Promise<UserEmployer[]> {
   const { userId } = await auth();
   if (!userId) return [];
@@ -253,13 +265,17 @@ export async function addEmployer(input: UserEmployerInput): Promise<{ id?: stri
       return { error: "Company, role, and start date are required" };
     }
 
+    const startDate = normaliseMonthDate(input.start_date);
+    if (!startDate) return { error: "Start date must be a valid month." };
+    const endDate = input.is_current ? null : normaliseMonthDate(input.end_date);
+
     const supabase = await createServerSupabaseClient();
     const payload = {
       user_id: userId,
       company_name: input.company_name.trim(),
       role_title: input.role_title.trim(),
-      start_date: input.start_date,
-      end_date: input.is_current ? null : (input.end_date || null),
+      start_date: startDate,
+      end_date: endDate,
       is_current: !!input.is_current,
       location: input.location?.trim() || null,
       employment_type: input.employment_type || null,
@@ -293,14 +309,18 @@ export async function updateEmployer(id: string, input: UserEmployerInput): Prom
       return { error: "Company, role, and start date are required" };
     }
 
+    const startDate = normaliseMonthDate(input.start_date);
+    if (!startDate) return { error: "Start date must be a valid month." };
+    const endDate = input.is_current ? null : normaliseMonthDate(input.end_date);
+
     const supabase = await createServerSupabaseClient();
     const { error } = await supabase
       .from("user_employers")
       .update({
         company_name: input.company_name.trim(),
         role_title: input.role_title.trim(),
-        start_date: input.start_date,
-        end_date: input.is_current ? null : (input.end_date || null),
+        start_date: startDate,
+        end_date: endDate,
         is_current: !!input.is_current,
         location: input.location?.trim() || null,
         employment_type: input.employment_type || null,

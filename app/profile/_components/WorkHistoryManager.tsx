@@ -359,16 +359,26 @@ function ExtractReviewModal({
   onClose,
 }: {
   initialEntries: UserEmployerInput[];
-  onConfirm: (entries: UserEmployerInput[]) => Promise<void>;
+  onConfirm: (entries: UserEmployerInput[]) => Promise<{ savedCount: number; errors: string[] }>;
   onClose: () => void;
 }) {
   const [entries, setEntries] = useState(initialEntries);
   const [saving, startSave] = useTransition();
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   function handleSave() {
+    setSaveError(null);
     const valid = entries.filter((e) => e.company_name.trim() && e.role_title.trim() && e.start_date);
-    if (valid.length === 0) return;
-    startSave(async () => { await onConfirm(valid); });
+    if (valid.length === 0) {
+      setSaveError("Each entry needs at least a company, role, and start date.");
+      return;
+    }
+    startSave(async () => {
+      const result = await onConfirm(valid);
+      if (result.errors.length > 0) {
+        setSaveError(`${result.savedCount} saved. ${result.errors.length} failed: ${result.errors.join("; ")}`);
+      }
+    });
   }
 
   return (
@@ -404,17 +414,25 @@ function ExtractReviewModal({
           )}
         </div>
 
-        <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 bg-slate-50 rounded-b-2xl shrink-0">
-          <p className="text-xs text-slate-400">Salary is never extracted from CVs and stays private.</p>
-          <div className="flex items-center gap-2">
-            <button onClick={onClose} className="text-sm text-slate-500 hover:text-slate-700 px-4 py-2 rounded-lg hover:bg-slate-200 transition-colors">Cancel</button>
-            <button
-              onClick={handleSave}
-              disabled={saving || entries.length === 0}
-              className="flex items-center gap-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white font-medium px-4 py-2 rounded-lg transition-colors"
-            >
-              {saving ? <><Loader2 size={13} className="animate-spin" /> Saving…</> : <><Check size={13} /> Save {entries.length} {entries.length === 1 ? "role" : "roles"}</>}
-            </button>
+        <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 rounded-b-2xl shrink-0 space-y-2">
+          {saveError && (
+            <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg p-2.5 text-xs text-red-700">
+              <AlertCircle size={13} className="mt-0.5 shrink-0" />
+              <p className="flex-1">{saveError}</p>
+            </div>
+          )}
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-slate-400">Salary is never extracted from CVs and stays private.</p>
+            <div className="flex items-center gap-2">
+              <button onClick={onClose} className="text-sm text-slate-500 hover:text-slate-700 px-4 py-2 rounded-lg hover:bg-slate-200 transition-colors">Cancel</button>
+              <button
+                onClick={handleSave}
+                disabled={saving || entries.length === 0}
+                className="flex items-center gap-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white font-medium px-4 py-2 rounded-lg transition-colors"
+              >
+                {saving ? <><Loader2 size={13} className="animate-spin" /> Saving…</> : <><Check size={13} /> Save {entries.length} {entries.length === 1 ? "role" : "roles"}</>}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -448,12 +466,22 @@ export default function WorkHistoryManager({ initial, hasCV }: { initial: UserEm
     });
   }
 
-  async function handleConfirmExtracted(entries: UserEmployerInput[]) {
+  async function handleConfirmExtracted(entries: UserEmployerInput[]): Promise<{ savedCount: number; errors: string[] }> {
+    let savedCount = 0;
+    const errors: string[] = [];
     for (const entry of entries) {
-      await addEmployer(entry);
+      const result = await addEmployer(entry);
+      if (result.error) {
+        errors.push(`${entry.company_name}: ${result.error}`);
+      } else {
+        savedCount += 1;
+      }
     }
-    setExtractedEntries(null);
+    if (errors.length === 0) {
+      setExtractedEntries(null);
+    }
     router.refresh();
+    return { savedCount, errors };
   }
 
   // Sort oldest-first for salary progression calculation, then reverse for display.
@@ -548,8 +576,8 @@ export default function WorkHistoryManager({ initial, hasCV }: { initial: UserEm
                   initial={{
                     company_name: emp.company_name,
                     role_title: emp.role_title,
-                    start_date: emp.start_date,
-                    end_date: emp.end_date,
+                    start_date: emp.start_date ? emp.start_date.slice(0, 7) : "",
+                    end_date: emp.end_date ? emp.end_date.slice(0, 7) : null,
                     is_current: emp.is_current,
                     location: emp.location ?? "",
                     employment_type: emp.employment_type ?? "full-time",

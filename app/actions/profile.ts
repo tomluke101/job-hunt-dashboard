@@ -332,6 +332,74 @@ export async function deleteEmployer(id: string): Promise<void> {
   revalidatePath("/profile");
 }
 
+export async function extractEmployersFromCV(cvId?: string): Promise<{ employers?: UserEmployerInput[]; error?: string }> {
+  try {
+    const { userId } = await auth();
+    if (!userId) return { error: "Not signed in" };
+
+    const keys = await getApiKeyValues();
+    if (Object.keys(keys).length === 0) {
+      return { error: "No AI provider connected. Add an API key in Settings first." };
+    }
+
+    const supabase = await createServerSupabaseClient();
+    const { data: cvs } = await supabase
+      .from("user_cvs")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
+
+    const cv = cvId ? (cvs ?? []).find((c) => c.id === cvId) : (cvs ?? []).find((c) => c.is_default) ?? (cvs ?? [])[0];
+    if (!cv) return { error: "No CV found. Upload your CV first." };
+
+    const result = await callAI({
+      task: "cover-letter",
+      connectedProviders: keys,
+      systemPrompt:
+        "You extract structured work history from CVs. Return ONLY a valid JSON object — no preamble, no commentary, no markdown fences. The schema is exactly: " +
+        '{"employers":[{"company_name":string,"role_title":string,"start_date":"YYYY-MM","end_date":"YYYY-MM"|null,"is_current":boolean,"location":string|null,"employment_type":"full-time"|"part-time"|"contract"|"internship"|"freelance"|null,"summary":string|null}]}. ' +
+        "Rules: " +
+        "(1) Extract only paid employment, internships, contracts. Skip volunteering, education, courses, certifications, hobbies. " +
+        "(2) Order from most recent first. " +
+        "(3) If end date is 'Present' / 'Current' / 'Now' / similar, set is_current=true and end_date=null. " +
+        "(4) Dates must be YYYY-MM format. If only a year is given, use YYYY-01 for start and YYYY-12 for end. Be conservative — never invent dates. " +
+        "(5) summary: one short sentence (max 15 words) on the role's main responsibility. If the CV doesn't make it clear, set null. " +
+        "(6) Never include salary or pay information. " +
+        "(7) Return ONLY the JSON object.",
+      prompt: `Extract the work history from this CV:\n\n${cv.content.slice(0, 10000)}`,
+    });
+
+    const text = result.text.trim();
+    const jsonStart = text.indexOf("{");
+    const jsonEnd = text.lastIndexOf("}");
+    if (jsonStart === -1 || jsonEnd === -1) {
+      return { error: "Could not parse the CV. Try adding entries manually." };
+    }
+
+    const parsed = JSON.parse(text.slice(jsonStart, jsonEnd + 1)) as { employers?: UserEmployerInput[] };
+    const list = Array.isArray(parsed.employers) ? parsed.employers : [];
+
+    const cleaned: UserEmployerInput[] = list
+      .filter((e) => e && e.company_name && e.role_title && e.start_date)
+      .map((e) => ({
+        company_name: String(e.company_name).trim(),
+        role_title: String(e.role_title).trim(),
+        start_date: String(e.start_date).trim(),
+        end_date: e.is_current ? null : (e.end_date ? String(e.end_date).trim() : null),
+        is_current: !!e.is_current,
+        location: e.location ? String(e.location).trim() : null,
+        employment_type: e.employment_type ?? "full-time",
+        summary: e.summary ? String(e.summary).trim() : null,
+        salary: null,
+      }));
+
+    return { employers: cleaned };
+  } catch (e) {
+    console.error("[extractEmployersFromCV] unexpected:", e);
+    return { error: e instanceof Error ? e.message : "Extraction failed. Try adding entries manually." };
+  }
+}
+
 export async function polishSkillText(rawText: string): Promise<string> {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorised");

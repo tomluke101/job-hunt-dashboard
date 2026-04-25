@@ -77,7 +77,7 @@ export default async function ProfilePage() {
           title="Work History"
           description="Your roles and dates — used by the AI to attribute skills and achievements to the right employer when writing cover letters"
         >
-          <WorkHistoryManager initial={employers} />
+          <WorkHistoryManager initial={employers} hasCV={cvs.length > 0} />
         </Section>
 
         <Section

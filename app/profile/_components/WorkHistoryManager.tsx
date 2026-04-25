@@ -2,8 +2,8 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Briefcase, Plus, Pencil, Trash2, Check, X, MapPin, PoundSterling, TrendingUp, Clock } from "lucide-react";
-import { addEmployer, updateEmployer, deleteEmployer, type UserEmployer, type UserEmployerInput } from "@/app/actions/profile";
+import { Briefcase, Plus, Pencil, Trash2, Check, X, MapPin, PoundSterling, TrendingUp, Clock, Sparkles, Loader2, AlertCircle } from "lucide-react";
+import { addEmployer, updateEmployer, deleteEmployer, extractEmployersFromCV, type UserEmployer, type UserEmployerInput } from "@/app/actions/profile";
 
 const EMPLOYMENT_TYPES = [
   { value: "full-time", label: "Full-time" },
@@ -279,12 +279,182 @@ function EmployerCard({
   );
 }
 
-export default function WorkHistoryManager({ initial }: { initial: UserEmployer[] }) {
+function ExtractedEntryRow({
+  entry,
+  onChange,
+  onRemove,
+}: {
+  entry: UserEmployerInput;
+  onChange: (next: UserEmployerInput) => void;
+  onRemove: () => void;
+}) {
+  function update<K extends keyof UserEmployerInput>(key: K, value: UserEmployerInput[K]) {
+    onChange({ ...entry, [key]: value });
+  }
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-2.5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="grid grid-cols-2 gap-2 flex-1">
+          <input
+            type="text"
+            value={entry.company_name}
+            onChange={(e) => update("company_name", e.target.value)}
+            placeholder="Company"
+            className="text-sm font-semibold border border-slate-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
+          />
+          <input
+            type="text"
+            value={entry.role_title}
+            onChange={(e) => update("role_title", e.target.value)}
+            placeholder="Role"
+            className="text-sm border border-slate-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
+          />
+        </div>
+        <button onClick={onRemove} className="text-slate-400 hover:text-red-500 transition-colors p-1 shrink-0" title="Remove this entry">
+          <X size={15} />
+        </button>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <div>
+          <label className="text-[10px] uppercase tracking-wider font-semibold text-slate-400 block mb-0.5">Start</label>
+          <input
+            type="month"
+            value={entry.start_date}
+            onChange={(e) => update("start_date", e.target.value)}
+            className="w-full text-xs border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
+          />
+        </div>
+        <div>
+          <label className="text-[10px] uppercase tracking-wider font-semibold text-slate-400 block mb-0.5">End</label>
+          <input
+            type="month"
+            value={entry.is_current ? "" : (entry.end_date ?? "")}
+            onChange={(e) => update("end_date", e.target.value || null)}
+            disabled={entry.is_current}
+            className="w-full text-xs border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 disabled:bg-slate-50 disabled:text-slate-400"
+          />
+        </div>
+        <div className="flex items-end">
+          <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer pb-1.5">
+            <input
+              type="checkbox"
+              checked={entry.is_current}
+              onChange={(e) => update("is_current", e.target.checked)}
+              className="rounded border-slate-300 text-blue-600"
+            />
+            Current
+          </label>
+        </div>
+      </div>
+      {entry.summary && (
+        <p className="text-xs text-slate-500 italic line-clamp-2">{entry.summary}</p>
+      )}
+    </div>
+  );
+}
+
+function ExtractReviewModal({
+  initialEntries,
+  onConfirm,
+  onClose,
+}: {
+  initialEntries: UserEmployerInput[];
+  onConfirm: (entries: UserEmployerInput[]) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [entries, setEntries] = useState(initialEntries);
+  const [saving, startSave] = useTransition();
+
+  function handleSave() {
+    const valid = entries.filter((e) => e.company_name.trim() && e.role_title.trim() && e.start_date);
+    if (valid.length === 0) return;
+    startSave(async () => { await onConfirm(valid); });
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-6">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl flex flex-col" style={{ maxHeight: "85vh" }}>
+        <div className="flex items-start justify-between px-6 py-5 border-b border-slate-100 shrink-0">
+          <div>
+            <h2 className="font-bold text-slate-900 text-base flex items-center gap-2">
+              <Sparkles size={15} className="text-purple-500" />
+              Review extracted work history
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              The AI pulled {initialEntries.length} {initialEntries.length === 1 ? "entry" : "entries"} from your CV. Edit anything that looks off, remove what you don't want, then save.
+            </p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 ml-4 p-1"><X size={18} /></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-3">
+          {entries.length === 0 ? (
+            <div className="text-center py-10 text-sm text-slate-400">
+              No entries left. Close this and add manually instead.
+            </div>
+          ) : (
+            entries.map((e, i) => (
+              <ExtractedEntryRow
+                key={i}
+                entry={e}
+                onChange={(next) => setEntries((list) => list.map((x, j) => j === i ? next : x))}
+                onRemove={() => setEntries((list) => list.filter((_, j) => j !== i))}
+              />
+            ))
+          )}
+        </div>
+
+        <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 bg-slate-50 rounded-b-2xl shrink-0">
+          <p className="text-xs text-slate-400">Salary is never extracted from CVs and stays private.</p>
+          <div className="flex items-center gap-2">
+            <button onClick={onClose} className="text-sm text-slate-500 hover:text-slate-700 px-4 py-2 rounded-lg hover:bg-slate-200 transition-colors">Cancel</button>
+            <button
+              onClick={handleSave}
+              disabled={saving || entries.length === 0}
+              className="flex items-center gap-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white font-medium px-4 py-2 rounded-lg transition-colors"
+            >
+              {saving ? <><Loader2 size={13} className="animate-spin" /> Saving…</> : <><Check size={13} /> Save {entries.length} {entries.length === 1 ? "role" : "roles"}</>}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function WorkHistoryManager({ initial, hasCV }: { initial: UserEmployer[]; hasCV: boolean }) {
   const router = useRouter();
   const [showAdd, setShowAdd] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [, startDelete] = useTransition();
+  const [extracting, startExtract] = useTransition();
+  const [extractedEntries, setExtractedEntries] = useState<UserEmployerInput[] | null>(null);
+  const [extractError, setExtractError] = useState<string | null>(null);
+
+  function handleExtract() {
+    setExtractError(null);
+    startExtract(async () => {
+      const result = await extractEmployersFromCV();
+      if (result.error) {
+        setExtractError(result.error);
+        return;
+      }
+      if (!result.employers || result.employers.length === 0) {
+        setExtractError("Couldn't find any work history in the CV. Add manually instead.");
+        return;
+      }
+      setExtractedEntries(result.employers);
+    });
+  }
+
+  async function handleConfirmExtracted(entries: UserEmployerInput[]) {
+    for (const entry of entries) {
+      await addEmployer(entry);
+    }
+    setExtractedEntries(null);
+    router.refresh();
+  }
 
   // Sort oldest-first for salary progression calculation, then reverse for display.
   const chronological = [...initial].sort((a, b) => a.start_date.localeCompare(b.start_date));
@@ -327,17 +497,44 @@ export default function WorkHistoryManager({ initial }: { initial: UserEmployer[
 
   return (
     <div>
+      {extractedEntries && (
+        <ExtractReviewModal
+          initialEntries={extractedEntries}
+          onConfirm={handleConfirmExtracted}
+          onClose={() => setExtractedEntries(null)}
+        />
+      )}
+
+      {extractError && (
+        <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-xl p-3 mb-4 text-sm text-red-700">
+          <AlertCircle size={14} className="mt-0.5 shrink-0" />
+          <p className="flex-1">{extractError}</p>
+          <button onClick={() => setExtractError(null)} className="text-red-400 hover:text-red-600"><X size={14} /></button>
+        </div>
+      )}
+
       {initial.length === 0 && !showAdd && (
         <div className="text-center py-8 border-2 border-dashed border-slate-200 rounded-xl mb-4">
           <Briefcase size={22} className="text-slate-400 mx-auto mb-2" />
           <p className="text-sm text-slate-600 font-medium mb-1">No work history added yet</p>
           <p className="text-xs text-slate-400 mb-4 max-w-sm mx-auto">Add your roles so the AI can attribute your skills and achievements to the right employer when writing cover letters.</p>
-          <button
-            onClick={() => setShowAdd(true)}
-            className="inline-flex items-center gap-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white font-medium px-4 py-2 rounded-lg transition-colors"
-          >
-            <Plus size={14} /> Add your first role
-          </button>
+          <div className="flex items-center justify-center gap-2 flex-wrap">
+            {hasCV && (
+              <button
+                onClick={handleExtract}
+                disabled={extracting}
+                className="inline-flex items-center gap-1.5 text-sm bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white font-medium px-4 py-2 rounded-lg transition-colors"
+              >
+                {extracting ? <><Loader2 size={14} className="animate-spin" /> Extracting…</> : <><Sparkles size={14} /> Auto-fill from CV</>}
+              </button>
+            )}
+            <button
+              onClick={() => setShowAdd(true)}
+              className={`inline-flex items-center gap-1.5 text-sm font-medium px-4 py-2 rounded-lg transition-colors ${hasCV ? "bg-white border border-slate-200 hover:bg-slate-50 text-slate-700" : "bg-blue-600 hover:bg-blue-700 text-white"}`}
+            >
+              <Plus size={14} /> Add manually
+            </button>
+          </div>
         </div>
       )}
 
@@ -401,12 +598,24 @@ export default function WorkHistoryManager({ initial }: { initial: UserEmployer[
       )}
 
       {!showAdd && initial.length > 0 && (
-        <button
-          onClick={() => setShowAdd(true)}
-          className="flex items-center gap-2 text-sm text-blue-600 font-medium hover:text-blue-700 transition-colors"
-        >
-          <Plus size={15} /> Add another role
-        </button>
+        <div className="flex items-center gap-4 flex-wrap">
+          <button
+            onClick={() => setShowAdd(true)}
+            className="flex items-center gap-2 text-sm text-blue-600 font-medium hover:text-blue-700 transition-colors"
+          >
+            <Plus size={15} /> Add another role
+          </button>
+          {hasCV && (
+            <button
+              onClick={handleExtract}
+              disabled={extracting}
+              className="flex items-center gap-1.5 text-sm text-purple-600 font-medium hover:text-purple-700 disabled:opacity-50 transition-colors"
+              title="Pull more roles from your CV"
+            >
+              {extracting ? <><Loader2 size={13} className="animate-spin" /> Extracting…</> : <><Sparkles size={13} /> Pull more from CV</>}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

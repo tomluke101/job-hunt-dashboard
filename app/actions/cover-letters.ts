@@ -122,6 +122,7 @@ ISSUES TO CHECK (rewrite any sentence that matches):
    - "[X] has carried through into [my current role / every role since]".
    - "[X] has shaped how I [approach / think about / work with / engage with] [abstract topic]", with or without "end to end", "from the ground up", "at every level".
    - "[X] sits at the [intersection / crossover / boundary / meeting point] of [Y] and [Z]" — editorialising about the role or candidate's work.
+   - "[X], all of which [sit / are] at the [core / heart / centre / centre of gravity] of [my current work / what I do / my role]" — meta-positioning the parallel between JD responsibilities and the candidate's work, instead of just letting the list speak for itself. Same family. FIX: drop the "all of which sit at the core of my current work" tail; the listed items + the JD-integration framing already establish the parallel.
    - "Doing / Working [X] taught me [abstract quality]".
    - "[X experience] prepared me for [Y] / built the foundation for [Y]".
    - "[X] is the kind of [Y] that translates directly to [Z]", "maps to the kind of work [Z] requires", "underpins both [A] and [B]", "mirrors the [abstract quality] [Y team / role] requires", "closely mirrors the [abstract quality / coordination] [Y] requires", "reflects the [abstract quality] needed for [Y]".

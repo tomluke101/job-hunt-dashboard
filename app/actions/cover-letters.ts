@@ -58,7 +58,7 @@ interface CoverLetterPlan {
 
 const EXAMPLE_LETTER_DIRECT_RELEVANCE = `Dear Hiring Team,
 
-For the past two years I've been the sole financial analyst at a 60-person manufacturing business, building margin models, investigating cost variances, and translating raw operational data into decisions for the leadership team. Last quarter I redesigned our product profitability dashboard and surfaced a £180k gross margin gap on one of our core SKU lines that the team had been missing for six months.
+For the past two years I've been doing financial analysis at a 60-person manufacturing business, building margin models, investigating cost variances, and translating raw operational data into decisions for the leadership team. Last quarter I redesigned our product profitability dashboard and surfaced a £180k gross margin gap on one of our core SKU lines that the team had been missing for six months.
 
 A large part of my current role mirrors what the FP&A function handles: monthly variance analysis, scenario modelling for budget cycles, and partnering with operations on cost-reduction initiatives. I built and own the rolling 13-week cash flow forecast that the CFO uses for board reporting. I led a working capital project last year that shortened DSO by 11 days and freed up roughly £1.2m of cash. I also worked with operations and commercial to rebuild our reporting suite in PowerBI, with the cross-functional alignment work being as much of the project as the technical build.
 
@@ -609,6 +609,14 @@ GOOD anchor examples (note the pattern: specific moment + concrete outcome + num
 JD-RELEVANCE RANKING:
 Read the JD's top 3-5 specific requirements / named methodologies / key responsibilities. Rank the candidate's achievements by direct match. P2 must lead with the strongest 2-3 matches. For pivots, prioritise achievements that demonstrate the WORK PATTERN the candidate wants to do more of.
 
+ACHIEVEMENT DIVERSITY RULE — CRITICAL FOR P2:
+When the JD spans MULTIPLE distinct categories of work (e.g. "stock accuracy" + "supplier performance" + "process improvement" + "reporting"), P2 must include at least one achievement from EACH major category if the candidate has matching evidence. Do NOT cluster all P2 achievements in one category and skip the others. Specifically:
+- If the candidate has a process-improvement / migration / transformation story (e.g. switching vendors, redesigning a process, building a new system from a manual one) AND the JD lists process improvement / lean principles / continuous improvement / cost reduction as criteria — that achievement MUST appear in P2.
+- If the JD has a "drive supplier performance" or similar relationship-management responsibility AND the candidate has a supplier-coordination achievement — include it.
+- Never let one strong achievement category crowd out another that the JD explicitly lists.
+
+Worked example: for a JLR Supply Chain Analyst role where the JD lists (a) inventory accuracy, (b) supplier performance, (c) process improvement, (d) data systems integrity — P2 should include the candidate's stock-discrepancy work (a), supplier-performance tracker (b), courier-migration story (c), AND the ERP collaboration (d). All four are JD-relevant categories. Don't pick three of (a)+(b)+(d) and skip (c).
+
 ATTRIBUTION HONESTY:
 - "solo": candidate clearly led/built/executed alone — profile says so explicitly
 - "collaborative": candidate worked with a named other person (manager, director, team)
@@ -757,9 +765,17 @@ function buildWriteSystemPrompt({
 
   return `You write the prose of a cover letter, executing a plan that has already made the strategic choices. Match the voice of the example below.
 
-${exampleLabel} (the candidate is FICTIONAL — match the VOICE/STRUCTURE/SPECIFICITY, never copy specific numbers, projects, employers, or content):
+${exampleLabel} (the candidate is FICTIONAL — match the VOICE/STRUCTURE/SPECIFICITY, never copy specific numbers, projects, employers, or content from the example):
 
 ${example}
+
+NO-COPY RULE — STRICT: do NOT copy any specific words, phrases, status descriptors, or framings from the example beyond the structural pattern. This includes:
+- Status descriptors ("sole", "lead", "senior", "junior") — only use what's in the candidate's profile
+- Sector descriptors ("60-person manufacturing business", "healthcare startup", "Series B client") — only use what's in the candidate's profile
+- Specific numbers (£180k, 11 days, 14 to 4) — never invent numbers; only use ones from the candidate's profile/CV
+- Specific projects ("product profitability dashboard", "13-week cash flow forecast", "patient onboarding flow")
+- Anchor sentence wording — match the SHAPE (specific recent moment + concrete outcome) but write the candidate's own anchor in the candidate's own factual language
+The candidate's letter must use the candidate's actual employer name, role title, achievements, and numbers — drawn ONLY from the plan, profile, and CV provided below.
 
 NOW WRITE THE ACTUAL CANDIDATE'S COVER LETTER.
 

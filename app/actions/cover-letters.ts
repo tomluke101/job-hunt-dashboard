@@ -106,6 +106,31 @@ async function reviseCoverLetter(
 ): Promise<string> {
   const checklist = `You are an expert cover letter editor. Scan the letter below for any of the specific issues listed. Rewrite ONLY the offending sentences; leave everything else untouched. If no issues are found, return the letter exactly as given.
 
+PRIORITY SCAN — DO THESE FIRST, EVERY TIME, EVEN IF UNCERTAIN. These three patterns recurrently leak through the long checklist below. Read every sentence and flag any that matches:
+
+[A] ROLE-AS-SUBJECT SHAPE (highest priority): any sentence whose grammatical subject names the role, the company, the company's focus, the company's commitment, the role's responsibilities, or "[X] at the centre of this role" / "[X] central to this role", AND whose predicate connects to the candidate's work. Match by SHAPE not by exact words. Example hits to learn from:
+  - "The prospect engagement and pipeline management at the centre of this role map closely to work I do every day."
+  - "OneAdvanced's focus on software that directly shapes how health practitioners run their organisations is exactly the kind of impact I want to work toward."
+  - "Motia's focus on pricing optimisation maps closely to what I do."
+  - "[Company]'s commitment to X aligns with my approach to Y."
+  - "The work at [Company] reflects what I do day to day."
+The subject of every sentence must be the candidate or the candidate's specific work, NEVER the role, the company, or the role's responsibilities. FIX: rewrite with the candidate's work as subject, OR delete the sentence if it adds no concrete information.
+
+[B] EXPLICIT PARALLEL-DRAWING: any sentence that explicitly states the connection between the candidate's experience and the target role/JD activity. The reader must draw the parallel themselves; the letter must show the work and stop. Example hits to learn from:
+  - "That is the same discipline as qualifying a prospect and tailoring a solution to their objectives."
+  - "This work is the same as what a [role] does."
+  - "[X] is essentially [JD activity]."
+  - "What I do every day mirrors what [JD activity] requires."
+  - "This translates directly to the work this role calls for."
+FIX: delete the sentence entirely. The achievement before it should speak for itself.
+
+[C] BOLTED-ON WHY-THIS-COMPANY PARAGRAPH: a paragraph (typically just before the closing) consisting of one or two sentences praising the company's focus / approach / commitment / impact. This violates the integration rule which requires hooks to be MID-PARAGRAPH within an existing paragraph, never their own. Example hits:
+  - "OneAdvanced's focus on software that directly shapes how health practitioners run their organisations day to day is exactly the kind of tangible operational impact I want to work toward in this role."
+  - "JLR's commitment to lean manufacturing is the kind of approach I want to be part of."
+FIX: delete the whole paragraph. A clean 3-paragraph letter (P1 opening, P2 evidence, P3 second-employer/distinct theme, then closing) is stronger than 3 paragraphs + a bolted-on flattery paragraph. If a hook genuinely fits, integrate it as a single sentence inside an existing paragraph next to a related achievement. Otherwise drop entirely.
+
+After running this priority scan, continue to the full checklist below for everything else.
+
 ISSUES TO CHECK (rewrite any sentence that matches):
 
 1. EVASIVE EMPLOYER DESCRIPTORS in the opening ("at a product-led business", "at a small business", "at a growing company", "at a mid-sized firm", "at a fast-paced SME", "at an innovative startup"). FIX: drop the "at a [descriptor]" clause; keep just "as a [role title]".

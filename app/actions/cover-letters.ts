@@ -34,6 +34,8 @@ interface CoverLetterPlan {
     type: "specific_recent_achievement" | "specific_current_responsibility" | "specific_role_insight";
     draft_p1_first_sentence: string;
   };
+  jd_integration_sentence: string;
+  company_name: string;
   p2_theme: string;
   p2_achievements: PlannedAchievement[];
   p3_strategy: "second_employer" | "distinct_theme_same_employer";
@@ -562,6 +564,8 @@ SCHEMA (output exactly this shape):
     "type": "specific_recent_achievement" | "specific_current_responsibility" | "specific_role_insight",
     "draft_p1_first_sentence": "the actual first sentence — must include a SPECIFIC anchor (a number, a named project, a named recent decision, a concrete activity). Generic role description is banned."
   },
+  "jd_integration_sentence": "the sentence in P2 that explicitly names a SPECIFIC JD function/team/process/named-responsibility (e.g. 'the Release and Follow-Up function at JLR', 'FP&A at Acme', 'the Customer Success role') and lists 2-4 concrete JD-named responsibilities the candidate has parallel work for. The required pattern shape is: 'A large part of my current role mirrors what [the named JD function/team] [at Company] handles: [item], [item], and [item].' OR similar candidate-as-subject variant. The subject MUST be the candidate or the candidate's role — NEVER 'the role focuses on X' or '[Company]'s focus on Y'. This sentence is mandatory for direct_relevance letters; for honest_bridge letters it's the parallel-work establishing sentence at P2 opening.",
+  "company_name": "the target company's name as it should appear in the letter body (must appear at least once in the JD-integration sentence or P2/P3, NEVER in P1 sentence one)",
   "p2_theme": "one short phrase naming what P2 will cover",
   "p2_achievements": [
     { "source": "skill" | "cv" | "employer_summary", "employer": "Company Name", "description": "the concrete achievement in one sentence", "jd_relevance": "why this matches the JD specifically", "attribution": "solo" | "collaborative" | "supportive" }
@@ -584,11 +588,23 @@ OPENING STRATEGY:
 NARRATIVE ANCHOR (most important choice — read carefully):
 The draft_p1_first_sentence is the actual first sentence of the cover letter. Write it well.
 BAD anchors (banned — generic role description): "As a Supply Chain Analyst at X, I work daily with sales and demand data..."
-GOOD anchors (specific moment/decision/number drawn from candidate's profile):
-- "Last quarter I migrated my company to a new courier partner — built the case, ran the analysis, executed the switch, cut delivery costs and improved on-time delivery."
+GOOD anchors (specific moment/decision/number drawn from candidate's profile).
+
+ANCHOR SELECTION RULE — CRITICAL:
+The anchor must be the candidate's achievement that DIRECTLY MATCHES THE JD'S TOP REQUIREMENT, not the candidate's most impressive achievement overall. These are often different. Steps:
+1. Read the JD and identify its TOP 2-3 specific requirements / named methodologies / named responsibilities.
+2. From the candidate's profile, find which achievement MOST DIRECTLY demonstrates work in that area.
+3. That achievement is the anchor — even if it's not the candidate's flashiest accomplishment.
+
+Example: for a JLR Supply Chain Analyst role where the JD names Release and Follow-Up function (on-time delivery, inventory accuracy, supplier performance), the strongest anchor is the candidate's stock-discrepancy / supplier-performance / courier-migration work — NOT a separate ERP-build project that's impressive but doesn't match the JD's headline duties.
+Example: for a Customer Success role focusing on enterprise account retention, the strongest anchor is a specific customer escalation / renewal recovery story — NOT a tools-building project the candidate is proud of.
+
+For pivots: the anchor MUST be a moment that demonstrates the work pattern named in the candidate's motivation. Pick the achievement most aligned with the SLICE of work the candidate enjoys, AND that maps to the target role.
+
+GOOD anchor examples (note the pattern: specific moment + concrete outcome + number where possible):
+- "Last quarter I migrated my company to a new courier partner: ran the data analysis, built the business case, executed the switch, and cut our delivery spend roughly 12 percent."
 - "Six months ago I rebuilt the supplier performance tracking system at my company, replacing a manual spreadsheet process with an automated tool that has since recovered three refund claims worth around £4k each."
-- "For the past year I've been the sole supply chain analyst at a growing product business, managing procurement across [N] overseas suppliers and resolving the kind of stock and shipment issues that would otherwise stall production."
-For pivots: the anchor MUST be a moment that demonstrates the work pattern named in the candidate's motivation. Pick the achievement most aligned with the SLICE of work the candidate enjoys.
+- "For the past year I've been the sole supply chain analyst at a growing product business, managing procurement across multiple overseas suppliers and resolving the kind of stock discrepancies and shipment issues that would otherwise stall production."
 
 JD-RELEVANCE RANKING:
 Read the JD's top 3-5 specific requirements / named methodologies / key responsibilities. Rank the candidate's achievements by direct match. P2 must lead with the strongest 2-3 matches. For pivots, prioritise achievements that demonstrate the WORK PATTERN the candidate wants to do more of.
@@ -782,13 +798,15 @@ WRITING RULES:
 HARD BANS (these are non-negotiable, regardless of what the example contains):
 1. Em-dashes (—) and double hyphens (--) banned anywhere. Use commas, semicolons, or new sentences.
 2. First-person throughout. Never refer to candidate by name in the letter body.
-3. Subject of every sentence must be the candidate or the candidate's specific concrete work — NEVER the JD items, the role's responsibilities, "the company's focus", "[Company]'s commitment", or "the work at [Company]". If you find yourself writing "[Company]'s focus on X is Y" or "[JD items] map to what I do" or "[role] centres on X" — STOP and rewrite with the candidate as subject.
-4. Never explicitly draw parallels: "X is the same as Y", "this is the same discipline as Y", "X mirrors / maps to / aligns with / runs on the same fundamentals as Y", "this is what a [role] does". Show the work; the reader draws the parallel.
-5. Never write self-characterising summary sentences: "[work] required me to [abstract qualities]", "[X] gave me a grounding in Y", "[X] is embedded in how I work", "[X] shaped how I approach Y".
-6. Never inflate audience: "the director" stays "the director", not "senior stakeholders".
-7. Never use the fast-learner pivot ("foundations are there", "natural next step", "quick study").
-8. Never bolt on a separate why-this-company paragraph. If a hook is in the plan, integrate it as a 1-2 sentence reference inside an existing paragraph.
-9. ${clPrefs.include_header ? `Do NOT add contact details (phone, email, LinkedIn) after the name.` : `Do NOT add a contact details header at the top.`}
+3. Subject of every sentence must be the candidate or the candidate's specific concrete work. NEVER the JD items, the role's responsibilities, "the company's focus", "[Company]'s commitment", or "the work at [Company]". If you find yourself writing "[Company]'s focus on X is Y" or "[JD items] map to what I do" or "[role] centres on X" — STOP and rewrite with the candidate as subject.
+4. Never explicitly draw parallels: "X is the same as Y", "this is the same discipline as Y", "X mirrors / maps to / aligns with / runs on the same fundamentals as Y", "this is what a [role] does". Show the work; the reader draws the parallel. EXCEPTION: the plan's jd_integration_sentence uses the validated "A large part of my current role mirrors what [function] handles: [3 items]" pattern, which IS allowed because its subject is the candidate's role not the JD; use that sentence as written or near-as.
+5. Never write self-characterising summary sentences: "[work] required me to [abstract qualities]", "[X] gave me a grounding in Y", "[X] is embedded in how I work", "[X] shaped how I approach Y", "I have a [strong/deep/detailed] understanding of [Y]", "having [X], I have a [Y] understanding of [Z]". State concrete facts, never abstract self-claims about understanding/grounding/grasp.
+6. Never use abstract positioning verbs that talk ABOUT the candidate's work in summary: "[X] sits at the centre of [Y]", "[X] is the core of [Y]", "[X] is at the heart of [Y]", "[X] centres on [Y]", "[X] has centred on [Y]", "[my work] sits at the intersection of [A] and [B]". Describe the work directly — never position it abstractly.
+7. Never inflate audience: "the director" stays "the director", not "senior stakeholders" or "senior leadership" or "internal decision-makers" (the last is a slight inflation when source says "the director and team"). Use the actual audience named in the profile.
+8. Never use the fast-learner pivot ("foundations are there", "natural next step", "quick study").
+9. Never bolt on a separate why-this-company paragraph. If a hook is in the plan, integrate it as a 1-2 sentence reference inside an existing paragraph.
+10. The plan's company_name MUST appear at least once in the letter body (not in P1 sentence one) — typically inside the jd_integration_sentence or near a P2/P3 reference. Never let the company go unnamed.
+11. ${clPrefs.include_header ? `Do NOT add contact details (phone, email, LinkedIn) after the name.` : `Do NOT add a contact details header at the top.`}
 
 OUTPUT: Start with "${salutation}," on its own line, then a blank line, then P1. End with the sign-off and name on separate lines. No preamble, no commentary, no markdown.`;
 }

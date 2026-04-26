@@ -18,6 +18,68 @@ export interface SavedCoverLetter {
   created_at: string;
 }
 
+// ── Plan-then-write architecture types ───────────────────────────────────────
+
+interface PlannedAchievement {
+  source: "skill" | "cv" | "employer_summary";
+  employer: string;
+  description: string;
+  jd_relevance: string;
+  attribution: "solo" | "collaborative" | "supportive";
+}
+
+interface CoverLetterPlan {
+  opening_strategy: "direct_relevance" | "honest_bridge" | "role_insight";
+  narrative_anchor: {
+    type: "specific_recent_achievement" | "specific_current_responsibility" | "specific_role_insight";
+    draft_p1_first_sentence: string;
+  };
+  p2_theme: string;
+  p2_achievements: PlannedAchievement[];
+  p3_strategy: "second_employer" | "distinct_theme_same_employer";
+  p3_achievements: PlannedAchievement[];
+  hook: null | {
+    type: "jd_named_function" | "jd_named_system" | "company_initiative" | "candidate_connection";
+    integration_location: "p2" | "p3";
+    description: string;
+  };
+  motivation_to_carry: string | null;
+  degree_placement: "p1_after_anchor" | "p3_end" | "omit";
+  closing_shape: string;
+}
+
+// Few-shot examples — fictional candidates, demonstrate VOICE / STRUCTURE.
+// Both audited against the bar: no banned shapes, specific narrative anchors,
+// JD-integration via candidate-centric subjects, honest attribution, clean
+// closings. Used in the WRITE stage to teach voice — model is told NOT to
+// copy specific achievements/numbers/roles into the candidate's letter.
+
+const EXAMPLE_LETTER_DIRECT_RELEVANCE = `Dear Hiring Team,
+
+For the past two years I've been the sole financial analyst at a 60-person manufacturing business, building margin models, investigating cost variances, and translating raw operational data into decisions for the leadership team. Last quarter I redesigned our product profitability dashboard and surfaced a £180k gross margin gap on one of our core SKU lines that the team had been missing for six months.
+
+A large part of my current role mirrors what the FP&A function handles: monthly variance analysis, scenario modelling for budget cycles, and partnering with operations on cost-reduction initiatives. I built and own the rolling 13-week cash flow forecast that the CFO uses for board reporting. I led a working capital project last year that shortened DSO by 11 days and freed up roughly £1.2m of cash. I also worked with operations and commercial to rebuild our reporting suite in PowerBI, with the cross-functional alignment work being as much of the project as the technical build.
+
+Before my current role, I worked as a Junior Analyst at a Big 4 firm, supporting M&A due diligence on mid-market deals. I built financial models and quality-of-earnings reports under tight deadlines and presented findings directly to senior partners on multiple closes. I completed a first-class Mathematics degree at Bristol alongside that work.
+
+I would welcome the opportunity to discuss how my experience aligns with this role in more detail.
+
+Kind regards,
+Sarah Chen`;
+
+const EXAMPLE_LETTER_PIVOT = `Dear Hiring Team,
+
+For the past three years I've been a Senior Designer at a healthcare startup, leading visual design across our product surface. The work I've found myself drawn into most is the brief stage. Last month I rewrote an inbound brief from a Series B client that was trying to redesign their patient onboarding flow, reframed the problem from "make it prettier" to "cut drop-off in steps 3 and 4", and turned that into a scope the client signed off in one revision instead of the usual three.
+
+That consultative problem-reframing is the work I want to do as a primary function. At my current company I run weekly working sessions with our biggest clients to surface what's actually blocking them, translate that into product change requests, and project-manage internal delivery teams to ship resolutions. I rebuilt our customer feedback intake process with our head of customer success last year, which shortened time-to-resolution from 14 days to 4 on average. I've directly handled escalations from three of our top accounts, including one renewal that was at risk of churning.
+
+Before this role, I worked as an Account Executive at a digital agency in London for two years, managing six concurrent retainer clients and £400k of annual revenue, focused on retention conversations and scoping new work. I completed a degree in Cognitive Science at UCL alongside earlier internships.
+
+I would welcome the chance to discuss the role in more depth.
+
+Kind regards,
+Marcus Rivera`;
+
 export async function getSavedCoverLetters(): Promise<SavedCoverLetter[]> {
   const { userId } = await auth();
   if (!userId) return [];
@@ -446,6 +508,291 @@ ${profile.full_name ?? ""}
 ${clPrefs.include_header ? `Do NOT add any contact details (phone, email, LinkedIn) after the name.` : ``}No preamble, no explanation, no subject line. FINAL REMINDER: the em-dash character (—) must not appear anywhere in your output.`;
 }
 
+// Format helpers used by both single-pass and plan-then-write paths.
+function formatWorkHistoryForContext(employers: Awaited<ReturnType<typeof getEmployers>>): string {
+  return employers.length > 0
+    ? employers.map((e) => {
+        const dates = e.is_current ? `${e.start_date} → present` : `${e.start_date} → ${e.end_date ?? "?"}`;
+        const summary = e.summary ? ` — ${e.summary}` : "";
+        return `- ${e.role_title} at ${e.company_name} (${dates})${summary}`;
+      }).join("\n")
+    : "None provided.";
+}
+
+function formatSkillsForContext(
+  skills: Awaited<ReturnType<typeof getSkills>>,
+  employers: Awaited<ReturnType<typeof getEmployers>>,
+): string {
+  if (skills.length === 0) return "None provided.";
+  const lookup = new Map(employers.map((e) => [e.id, e]));
+  return skills.map((s) => {
+    const tags = (s.employer_ids ?? [])
+      .map((id) => lookup.get(id)?.company_name)
+      .filter(Boolean);
+    const attribution = tags.length > 0 ? ` [from: ${tags.join(", ")}]` : " [general / not employer-specific]";
+    return `- ${s.polished_text || s.raw_text}${attribution}`;
+  }).join("\n");
+}
+
+// Stage 1 — PLAN: produces a structured JSON plan of strategic choices.
+// Returns null if the AI returns malformed JSON, in which case the caller
+// falls back to the single-pass path.
+async function planCoverLetter(input: {
+  profile: Awaited<ReturnType<typeof getProfile>>;
+  cvContent: string;
+  skills: Awaited<ReturnType<typeof getSkills>>;
+  employers: Awaited<ReturnType<typeof getEmployers>>;
+  jobDescription: string;
+  pivotContext?: string;
+  anythingToAdd?: string;
+  companyResearch?: string;
+  taskPrefs: Awaited<ReturnType<typeof getTaskPreferences>>;
+  keys: Awaited<ReturnType<typeof getApiKeyValues>>;
+}): Promise<CoverLetterPlan | null> {
+  const tone = input.profile.tone ?? "balanced";
+
+  const systemPrompt = `You are planning a cover letter. Output ONLY valid JSON matching the schema below — no prose, no preamble, no commentary, no markdown fences.
+
+You make the strategic decisions: which achievements to feature, what the opening anchor is, how P2 and P3 are themed, which closing shape to use. The next stage writes the prose; you must give that stage everything it needs to write a strong specific letter.
+
+SCHEMA (output exactly this shape):
+{
+  "opening_strategy": "direct_relevance" | "honest_bridge" | "role_insight",
+  "narrative_anchor": {
+    "type": "specific_recent_achievement" | "specific_current_responsibility" | "specific_role_insight",
+    "draft_p1_first_sentence": "the actual first sentence — must include a SPECIFIC anchor (a number, a named project, a named recent decision, a concrete activity). Generic role description is banned."
+  },
+  "p2_theme": "one short phrase naming what P2 will cover",
+  "p2_achievements": [
+    { "source": "skill" | "cv" | "employer_summary", "employer": "Company Name", "description": "the concrete achievement in one sentence", "jd_relevance": "why this matches the JD specifically", "attribution": "solo" | "collaborative" | "supportive" }
+  ],
+  "p3_strategy": "second_employer" | "distinct_theme_same_employer",
+  "p3_achievements": [ ...same shape as p2_achievements... ],
+  "hook": null OR { "type": "jd_named_function" | "jd_named_system" | "company_initiative" | "candidate_connection", "integration_location": "p2" | "p3", "description": "what hook to weave in (one sentence max)" },
+  "motivation_to_carry": null (when no pivot) OR "the candidate's motivation/desire as a short phrase the writer should communicate through the letter, but never quote verbatim",
+  "degree_placement": "p1_after_anchor" | "p3_end" | "omit",
+  "closing_shape": "F1" | "F2" | "F3" | "F4" | "W1" | "W2" | "W3" | "W4" | "C1" | "C2" | "C3" | "C4"
+}
+
+KEY DECISION RULES:
+
+OPENING STRATEGY:
+- direct_relevance: candidate's current role is a clean direct match for the target. Default for well-suited roles.
+- honest_bridge: candidate is pivoting to a different role/sector. Use whenever pivot context is provided.
+- role_insight: rare. Only when the candidate has a specific genuine insight about what this role demands.
+
+NARRATIVE ANCHOR (most important choice — read carefully):
+The draft_p1_first_sentence is the actual first sentence of the cover letter. Write it well.
+BAD anchors (banned — generic role description): "As a Supply Chain Analyst at X, I work daily with sales and demand data..."
+GOOD anchors (specific moment/decision/number drawn from candidate's profile):
+- "Last quarter I migrated my company to a new courier partner — built the case, ran the analysis, executed the switch, cut delivery costs and improved on-time delivery."
+- "Six months ago I rebuilt the supplier performance tracking system at my company, replacing a manual spreadsheet process with an automated tool that has since recovered three refund claims worth around £4k each."
+- "For the past year I've been the sole supply chain analyst at a growing product business, managing procurement across [N] overseas suppliers and resolving the kind of stock and shipment issues that would otherwise stall production."
+For pivots: the anchor MUST be a moment that demonstrates the work pattern named in the candidate's motivation. Pick the achievement most aligned with the SLICE of work the candidate enjoys.
+
+JD-RELEVANCE RANKING:
+Read the JD's top 3-5 specific requirements / named methodologies / key responsibilities. Rank the candidate's achievements by direct match. P2 must lead with the strongest 2-3 matches. For pivots, prioritise achievements that demonstrate the WORK PATTERN the candidate wants to do more of.
+
+ATTRIBUTION HONESTY:
+- "solo": candidate clearly led/built/executed alone — profile says so explicitly
+- "collaborative": candidate worked with a named other person (manager, director, team)
+- "supportive": candidate supported a project led by others
+The writer respects this attribution exactly. Never inflate.
+
+P3 STRATEGY:
+- second_employer: preferred default if candidate has a second employer (internship/previous role) with relevant achievements
+- distinct_theme_same_employer: only if second employer has minimal relevant material
+
+HOOK:
+- Include only if there's a specific hookable item in the JD (named function, named system, named scheme) AND the candidate has matching evidence in their profile.
+- Skip (null) if no natural fit. Better no hook than a forced one.
+
+MOTIVATION_TO_CARRY:
+- For pivots: distill the candidate's motivation from pivot context into a short framing phrase. The writer will weave the SPIRIT of this into the letter without copying words.
+- For non-pivots: null.
+
+DEGREE PLACEMENT:
+- p3_end: preferred default for early-career candidates (under ~3 years post-graduation) with notable degrees. Cleanest chronology.
+- p1_after_anchor: rarely. Only if it strengthens the opening without making P1 awkward.
+- omit: mid/senior candidates (3+ years experience).
+
+CLOSING SHAPE — pick one:
+- F1: "I would welcome the opportunity to discuss how my skills and experience align with this role in further detail." (default for professional/balanced tone)
+- F2: "I would welcome the chance to discuss this role and how my background fits in more depth."
+- F3: "I would be glad to discuss how I could contribute to the [named function or 'team'] further."
+- F4: "I would value the opportunity to discuss this role and the work involved in more detail."
+- W1: "I'd welcome the chance to take this further."
+- W2: "Looking forward to discussing the role with the team."
+- W3: "Glad to discuss the [named function/team] role further whenever convenient."
+- W4: "Available for a call at any time that works for you."
+- C1-C4: ONLY for explicitly conversational tone or genuinely informal employer (startup, creative agency)
+
+Tone setting for this candidate: "${tone}". For "formal" or "balanced" tone, default to F1-F4. For "conversational", consider C1-C4.
+
+CRITICAL CONSTRAINTS:
+- Never invent achievements not in the profile / CV.
+- Never invent abstract qualities the candidate hasn't claimed.
+- Use the exact employer names from work history.
+- For "collaborative" achievements, the description must name the collaborator (e.g. "with the company director").
+
+OUTPUT: only the JSON object. No preamble, no markdown fences.`;
+
+  const userPrompt = `JOB DESCRIPTION:
+${input.jobDescription}
+
+CANDIDATE WORK HISTORY:
+${formatWorkHistoryForContext(input.employers)}
+
+CANDIDATE SKILLS / ACHIEVEMENTS:
+${formatSkillsForContext(input.skills, input.employers)}
+
+CANDIDATE CV:
+${input.cvContent.slice(0, 4000)}
+
+${input.pivotContext?.trim() ? `PIVOT MOTIVATION:\n${input.pivotContext}\n` : ""}
+${input.anythingToAdd?.trim() ? `CANDIDATE NOTES:\n${input.anythingToAdd}\n` : ""}
+${input.companyResearch?.trim() ? `COMPANY RESEARCH:\n${input.companyResearch}\n` : ""}
+
+Output the JSON plan now.`;
+
+  try {
+    const result = await callAI({
+      task: "cover-letter",
+      systemPrompt,
+      prompt: userPrompt,
+      userPreference: input.taskPrefs["cover-letter"],
+      connectedProviders: input.keys,
+    });
+
+    const text = result.text.trim();
+    const jsonStart = text.indexOf("{");
+    const jsonEnd = text.lastIndexOf("}");
+    if (jsonStart === -1 || jsonEnd === -1) {
+      console.error("[planCoverLetter] no JSON object found in output");
+      return null;
+    }
+
+    const plan = JSON.parse(text.slice(jsonStart, jsonEnd + 1)) as CoverLetterPlan;
+
+    // Sanity check — required fields present
+    if (!plan.opening_strategy || !plan.narrative_anchor?.draft_p1_first_sentence || !Array.isArray(plan.p2_achievements) || !plan.closing_shape) {
+      console.error("[planCoverLetter] plan missing required fields:", plan);
+      return null;
+    }
+
+    return plan;
+  } catch (e) {
+    console.error("[planCoverLetter] failed:", e);
+    return null;
+  }
+}
+
+// Stage 2 — WRITE: produces prose using the plan + few-shot examples.
+function buildWriteSystemPrompt({
+  plan,
+  profile,
+  cvContent,
+  skills,
+  employers,
+  pivotContext,
+  anythingToAdd,
+  companyResearch,
+  clPrefs,
+  writingExamples,
+}: {
+  plan: CoverLetterPlan;
+  profile: Awaited<ReturnType<typeof getProfile>>;
+  cvContent: string;
+  skills: Awaited<ReturnType<typeof getSkills>>;
+  employers: Awaited<ReturnType<typeof getEmployers>>;
+  pivotContext?: string;
+  anythingToAdd?: string;
+  companyResearch: string;
+  clPrefs: CoverLetterPrefs;
+  writingExamples: Awaited<ReturnType<typeof getWritingExamples>>;
+}): string {
+  const tone = profile.tone ?? "balanced";
+  const toneGuide =
+    tone === "formal" ? "Write in a formal, structured, professional tone." :
+    tone === "conversational" ? "Write in a warm, direct, conversational tone — confident but human." :
+    "Write in a clear, confident, professional-but-human tone.";
+
+  const salutation = clPrefs.salutation || "Dear Hiring Manager";
+  const usePivotExample = !!pivotContext?.trim() || plan.opening_strategy === "honest_bridge";
+
+  const example = usePivotExample ? EXAMPLE_LETTER_PIVOT : EXAMPLE_LETTER_DIRECT_RELEVANCE;
+  const exampleLabel = usePivotExample ? "EXAMPLE — career pivot scenario" : "EXAMPLE — direct-relevance scenario";
+
+  const userWritingStyle = writingExamples.length > 0
+    ? `\nCANDIDATE'S OWN WRITING STYLE (study for natural voice; do NOT copy banned patterns even if they appear here):\n${writingExamples.map((e, i) => `Sample ${i + 1}:\n${e.content.slice(0, 500)}`).join("\n\n")}\n`
+    : "";
+
+  const alwaysMentionSection = clPrefs.always_mention?.trim()
+    ? `\nALWAYS INCLUDE: ${clPrefs.always_mention}`
+    : "";
+
+  const neverDoSection = clPrefs.never_do?.trim()
+    ? `\nNEVER INCLUDE: ${clPrefs.never_do}`
+    : "";
+
+  const extraToneSection = clPrefs.extra_tone_notes?.trim()
+    ? `\nADDITIONAL TONE NOTES: ${clPrefs.extra_tone_notes}`
+    : "";
+
+  return `You write the prose of a cover letter, executing a plan that has already made the strategic choices. Match the voice of the example below.
+
+${exampleLabel} (the candidate is FICTIONAL — match the VOICE/STRUCTURE/SPECIFICITY, never copy specific numbers, projects, employers, or content):
+
+${example}
+
+NOW WRITE THE ACTUAL CANDIDATE'S COVER LETTER.
+
+PLAN (follow exactly):
+${JSON.stringify(plan, null, 2)}
+
+CANDIDATE PROFILE (for fact verification — only use facts present here, never invent):
+- Name: ${profile.full_name ?? ""}
+- Sign-off: ${profile.sign_off ?? "Kind regards"}
+- Tone: ${tone}
+
+WORK HISTORY:
+${formatWorkHistoryForContext(employers)}
+
+SKILLS / ACHIEVEMENTS (each tagged to its employer):
+${formatSkillsForContext(skills, employers)}
+
+CV (additional context):
+${cvContent.slice(0, 4000)}
+
+${pivotContext?.trim() ? `PIVOT MOTIVATION (use as framing signal — DO NOT copy phrases verbatim into the letter):\n${pivotContext}\n` : ""}
+${anythingToAdd?.trim() ? `CANDIDATE NOTES (high-priority context):\n${anythingToAdd}\n` : ""}
+${companyResearch ? `COMPANY RESEARCH:\n${companyResearch}\n` : ""}
+${userWritingStyle}${alwaysMentionSection}${neverDoSection}${extraToneSection}
+
+WRITING RULES:
+- ${toneGuide}
+- 250-380 words, exactly 3 (or rarely 4) paragraphs plus a one-sentence closing on its own line.
+- P1 starts with the plan's draft_p1_first_sentence (you may polish it but keep the specific anchor and concrete content).
+- P2 leads with a JD-integration sentence whose subject is the candidate or the candidate's role — never the role/company/their focus.
+- Every concrete activity statement must match the attribution in the plan: "collaborative" achievements name the collaborator ("with the company director"), "solo" claims only when the plan says so.
+- Use specific numbers/dates/names from the plan and profile; never invent.
+- Closing line uses the plan's closing_shape with the named role / function substituted in (do NOT name the role title + company together — say "this role" or "the [named function]").
+- Sign off: "${profile.sign_off ?? "Kind regards"}," on its own line, then "${profile.full_name ?? ""}" on the next line.
+
+HARD BANS (these are non-negotiable, regardless of what the example contains):
+1. Em-dashes (—) and double hyphens (--) banned anywhere. Use commas, semicolons, or new sentences.
+2. First-person throughout. Never refer to candidate by name in the letter body.
+3. Subject of every sentence must be the candidate or the candidate's specific concrete work — NEVER the JD items, the role's responsibilities, "the company's focus", "[Company]'s commitment", or "the work at [Company]". If you find yourself writing "[Company]'s focus on X is Y" or "[JD items] map to what I do" or "[role] centres on X" — STOP and rewrite with the candidate as subject.
+4. Never explicitly draw parallels: "X is the same as Y", "this is the same discipline as Y", "X mirrors / maps to / aligns with / runs on the same fundamentals as Y", "this is what a [role] does". Show the work; the reader draws the parallel.
+5. Never write self-characterising summary sentences: "[work] required me to [abstract qualities]", "[X] gave me a grounding in Y", "[X] is embedded in how I work", "[X] shaped how I approach Y".
+6. Never inflate audience: "the director" stays "the director", not "senior stakeholders".
+7. Never use the fast-learner pivot ("foundations are there", "natural next step", "quick study").
+8. Never bolt on a separate why-this-company paragraph. If a hook is in the plan, integrate it as a 1-2 sentence reference inside an existing paragraph.
+9. ${clPrefs.include_header ? `Do NOT add contact details (phone, email, LinkedIn) after the name.` : `Do NOT add a contact details header at the top.`}
+
+OUTPUT: Start with "${salutation}," on its own line, then a blank line, then P1. End with the sign-off and name on separate lines. No preamble, no commentary, no markdown.`;
+}
+
 export async function generateCoverLetter(input: {
   jobDescription: string;
   companyName?: string;
@@ -476,9 +823,54 @@ export async function generateCoverLetter(input: {
     companyResearch = await fetchCompanyResearch(input.companyName, keys.perplexity);
   }
 
-  const systemPrompt = buildSystemPrompt({ profile, cvContent: cv.content, skills, employers, writingExamples, companyResearch, clPrefs });
+  // Stage 1 — PLAN: produce structured strategic decisions as JSON.
+  // If this fails (malformed JSON, AI error), we fall back to the single-pass
+  // path so generation never breaks for the user.
+  const plan = await planCoverLetter({
+    profile,
+    cvContent: cv.content,
+    skills,
+    employers,
+    jobDescription: input.jobDescription,
+    pivotContext: input.pivotContext,
+    anythingToAdd: input.anythingToAdd,
+    companyResearch,
+    taskPrefs,
+    keys,
+  });
 
-  const userPrompt = `Write a cover letter for this role:
+  let result: { text: string; provider: string };
+
+  if (plan) {
+    // Stage 2 — WRITE: prose generation guided by plan + few-shot example.
+    const writeSystemPrompt = buildWriteSystemPrompt({
+      plan,
+      profile,
+      cvContent: cv.content,
+      skills,
+      employers,
+      pivotContext: input.pivotContext,
+      anythingToAdd: input.anythingToAdd,
+      companyResearch,
+      clPrefs,
+      writingExamples,
+    });
+
+    result = await callAI({
+      task: "cover-letter",
+      prompt: `Write the cover letter now, following the plan. Job description provided for context:\n\n${input.jobDescription}`,
+      systemPrompt: writeSystemPrompt,
+      userPreference: taskPrefs["cover-letter"],
+      connectedProviders: keys,
+    });
+  } else {
+    // Fallback — single-pass legacy path. Used when the planner fails so the
+    // user never sees a broken generation. Should match prior behaviour exactly.
+    console.warn("[generateCoverLetter] plan stage failed, falling back to single-pass");
+
+    const systemPrompt = buildSystemPrompt({ profile, cvContent: cv.content, skills, employers, writingExamples, companyResearch, clPrefs });
+
+    const userPrompt = `Write a cover letter for this role:
 
 JOB DESCRIPTION:
 ${input.jobDescription}
@@ -486,13 +878,14 @@ ${input.jobDescription}
 ${input.pivotContext?.trim() ? `CAREER PIVOT — the candidate is flagged as deliberately moving into a different role type. The text below is their MOTIVATION/INTENT for the move — NOT a list of achievements to copy into the letter. Use it as a FRAMING SIGNAL: it tells you (a) which target role/function to write toward, (b) which slice of the candidate's current work is most relevant for this pivot. The letter should: use the Honest Bridge opening (show parallel work without naming the gap or apologising), prioritise achievements from the candidate's profile that match the slice of work named in the motivation, and treat this pivot context as guidance — not as content. DO NOT copy phrases from this motivation into the letter. DO NOT say "I am moving from X to Y" or "transitioning from X to Y". If the motivation is vague ("I want a change"), ignore it entirely and silently. Override the CV personal statement's stated career direction with this framing.\n\nMOTIVATION:\n${input.pivotContext}` : ""}
 ${input.anythingToAdd?.trim() ? `CANDIDATE CONTEXT — additional framing and emphasis. Use as high-priority context:\n${input.anythingToAdd}` : ""}`;
 
-  const result = await callAI({
-    task: "cover-letter",
-    prompt: userPrompt,
-    systemPrompt,
-    userPreference: taskPrefs["cover-letter"],
-    connectedProviders: keys,
-  });
+    result = await callAI({
+      task: "cover-letter",
+      prompt: userPrompt,
+      systemPrompt,
+      userPreference: taskPrefs["cover-letter"],
+      connectedProviders: keys,
+    });
+  }
 
   const signOff = profile.sign_off ?? "Kind regards";
   const fullName = profile.full_name ?? "";

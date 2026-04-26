@@ -450,33 +450,33 @@ export default function CoverLetterGenerator({
               <div className="px-4 pb-4 space-y-2">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <p className="text-xs font-semibold text-violet-700">
-                    What work do you do that maps to this role?
+                    Why do you want to move into this kind of role?
                   </p>
                   <button
                     type="button"
                     onClick={handleSuggestPivot}
                     disabled={isSuggestingPivot}
                     className="flex items-center gap-1.5 text-xs font-medium text-violet-700 hover:text-violet-900 px-2.5 py-1 rounded-lg border border-violet-300 hover:bg-violet-100 disabled:opacity-50 transition-colors"
-                    title="Use my profile and the JD to suggest a strong pivot context — you can edit before generating"
+                    title="Suggest a short motivation paragraph based on the JD — you can edit before generating"
                   >
                     {isSuggestingPivot
                       ? <><Loader2 size={11} className="animate-spin" /> Drafting…</>
-                      : <><Sparkles size={11} /> {pivotContext.trim() ? "Improve with profile" : "Suggest from my profile"}</>}
+                      : <><Sparkles size={11} /> {pivotContext.trim() ? "Improve" : "Suggest"}</>}
                   </button>
                 </div>
                 <textarea
                   autoFocus
                   value={pivotContext}
                   onChange={(e) => setPivotContext(e.target.value)}
-                  placeholder={"Write one or two lines about why you're moving into this kind of role — even rough is fine.\n\nThen click 'Suggest from my profile' and we'll expand it using your skills and work history.\n\nOr write the full thing yourself if you'd rather."}
-                  rows={5}
+                  placeholder={"A short line or two on why you want this kind of role — what part of your current work draws you to it.\n\ne.g. \"I want to move into B2B sales. The part of my current job I find most engaging is the relationship-building and persuasion side — convincing suppliers to act, getting colleagues on board with new systems.\"\n\nClick Suggest if you'd rather have it drafted from your profile."}
+                  rows={4}
                   className="w-full text-sm border border-violet-200 bg-white rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 resize-none leading-relaxed placeholder-slate-300"
                 />
                 {pivotSuggestError && (
                   <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-2 py-1.5">{pivotSuggestError}</p>
                 )}
                 <p className="text-xs text-violet-600/70">
-                  The AI will show the parallel work and let the hiring manager connect the dots — it won&apos;t explain that you&apos;re changing careers.
+                  Just the motivation — no need to list your skills here. The AI pulls those from your profile and picks the ones that match the role.
                 </p>
               </div>
             )}

@@ -6,7 +6,7 @@ import {
   FileText, Sparkles, Copy, Check, RefreshCw, ChevronDown,
   ClipboardList, AlertCircle, Loader2, Building2, FileDown, PlusCircle, ArrowRightLeft,
 } from "lucide-react";
-import { generateCoverLetter, refineCoverLetter, updateCoverLetterContent, analyzeSkillGaps, createApplicationFromCoverLetter, SavedCoverLetter, type SkillGap } from "@/app/actions/cover-letters";
+import { generateCoverLetter, refineCoverLetter, updateCoverLetterContent, analyzeSkillGaps, createApplicationFromCoverLetter, suggestPivotContext, SavedCoverLetter, type SkillGap } from "@/app/actions/cover-letters";
 import { saveCoverLetterPrefs } from "@/app/actions/profile";
 import { updateApplication } from "@/app/actions/applications";
 import type { Application } from "@/app/actions/applications";
@@ -56,6 +56,8 @@ export default function CoverLetterGenerator({
   const [isGenerating, startGenerate] = useTransition();
   const [isRefining, startRefine] = useTransition();
   const [isAnalysing, startAnalyse] = useTransition();
+  const [isSuggestingPivot, startSuggestPivot] = useTransition();
+  const [pivotSuggestError, setPivotSuggestError] = useState<string | null>(null);
 
   // Skill discovery
   const [gaps, setGaps] = useState<SkillGap[]>([]);
@@ -64,6 +66,26 @@ export default function CoverLetterGenerator({
   async function handleDisableDiscovery() {
     setDiscoveryEnabled(false);
     await saveCoverLetterPrefs({ ...clPrefs, enable_skill_discovery: false });
+  }
+
+  function handleSuggestPivot() {
+    setPivotSuggestError(null);
+    if (!jobDescription.trim()) {
+      setPivotSuggestError("Paste the job description first — the suggestion uses it as input.");
+      return;
+    }
+    startSuggestPivot(async () => {
+      const result = await suggestPivotContext({
+        jobDescription,
+        draft: pivotContext.trim() || undefined,
+        cvId: selectedCvId || undefined,
+      });
+      if (result.error) {
+        setPivotSuggestError(result.error);
+        return;
+      }
+      if (result.text) setPivotContext(result.text);
+    });
   }
 
   const outputRef = useRef<HTMLDivElement>(null);
@@ -426,17 +448,36 @@ export default function CoverLetterGenerator({
             </button>
             {isPivot && (
               <div className="px-4 pb-4 space-y-2">
-                <p className="text-xs font-semibold text-violet-700">
-                  What work do you do that maps to this role?
-                </p>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <p className="text-xs font-semibold text-violet-700">
+                    What work do you do that maps to this role?
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleSuggestPivot}
+                    disabled={isSuggestingPivot}
+                    className="flex items-center gap-1.5 text-xs font-medium text-violet-700 hover:text-violet-900 px-2.5 py-1 rounded-lg border border-violet-300 hover:bg-violet-100 disabled:opacity-50 transition-colors"
+                    title="Use my profile and the JD to suggest a strong pivot context — you can edit before generating"
+                  >
+                    {isSuggestingPivot
+                      ? <><Loader2 size={11} className="animate-spin" /> Drafting…</>
+                      : <><Sparkles size={11} /> {pivotContext.trim() ? "Improve with profile" : "Suggest from my profile"}</>}
+                  </button>
+                </div>
                 <textarea
                   autoFocus
                   value={pivotContext}
                   onChange={(e) => setPivotContext(e.target.value)}
-                  placeholder={"e.g. \"I've spent 3 years doing account management and outreach in logistics — relationship-building, objection handling, getting people to act on recommendations. I want to do this full time in a proper sales role.\"\n\nBe specific. The AI will show the parallel work and let the hiring manager connect the dots — it won't explain that you're changing careers."}
-                  rows={4}
+                  placeholder={"Write one or two lines about why you're moving into this kind of role — even rough is fine.\n\nThen click 'Suggest from my profile' and we'll expand it using your skills and work history.\n\nOr write the full thing yourself if you'd rather."}
+                  rows={5}
                   className="w-full text-sm border border-violet-200 bg-white rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 resize-none leading-relaxed placeholder-slate-300"
                 />
+                {pivotSuggestError && (
+                  <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-2 py-1.5">{pivotSuggestError}</p>
+                )}
+                <p className="text-xs text-violet-600/70">
+                  The AI will show the parallel work and let the hiring manager connect the dots — it won&apos;t explain that you&apos;re changing careers.
+                </p>
               </div>
             )}
           </div>

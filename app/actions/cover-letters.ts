@@ -529,6 +529,87 @@ export async function refineCoverLetter(input: {
   return { text: cleaned, provider: result.provider };
 }
 
+// ── Pivot context suggestion ──────────────────────────────────────────────────
+
+export async function suggestPivotContext(input: {
+  jobDescription: string;
+  draft?: string;
+  cvId?: string;
+}): Promise<{ text?: string; error?: string }> {
+  try {
+    const { userId } = await auth();
+    if (!userId) return { error: "Not signed in" };
+
+    const [profile, allCVs, skills, employers, taskPrefs, keys] = await Promise.all([
+      getProfile(), getCVs(), getSkills(), getEmployers(), getTaskPreferences(), getApiKeyValues(),
+    ]);
+
+    if (Object.keys(keys).length === 0) {
+      return { error: "No AI provider connected. Add an API key in Settings." };
+    }
+
+    const cv = input.cvId
+      ? allCVs.find((c) => c.id === input.cvId)
+      : allCVs.find((c) => c.is_default) ?? allCVs[0];
+
+    if (!cv) {
+      return { error: "No CV found. Upload your CV in My Profile first." };
+    }
+
+    const employerLookup = new Map(employers.map((e) => [e.id, e]));
+    const skillsText = skills.length > 0
+      ? skills.map((s) => {
+          const tags = (s.employer_ids ?? [])
+            .map((id) => employerLookup.get(id)?.company_name)
+            .filter(Boolean);
+          const attribution = tags.length > 0 ? ` [from: ${tags.join(", ")}]` : " [general]";
+          return `- ${s.polished_text || s.raw_text}${attribution}`;
+        }).join("\n")
+      : "None.";
+
+    const employerLines = employers.length > 0
+      ? employers.map((e) => `- ${e.role_title} at ${e.company_name} (${e.start_date} → ${e.is_current ? "present" : (e.end_date ?? "?")})`).join("\n")
+      : "None.";
+
+    const result = await callAI({
+      task: "cover-letter",
+      userPreference: taskPrefs["cover-letter"],
+      connectedProviders: keys,
+      systemPrompt:
+        "You write the 'pivot context' for a cover letter — a 100-180 word first-person paragraph the candidate can paste into the cover letter generator's pivot field. The candidate is moving into a different type of role and you need to surface the genuinely transferable parts of their existing work that map to the target role. " +
+        "STRUCTURE: 1-2 sentences naming the target role/function and what about their current work draws them to it. Then 2-4 sentences naming SPECIFIC concrete achievements from their profile that demonstrate transferable capabilities, framed in language that maps to the target role. End with one sentence connecting their direction to the target company or role. " +
+        "USE ONLY FACTS FROM THE PROFILE — never invent achievements, never overclaim. If the candidate's draft is provided, preserve their voice and intent but expand with profile-grounded specifics. " +
+        "BANNED: 'I'm transitioning from X to Y', 'I'm pivoting from X', 'while my background is in X', 'although I don't have direct experience in X', any apologetic framing for the pivot. Frame it as 'the work I want to do is X, and here's the work I've done that maps' — never as a transition narrative. " +
+        "BANNED PHRASES: 'passionate about', 'driven by', 'thrive in', 'best-in-class', 'results-oriented', 'proven track record', 'demonstrated ability to', 'strategic mindset', 'cross-functional excellence'. Sound like a real person, not a recruiter template. " +
+        "OUTPUT: just the pivot context paragraph, nothing else. No preamble, no explanation. 100-180 words.",
+      prompt: `TARGET JOB DESCRIPTION:
+${input.jobDescription.slice(0, 4000)}
+
+CANDIDATE WORK HISTORY:
+${employerLines}
+
+CANDIDATE SKILLS / ACHIEVEMENTS:
+${skillsText}
+
+CANDIDATE CV (background):
+${cv.content.slice(0, 3000)}
+
+${input.draft?.trim() ? `CANDIDATE'S DRAFT (preserve their voice and intent, expand with profile-grounded specifics):\n${input.draft.trim()}\n` : ""}
+
+Write the pivot context paragraph now.`,
+    });
+
+    const text = result.text.trim().replace(/^["'`]|["'`]$/g, "");
+    if (!text || text.length < 80) {
+      return { error: "Couldn't generate a useful suggestion. Try writing a short draft yourself first, even one line." };
+    }
+    return { text };
+  } catch (e) {
+    console.error("[suggestPivotContext] failed:", e);
+    return { error: e instanceof Error ? e.message : "Suggestion failed. Try again or write your own pivot context." };
+  }
+}
+
 // ── Skill gap discovery ───────────────────────────────────────────────────────
 
 export interface SkillGap {

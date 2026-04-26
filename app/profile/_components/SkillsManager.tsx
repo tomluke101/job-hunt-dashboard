@@ -46,6 +46,7 @@ function EmployerChips({
 function SkillItem({ skill, employers, onDelete }: { skill: UserSkill; employers: UserEmployer[]; onDelete: (id: string) => void }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [raw, setRaw] = useState(skill.raw_text);
   const [polished, setPolished] = useState(skill.polished_text ?? "");
   const [employerIds, setEmployerIds] = useState<string[]>(skill.employer_ids ?? []);
@@ -153,6 +154,30 @@ function SkillItem({ skill, employers, onDelete }: { skill: UserSkill; employers
     );
   }
 
+  if (confirmingDelete) {
+    return (
+      <div className="flex items-center justify-between gap-3 bg-red-50 border border-red-200 rounded-xl p-4">
+        <p className="text-sm text-red-800 flex-1 min-w-0">
+          Delete this {skillEmployers.length > 0 ? "skill" : "entry"}? <span className="text-red-600">This can't be undone.</span>
+        </p>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setConfirmingDelete(false)}
+            className="text-sm text-slate-600 hover:text-slate-800 px-3 py-1.5 rounded-lg hover:bg-white transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => { setConfirmingDelete(false); onDelete(skill.id); }}
+            className="flex items-center gap-1.5 text-sm bg-red-600 hover:bg-red-700 text-white font-medium px-3 py-1.5 rounded-lg transition-colors"
+          >
+            <Trash2 size={13} /> Delete
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex items-start gap-3 bg-white border border-slate-200 rounded-xl p-4 group">
       <div className="flex-1 min-w-0">
@@ -174,7 +199,7 @@ function SkillItem({ skill, employers, onDelete }: { skill: UserSkill; employers
       </div>
       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
         <button onClick={() => setEditing(true)} className="text-slate-400 hover:text-blue-500 transition-colors p-1"><Pencil size={13} /></button>
-        <button onClick={() => onDelete(skill.id)} className="text-slate-400 hover:text-red-500 transition-colors p-1"><Trash2 size={13} /></button>
+        <button onClick={() => setConfirmingDelete(true)} className="text-slate-400 hover:text-red-500 transition-colors p-1"><Trash2 size={13} /></button>
       </div>
     </div>
   );

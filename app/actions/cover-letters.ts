@@ -438,29 +438,31 @@ STRUCTURE — exactly 3 (rarely 4) distinct paragraphs, 250-380 words, then a on
 - P4 (rare): only if a second genuinely distinct angle exists. Otherwise stop at 3.
 - CLOSING: one sentence, on its own line. See closing rules.
 
-CLOSING — one sentence, 6-22 words, matching the body's tone. Reference "this role" / "the role" / "the [named function]" — NEVER "the [Job Title] role at [Company]" (redundant; they know who they are). For professional/balanced tone (the default), use one of these shapes (do NOT copy verbatim — generate a novel sentence in the shape):
+CLOSING — one sentence, 6-22 words, matching the body's tone. Reference "this role" / "the role" / "the [named function] role" — NEVER "the [Job Title] role at [Company]" (redundant; they know who they are). ALSO BANNED: "this role at [Company]" — combining "this role" with "at [Company]" reads as verbose / AI-thoroughness. Pick ONE specifier: either "this role" alone, OR "the [named function] role" alone, OR "the [named function] role at [Company]" if the named function alone is ambiguous. Never stack "this role" + "at [Company]". For professional/balanced tone (the default), use one of these shapes (do NOT copy verbatim — generate a novel sentence in the shape):
   F1: "I would welcome the opportunity to discuss how my skills and experience align with this role in further detail."
   F2: "I would welcome the chance to discuss this role and how my background fits in more depth."
   F3: "I would be glad to discuss how I could contribute to the team further."
   F4: "I would value the opportunity to discuss this role and the work involved in more detail."
 For conversational tone only, drop a register: "Happy to dig into any of this on a call.", "Let me know if you'd like to talk it through."
 
-POSITIVE FIT REQUIREMENTS — MANDATORY, NOT OPTIONAL:
-These four requirements turn the letter from "generic supply chain analyst letter" into "letter for THIS company". A letter without all four is incomplete and must not be returned.
+POSITIVE FIT REQUIREMENTS:
 
-(1) COMPANY-NAMED-IN-BODY — REQUIRED. The target company's name MUST appear at least once in the letter body (anywhere except sentence 1 of P1). Natural placements: inside the JD-integration sentence ("the [function] at [Company] handles..."), as a mid-sentence reference in P2 or P3, or in the closing. A letter where the company is never named in the body would read like a template sent to anyone — fail.
+(1) COMPANY-NAMED-IN-BODY — REQUIRED. The target company's name MUST appear at least once in the letter body (anywhere except sentence 1 of P1). Natural placements: inside a JD-integration sentence ("the [function] at [Company] handles..."), as a mid-sentence reference in P2 or P3, or in the closing. A letter where the company is never named in the body reads like a template sent to anyone.
 
-(2) JD-INTEGRATION SENTENCE — REQUIRED. P2 MUST OPEN with a single sentence that names a SPECIFIC JD function/team/process from the job description AND lists 3 concrete JD-named responsibilities the candidate has parallel work for. The required pattern shape: "A large part of my current role mirrors what the [named JD function/team] at [Company] handles: [item], [item], and [item]." OR a close candidate-as-subject variant like "At [current employer], I handle the same work this role calls for: [3 JD-named items]." This sentence is what proves the candidate has read the JD and understands the role specifically. WITHOUT this sentence the letter is generic. WITH it, the rest of the letter has context. NON-NEGOTIABLE.
+(2) JD-RELEVANCE VISIBLE IN P2 — REQUIRED, but multiple shapes work. Either:
+  (a) An explicit JD-integration sentence opening P2: "A large part of my current role mirrors what the [named JD function/team] at [Company] handles: [3 items]." This is one validated pattern when it fits naturally.
+  (b) Implicit JD-relevance: P2 leads with achievements that obviously parallel the JD's named responsibilities, with the JD's vocabulary woven through (e.g. JD says "investigate stock discrepancies", letter says "When stock or shipment discrepancies arise, I investigate root causes..."). The connection is clear without an explicit "mirrors X" statement.
+  Use whichever fits the letter's natural flow. Forced explicit integration when implicit reads better is bad. Implicit integration when explicit would land the JD-fit cleanly is also weaker. Judgment call.
 
-(3) JD-VOCABULARY THROUGHOUT — at least three JD-specific phrases or responsibilities woven into P2 or P3 naturally. Use the JD's own vocabulary where the candidate has matching work. Not keyword-stuffing — genuine parallels. Example: if the JD says "investigate stock discrepancies" and the candidate does similar work, use that phrase or a close variant rather than a generic paraphrase.
+(3) JD-VOCABULARY THROUGHOUT — at least three JD-specific phrases or responsibilities woven into P2 or P3 naturally. Use the JD's own vocabulary where the candidate has matching work. Not keyword-stuffing — genuine parallels.
 
-(4) SPECIFIC P1 ANCHOR — STRONGLY ENCOURAGED. P1 sentence 1 should reference a SPECIFIC named project / system / decision / achievement from the candidate's profile, NOT generic role-description ("As a Supply Chain Analyst at X, I manage demand forecasting, supplier coordination..."). Generic role description is the boilerplate-template default — every cover letter ever opens this way and recruiters skim past it. Strong opening hooks the reader. PREFERRED OPENING SHAPES (use whichever fits the candidate's profile data):
-  - "Last year I [specific achievement from profile, named project/system, with concrete outcome]."
-  - "[Recent named project/system] is the work I've been most engaged with at [employer] — [one-sentence concrete description]."
-  - "I built / led / developed / co-designed [specific named thing from profile] at [employer], which [concrete impact]."
-  Use a generic role-description opener only if the candidate's profile genuinely has no specific named project/system/decision (rare). Most candidates have at least one — find it.
+(4) STRONG OPENING — CONCRETE, NOT VAGUE. P1 sentence 1 must be concrete and specific. TWO valid opening patterns; pick whichever fits the candidate's strongest material:
+  (a) ROLE-CONTEXT: "As a [role title] at [employer], I [3-4 specific concrete activities]." Sets up who the candidate is and what they do, in concrete terms. Works well when the activities listed have natural JD relevance, and when the candidate's strength is breadth across responsibilities (rather than one standout achievement). This is a perfectly valid strong opener — generic role-context with concrete activities reads as a real human summary, NOT as a boilerplate template.
+  (b) SPECIFIC ACHIEVEMENT: "Last year I [specific recent named project/decision] at [employer]" or "I built / led / developed [specific named thing] at [employer]." Leads with a single specific moment. Works well when one achievement is dramatically the strongest JD match and the rest of the letter can build from it.
+  Both are valid. Forcing either pattern when the other fits better is wrong.
+  BANNED openers (regardless of pattern): "I am writing to apply for...", gerund stems ("Building...", "Designing...", "Leveraging..."), self-promoting trait lists ("As a passionate / dynamic / results-driven [role]..."), evasive employer descriptors ("at a fast-paced product business", "at a growing startup"), industry truisms.
 
-(5) USE NUMBERS WHEN PRESENT IN PROFILE. If the candidate's profile, skills, or CV contains specific numbers (percentages, monetary values, time savings, count of suppliers/customers/projects, scale measurements), include them in the letter where they fit. Numbers are differentiators in cover letters. Never invent numbers — only use what's explicitly in the candidate's data.
+(5) USE NUMBERS WHEN PRESENT IN PROFILE. If the candidate's profile, skills, or CV contains specific numbers (percentages, monetary values, time savings, count of suppliers/customers/projects, scale measurements), include them in the letter where they fit. Numbers are differentiators when they exist. Never invent numbers — only use what's explicitly in the candidate's data.
 
 (6) OPTIONAL HOOK: if the JD names a specific scheme/system/function AND the candidate has parallel evidence in their profile, you MAY weave one 1-2 sentence integration into a topic-matched paragraph. MAX ONE such hook per letter, never bolt on a separate paragraph. Skip if no natural fit.
 

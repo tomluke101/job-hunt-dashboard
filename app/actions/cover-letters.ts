@@ -564,7 +564,7 @@ SCHEMA (output exactly this shape):
     "type": "specific_recent_achievement" | "specific_current_responsibility" | "specific_role_insight",
     "draft_p1_first_sentence": "the actual first sentence — must include a SPECIFIC anchor (a number, a named project, a named recent decision, a concrete activity). Generic role description is banned."
   },
-  "jd_integration_sentence": "the sentence in P2 that explicitly names a SPECIFIC JD function/team/process/named-responsibility (e.g. 'the Release and Follow-Up function at JLR', 'FP&A at Acme', 'the Customer Success role') and lists 2-4 concrete JD-named responsibilities the candidate has parallel work for. The required pattern shape is: 'A large part of my current role mirrors what [the named JD function/team] [at Company] handles: [item], [item], and [item].' OR similar candidate-as-subject variant. The subject MUST be the candidate or the candidate's role — NEVER 'the role focuses on X' or '[Company]'s focus on Y'. This sentence is mandatory for direct_relevance letters; for honest_bridge letters it's the parallel-work establishing sentence at P2 opening.",
+  "jd_integration_sentence": "the sentence in P2 that explicitly names a SPECIFIC JD function/team/process/named-responsibility (e.g. 'the Release and Follow-Up function at JLR', 'FP&A at Acme', 'the Customer Success role') and lists EXACTLY 3 concrete JD-named responsibilities the candidate has parallel work for. HARD CAPS: total sentence ≤ 35 words; exactly 3 list items (NOT 4); each item ≤ 8 words. The required pattern shape is: 'A large part of my current role mirrors what [the named JD function/team] [at Company] handles: [item], [item], and [item].' Pick the THREE strongest JD-named responsibilities — never include a fourth. The subject MUST be the candidate or the candidate's role — NEVER 'the role focuses on X' or '[Company]'s focus on Y'. Mandatory for direct_relevance letters; for honest_bridge letters it's the parallel-work establishing sentence at P2 opening.",
   "company_name": "the target company's name as it should appear in the letter body (must appear at least once in the JD-integration sentence or P2/P3, NEVER in P1 sentence one)",
   "p2_theme": "one short phrase naming what P2 will cover",
   "p2_achievements": [
@@ -587,6 +587,11 @@ OPENING STRATEGY:
 
 NARRATIVE ANCHOR (most important choice — read carefully):
 The draft_p1_first_sentence is the actual first sentence of the cover letter. Write it well.
+
+LENGTH CAP: the draft_p1_first_sentence MUST be 35 words or fewer. Do NOT cram multiple achievements + ongoing duties into one sentence. ONE specific moment/achievement OR one focused current-responsibility statement. If you find yourself joining clauses with "while simultaneously" or "alongside that" inside the anchor sentence — split them. The anchor is ONE thing, said well.
+
+DEDUPLICATION RULE: if the narrative anchor describes a specific named project/system/migration (e.g. supplier performance tracker, courier migration, ERP build), that SAME achievement MUST NOT appear in p2_achievements. Pick a DIFFERENT achievement for the P2 lead. Example: if anchor = supplier tracking system, P2 achievements should NOT include the supplier tracking system again. Pick from the candidate's other achievements (ERP, courier migration, stock-discrepancy work, etc).
+
 BAD anchors (banned — generic role description): "As a Supply Chain Analyst at X, I work daily with sales and demand data..."
 GOOD anchors (specific moment/decision/number drawn from candidate's profile).
 
@@ -822,7 +827,9 @@ HARD BANS (these are non-negotiable, regardless of what the example contains):
 8. Never use the fast-learner pivot ("foundations are there", "natural next step", "quick study").
 9. Never bolt on a separate why-this-company paragraph. If a hook is in the plan, integrate it as a 1-2 sentence reference inside an existing paragraph.
 10. The plan's company_name MUST appear at least once in the letter body (not in P1 sentence one) — typically inside the jd_integration_sentence or near a P2/P3 reference. Never let the company go unnamed.
-11. ${clPrefs.include_header ? `Do NOT add contact details (phone, email, LinkedIn) after the name.` : `Do NOT add a contact details header at the top.`}
+11. NAMED-PRODUCT ACCURACY: when the candidate's profile names a specific product/system/initiative (e.g. "AI-powered sales training", "Airtable-based ERP system", "automated supplier performance tracking system"), use that EXACT name. Do NOT genericize: "AI-powered sales training" must NOT become "AI-powered tools" or "AI tools". "Airtable-based ERP" must NOT become "the ERP system" without the Airtable specificity. The named product is part of the candidate's evidence — generic versions are weaker.
+12. NO ACHIEVEMENT DUPLICATION: if a specific achievement (a named system, a specific project, a specific migration) is mentioned in the narrative anchor (P1), it MUST NOT be re-described as a separate sentence in P2. Each concrete achievement appears in the letter at most once. Do not write filler bridge sentences like "The supplier tracking system I built creates a structured, data-driven record..." after already mentioning it in P1.
+13. ${clPrefs.include_header ? `Do NOT add contact details (phone, email, LinkedIn) after the name.` : `Do NOT add a contact details header at the top.`}
 
 OUTPUT: Start with "${salutation}," on its own line, then a blank line, then P1. End with the sign-off and name on separate lines. No preamble, no commentary, no markdown.`;
 }

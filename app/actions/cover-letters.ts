@@ -201,6 +201,18 @@ FIX: delete the sentence entirely. The achievement before it should speak for it
   - "JLR's commitment to lean manufacturing is the kind of approach I want to be part of."
 FIX: delete the whole paragraph. A clean 3-paragraph letter (P1 opening, P2 evidence, P3 second-employer/distinct theme, then closing) is stronger than 3 paragraphs + a bolted-on flattery paragraph. If a hook genuinely fits, integrate it as a single sentence inside an existing paragraph next to a related achievement. Otherwise drop entirely.
 
+[D] ABSTRACT POSITIONING VERBS: any sentence that uses "sits at the core of" / "is at the core of" / "is at the heart of" / "centres on" / "has centred on" / "is the core of [my work]" / "underpins everything" / "runs through all of this" to talk about what some piece of work IS or where it FITS in the candidate's role. Example hits:
+  - "Advanced Excel sits at the core of most of this analysis."
+  - "Analytical thinking is at the heart of how I work."
+  - "Stakeholder management runs through everything I do."
+FIX: replace with a concrete sentence describing actual usage. "Advanced Excel sits at the core of most of this analysis" → "I use advanced Excel daily for [specific concrete activity]" or just delete the sentence if it adds nothing concrete.
+
+[E] EMPHASIS-VIA-NEGATION: any sentence with the shape "[positive claim], not just [opposite]" / "[X], not [Y]" used for rhetorical contrast where the negation adds emphasis but no information. Example hits:
+  - "I investigate root causes, not just the surface symptoms."
+  - "This is a regular part of my role, not an occasional one."
+  - "I'm focused on outcomes, not activity."
+FIX: delete the "not Y" half. State the positive claim and stop. "I investigate root causes, not just the surface symptoms" → "I investigate root causes."
+
 After running this priority scan, continue to the full checklist below for everything else.
 
 ISSUES TO CHECK (rewrite any sentence that matches):
@@ -952,8 +964,14 @@ export async function refineCoverLetter(input: {
 
   const result = await callAI({
     task: "cover-letter",
-    systemPrompt: "You are an expert cover letter editor. Apply the requested changes and return the complete updated letter. Preserve the overall structure and quality. HARD FORMATTING RULES: (1) The em-dash character (—) must not appear anywhere in your output — not once. Use a comma, colon, or new sentence instead. This is non-negotiable. (2) No double hyphens (--). (3) No editorializing or commentary. (4) No banned phrases: team player, passionate about, proven track record, excited to apply, I look forward to hearing from you, from day one. CRITICAL OUTPUT RULE: your response must begin IMMEDIATELY with the letter greeting (e.g. 'Dear Hiring Team,') — no preamble, no explanation, no commentary before or after the letter. If you choose not to incorporate something, do so silently.",
-    prompt: `Original cover letter:\n\n${input.originalLetter}\n\nRefinement request: ${input.refinementRequest}\n\nReturn the complete updated cover letter.`,
+    systemPrompt: "You are an expert cover letter editor. Apply the requested changes and return the complete updated letter. Preserve the overall structure and quality. " +
+      "PRESERVE REQUIRED ELEMENTS even when fulfilling shortening/editing requests: " +
+      "(a) The target company's name MUST remain in the letter body (not just the closing). " +
+      "(b) The closing must continue to reference 'this role' or the named function/team — never strip role-specificity to make the closing shorter. " +
+      "(c) If the original letter has a JD-integration sentence at the start of P2 (e.g. 'A large part of my current role mirrors what the X function handles: [items]'), preserve it unless the user explicitly asks to remove it. " +
+      "HARD FORMATTING RULES: (1) The em-dash character (—) must not appear anywhere in your output — not once. Use a comma, colon, or new sentence instead. This is non-negotiable. (2) No double hyphens (--). (3) No editorializing or commentary. (4) Banned phrases: team player, passionate about, proven track record, excited to apply, I look forward to hearing from you, from day one, sits at the core of, is at the heart of, is at the core of, [X] not just [Y] (emphasis-via-negation), Spearheaded, Demonstrated ability to. " +
+      "CRITICAL OUTPUT RULE: your response must begin IMMEDIATELY with the letter greeting (e.g. 'Dear Hiring Team,') — no preamble, no explanation, no commentary before or after the letter. If you choose not to incorporate something, do so silently.",
+    prompt: `Original cover letter:\n\n${input.originalLetter}\n\nRefinement request: ${input.refinementRequest}\n\nReturn the complete updated cover letter, preserving all required elements (company-name-in-body, role-specific closing, JD-integration sentence) even while applying the requested change.`,
     userPreference: taskPrefs["cover-letter"],
     connectedProviders: keys,
   });
@@ -964,8 +982,19 @@ export async function refineCoverLetter(input: {
   const stripped = greetingMatch ? text.slice(text.indexOf(greetingMatch[0])) : text;
   const signOff = profile.sign_off ?? "Kind regards";
   const fullName = profile.full_name ?? "";
+
+  // Critic pass on the refined output — same as generation. Catches any
+  // banned patterns introduced during refinement.
+  const revised = await reviseCoverLetter(
+    stripped,
+    taskPrefs["cover-letter"],
+    keys,
+    signOff,
+    fullName,
+  );
+
   const cleaned = ensureNameAfterSignOff(
-    fixSignOff(sanitiseLetter(stripped), signOff, fullName),
+    fixSignOff(sanitiseLetter(revised), signOff, fullName),
     signOff,
     fullName
   );

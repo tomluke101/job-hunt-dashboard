@@ -864,54 +864,16 @@ export async function generateCoverLetter(input: {
     companyResearch = await fetchCompanyResearch(input.companyName, keys.perplexity);
   }
 
-  // Stage 1 — PLAN: produce structured strategic decisions as JSON.
-  // If this fails (malformed JSON, AI error), we fall back to the single-pass
-  // path so generation never breaks for the user.
-  const plan = await planCoverLetter({
-    profile,
-    cvContent: cv.content,
-    skills,
-    employers,
-    jobDescription: input.jobDescription,
-    pivotContext: input.pivotContext,
-    anythingToAdd: input.anythingToAdd,
-    companyResearch,
-    taskPrefs,
-    keys,
-  });
+  // ARCHITECTURE NOTE: the plan-then-write architecture was attempted (commits
+  // 6852be0 to 53fafe8) but introduced too much variance — gains in some
+  // letters, regressions in others (mega-sentences, P1 banned shapes, achievement
+  // duplication). For SaaS shipping we need consistent quality over potential
+  // peaks. Reverted to single-pass. The plan/write helpers are retained as dead
+  // code in case we revisit with a more constrained architecture.
 
-  let result: { text: string; provider: string };
+  const systemPrompt = buildSystemPrompt({ profile, cvContent: cv.content, skills, employers, writingExamples, companyResearch, clPrefs });
 
-  if (plan) {
-    // Stage 2 — WRITE: prose generation guided by plan + few-shot example.
-    const writeSystemPrompt = buildWriteSystemPrompt({
-      plan,
-      profile,
-      cvContent: cv.content,
-      skills,
-      employers,
-      pivotContext: input.pivotContext,
-      anythingToAdd: input.anythingToAdd,
-      companyResearch,
-      clPrefs,
-      writingExamples,
-    });
-
-    result = await callAI({
-      task: "cover-letter",
-      prompt: `Write the cover letter now, following the plan. Job description provided for context:\n\n${input.jobDescription}`,
-      systemPrompt: writeSystemPrompt,
-      userPreference: taskPrefs["cover-letter"],
-      connectedProviders: keys,
-    });
-  } else {
-    // Fallback — single-pass legacy path. Used when the planner fails so the
-    // user never sees a broken generation. Should match prior behaviour exactly.
-    console.warn("[generateCoverLetter] plan stage failed, falling back to single-pass");
-
-    const systemPrompt = buildSystemPrompt({ profile, cvContent: cv.content, skills, employers, writingExamples, companyResearch, clPrefs });
-
-    const userPrompt = `Write a cover letter for this role:
+  const userPrompt = `Write a cover letter for this role:
 
 JOB DESCRIPTION:
 ${input.jobDescription}
@@ -919,14 +881,13 @@ ${input.jobDescription}
 ${input.pivotContext?.trim() ? `CAREER PIVOT — the candidate is flagged as deliberately moving into a different role type. The text below is their MOTIVATION/INTENT for the move — NOT a list of achievements to copy into the letter. Use it as a FRAMING SIGNAL: it tells you (a) which target role/function to write toward, (b) which slice of the candidate's current work is most relevant for this pivot. The letter should: use the Honest Bridge opening (show parallel work without naming the gap or apologising), prioritise achievements from the candidate's profile that match the slice of work named in the motivation, and treat this pivot context as guidance — not as content. DO NOT copy phrases from this motivation into the letter. DO NOT say "I am moving from X to Y" or "transitioning from X to Y". If the motivation is vague ("I want a change"), ignore it entirely and silently. Override the CV personal statement's stated career direction with this framing.\n\nMOTIVATION:\n${input.pivotContext}` : ""}
 ${input.anythingToAdd?.trim() ? `CANDIDATE CONTEXT — additional framing and emphasis. Use as high-priority context:\n${input.anythingToAdd}` : ""}`;
 
-    result = await callAI({
-      task: "cover-letter",
-      prompt: userPrompt,
-      systemPrompt,
-      userPreference: taskPrefs["cover-letter"],
-      connectedProviders: keys,
-    });
-  }
+  const result = await callAI({
+    task: "cover-letter",
+    prompt: userPrompt,
+    systemPrompt,
+    userPreference: taskPrefs["cover-letter"],
+    connectedProviders: keys,
+  });
 
   const signOff = profile.sign_off ?? "Kind regards";
   const fullName = profile.full_name ?? "";

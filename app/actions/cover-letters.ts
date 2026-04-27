@@ -170,7 +170,15 @@ async function reviseCoverLetter(
 ): Promise<string> {
   const checklist = `You are an expert cover letter editor. Scan the letter below for any of the specific issues listed. Rewrite ONLY the offending sentences; leave everything else untouched. If no issues are found, return the letter exactly as given.
 
-PRIORITY SCAN — DO THESE FIRST, EVERY TIME, EVEN IF UNCERTAIN. These three patterns recurrently leak through the long checklist below. Read every sentence and flag any that matches:
+REQUIRED-ELEMENTS CHECK — DO THIS BEFORE THE PRIORITY SCAN. Sin of omission is as bad as sin of commission. A letter without these elements is generic and fails — rewrite to add them, do not return as-is.
+
+[R1] COMPANY-NAMED-IN-BODY: scan the letter body for the target company's name (not just the closing — the body, in P1/P2/P3). If the company name does NOT appear in the body, the letter reads as a template sent to anyone. FIX: insert the company name in a natural place — typically inside the JD-integration sentence ("the [function] at [Company]..."), or as a mid-sentence reference in P2/P3.
+
+[R2] JD-INTEGRATION SENTENCE PRESENT IN P2: P2 MUST open with a sentence that names a SPECIFIC function, team, process, or named-responsibility from the target job description, AND lists 3 concrete JD-aligned items the candidate does. Required pattern: "A large part of my current role mirrors what the [named function] at [Company] handles: [item], [item], and [item]." OR a candidate-as-subject variant. If P2 does NOT have this sentence, the letter is just a generic activity list — fail. FIX: rewrite P2's opening sentence using the required pattern. Identify the JD's most prominent named function/team/process (e.g. "the Release and Follow-Up function" for JLR, "the FP&A function" for finance roles, "the Customer Success role"). Pick 3 concrete responsibilities from the JD that the candidate has parallel work for.
+
+[R3] CLOSING REFERENCES THE NAMED FUNCTION OR ROLE: closing should reference the specific named function from the JD (e.g. "the Release and Follow-Up function") or "this role" — never just a generic "this position" with no specificity. If the closing is bland and could be pasted onto any cover letter, rewrite it to reference the specific role/function.
+
+PRIORITY SCAN — DO THESE NEXT, EVERY TIME, EVEN IF UNCERTAIN. These three patterns recurrently leak through the long checklist below. Read every sentence and flag any that matches:
 
 [A] ROLE-AS-SUBJECT SHAPE (highest priority): any sentence whose grammatical subject names the role, the company, the company's focus, the company's commitment, the role's responsibilities, or "[X] at the centre of this role" / "[X] central to this role", AND whose predicate connects to the candidate's work. Match by SHAPE not by exact words. Example hits to learn from:
   - "The prospect engagement and pipeline management at the centre of this role map closely to work I do every day."
@@ -437,10 +445,16 @@ CLOSING — one sentence, 6-22 words, matching the body's tone. Reference "this 
   F4: "I would value the opportunity to discuss this role and the work involved in more detail."
 For conversational tone only, drop a register: "Happy to dig into any of this on a call.", "Let me know if you'd like to talk it through."
 
-POSITIVE FIT REQUIREMENTS:
-- Name the company at least once in the body (NOT in sentence 1). Natural mid-sentence reference in P2 or P3, or in the closing.
-- Use the JD's own vocabulary for at least three specific responsibilities/processes/functions naturally (not keyword-stuffing).
-- If the JD names a specific scheme/system/function AND the candidate has parallel evidence in their profile, OPTIONALLY weave one 1-2 sentence integration into a topic-matched paragraph. MAX ONE such hook per letter, never bolt on a separate paragraph for it. Skip if no natural fit exists.
+POSITIVE FIT REQUIREMENTS — MANDATORY, NOT OPTIONAL:
+These three requirements turn the letter from "generic supply chain analyst letter" into "letter for THIS company". A letter without all three is incomplete and must not be returned.
+
+(1) COMPANY-NAMED-IN-BODY — REQUIRED. The target company's name MUST appear at least once in the letter body (anywhere except sentence 1 of P1). Natural placements: inside the JD-integration sentence ("the [function] at [Company] handles..."), as a mid-sentence reference in P2 or P3, or in the closing. A letter where the company is never named in the body would read like a template sent to anyone — fail.
+
+(2) JD-INTEGRATION SENTENCE — REQUIRED. P2 MUST OPEN with a single sentence that names a SPECIFIC JD function/team/process from the job description AND lists 3 concrete JD-named responsibilities the candidate has parallel work for. The required pattern shape: "A large part of my current role mirrors what the [named JD function/team] at [Company] handles: [item], [item], and [item]." OR a close candidate-as-subject variant like "At [current employer], I handle the same work this role calls for: [3 JD-named items]." This sentence is what proves the candidate has read the JD and understands the role specifically. WITHOUT this sentence the letter is generic. WITH it, the rest of the letter has context. NON-NEGOTIABLE.
+
+(3) JD-VOCABULARY THROUGHOUT — at least three JD-specific phrases or responsibilities woven into P2 or P3 naturally. Use the JD's own vocabulary where the candidate has matching work. Not keyword-stuffing — genuine parallels. Example: if the JD says "investigate stock discrepancies" and the candidate does similar work, use that phrase or a close variant rather than a generic paraphrase.
+
+(4) OPTIONAL HOOK: if the JD names a specific scheme/system/function AND the candidate has parallel evidence in their profile, you MAY weave one 1-2 sentence integration into a topic-matched paragraph. MAX ONE such hook per letter, never bolt on a separate paragraph. Skip if no natural fit.
 
 JD-RELEVANCE RANKING — CRITICAL FOR ACHIEVEMENT SELECTION:
 Before drafting P2, read the JD and identify its TOP 3-5 specific requirements, methodologies, or named criteria — especially ones listed as "essential", "key responsibilities", or "desirable" (e.g. "lean principles", "process improvement methodologies", "demand forecasting", "supplier performance tracking", "data analysis tools", a specific named system). Then rank the candidate's available skills/achievements by direct match to those requirements. P2 MUST lead with the candidate's STRONGEST 2-3 matches — not whichever achievements seem generally impressive. Specifically:

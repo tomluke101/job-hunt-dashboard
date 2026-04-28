@@ -99,12 +99,164 @@ export async function tailorCV(input: TailorInput): Promise<TailorResult> {
 
   const sanitised = sanitiseTailoredCV(parsed, fb);
 
+  // Post-process critic: scan for banned phrases / patterns and surface as warnings.
+  // If any are found, make one targeted AI call to rewrite the offenders.
+  const flagged = scanBannedPhrases(sanitised);
+  if (flagged.length > 0) {
+    try {
+      const fixed = await rewriteOffendingSections({
+        cv: sanitised,
+        flagged,
+        jdText: input.jdText,
+        factbaseText,
+        connectedProviders: keys,
+      });
+      if (fixed) {
+        return {
+          tailoredCV: fixed,
+          warnings,
+          jdKeywords: fixed.jdKeywords,
+          gaps: fixed.gaps,
+        };
+      }
+    } catch (e) {
+      console.error("[tailorCV] critic rewrite failed:", e);
+    }
+    warnings.push(
+      `Critic flagged ${flagged.length} AI-tell phrase${flagged.length === 1 ? "" : "s"} that auto-rewrite couldn't fix. Click "Tailor CV" again to regenerate.`
+    );
+  }
+
   return {
     tailoredCV: sanitised,
     warnings,
     jdKeywords: sanitised.jdKeywords,
     gaps: sanitised.gaps,
   };
+}
+
+// ── Banned-phrase critic ──────────────────────────────────────────────────────
+
+interface BannedHit {
+  section: string;
+  phrase: string;
+}
+
+const BANNED_REGEX: Array<[string, RegExp]> = [
+  ["fast-moving X environment", /fast[- ]moving[^.,;]{0,40}environment/gi],
+  ["fast-paced environment", /fast[- ]paced environment/gi],
+  ["uninterrupted X", /\buninterrupted\b/gi],
+  ["translating data", /translating data/gi],
+  ["actionable information", /actionable (information|insight|insights)/gi],
+  ["timely corrective action", /timely corrective action/gi],
+  ["budget-conscious", /budget[- ]conscious/gi],
+  ["high-footfall", /high[- ]footfall/gi],
+  ["results-driven", /results[- ]driven/gi],
+  ["proven track record", /proven track record/gi],
+  ["demonstrated ability", /demonstrated ability/gi],
+  ["spearheaded", /\bspearheaded?\b/gi],
+  ["leveraged", /\bleverag(ed|e|ing)\b/gi],
+  ["orchestrated", /\borchestrated?\b/gi],
+  ["championed", /\bchampioned?\b/gi],
+  ["pioneered", /\bpioneered?\b/gi],
+  ["forward-looking aspiration", /\b(?:looking to (?:bring|apply|leverage|contribute)|seeks to leverage|eager to (?:contribute|apply))\b/gi],
+  ["best-in-class / world-class", /\b(?:best[- ]in[- ]class|world[- ]class)\b/gi],
+  ["cross-functional excellence", /cross[- ]functional excellence/gi],
+  ["value-add", /\bvalue[- ]add\b/gi],
+  ["hits the ground running", /hits the ground running/gi],
+];
+
+function scanText(label: string, text: string, hits: BannedHit[]): void {
+  if (!text) return;
+  for (const [name, re] of BANNED_REGEX) {
+    re.lastIndex = 0;
+    if (re.test(text)) {
+      hits.push({ section: label, phrase: name });
+    }
+  }
+}
+
+function scanBannedPhrases(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  scanText("Profile", cv.summary, hits);
+  for (let i = 0; i < cv.roles.length; i++) {
+    const r = cv.roles[i];
+    for (let j = 0; j < r.bullets.length; j++) {
+      scanText(`Experience: ${r.title} bullet ${j + 1}`, r.bullets[j], hits);
+    }
+  }
+  for (const s of cv.skills) scanText("Key Skills", s, hits);
+  for (const e of cv.education) {
+    if (e.details) scanText(`Education: ${e.qualification}`, e.details, hits);
+  }
+  return hits;
+}
+
+// ── Targeted rewrite of offending sections ────────────────────────────────────
+
+async function rewriteOffendingSections(args: {
+  cv: TailoredCV;
+  flagged: BannedHit[];
+  jdText: string;
+  factbaseText: string;
+  connectedProviders: Partial<Record<string, string>>;
+}): Promise<TailoredCV | null> {
+  const { cv, flagged, jdText, factbaseText, connectedProviders } = args;
+  const flaggedList = flagged.map((f) => `  - [${f.section}] phrase: "${f.phrase}"`).join("\n");
+
+  const fixupPrompt = `Your previous CV output contained banned phrases that scream AI-written. The flagged offenders:
+
+${flaggedList}
+
+Rewrite the ENTIRE CV JSON, removing those phrases and any close paraphrases. Apply ALL the rules from the system prompt: no banned phrases, no JD echo, no forward-looking aspiration in Profile, skill items 1-3 words, no parentheticals in skills, no "in today's [X] world" patterns, no buzz adjectives, no aspirational closings.
+
+Keep all factual content and the Truth Contract intact — every claim must still trace to the FactBase. Return the FULL TailoredCV JSON object, not a diff.
+
+Previous (flawed) output:
+${JSON.stringify(cv)}
+
+JOB DESCRIPTION:
+${jdText.trim()}
+
+CANDIDATE FACTBASE:
+${factbaseText}
+
+Return ONLY the corrected JSON.`;
+
+  const result = await callAI({
+    task: "cv-tailor",
+    connectedProviders: connectedProviders as Partial<Record<import("@/lib/ai-providers").Provider, string>>,
+    systemPrompt: buildSystemPrompt(),
+    prompt: fixupPrompt,
+  });
+  const reparsed = parseTailoredCV(result.text);
+  if (!reparsed) return null;
+  // Build a minimal FactBase shape for sanitising — we only use it for contact fallback,
+  // and the existing CV already has resolved contacts, so reuse them.
+  const stub: FactBase = {
+    userId: "",
+    cvId: null,
+    cvName: null,
+    generatedAt: new Date().toISOString(),
+    facts: [
+      { id: "n", kind: "contact", content: cv.contact.name, source: { origin: "profile" }, field: "name" },
+      ...(cv.contact.email
+        ? [{ id: "e", kind: "contact" as const, content: cv.contact.email, source: { origin: "profile" as const }, field: "email" as const }]
+        : []),
+      ...(cv.contact.phone
+        ? [{ id: "p", kind: "contact" as const, content: cv.contact.phone, source: { origin: "profile" as const }, field: "phone" as const }]
+        : []),
+      ...(cv.contact.location
+        ? [{ id: "l", kind: "contact" as const, content: cv.contact.location, source: { origin: "profile" as const }, field: "location" as const }]
+        : []),
+      ...(cv.contact.linkedin
+        ? [{ id: "li", kind: "contact" as const, content: cv.contact.linkedin, source: { origin: "profile" as const }, field: "linkedin" as const }]
+        : []),
+    ],
+    unmatchedCompanies: [],
+    warnings: [],
+  };
+  return sanitiseTailoredCV(reparsed, stub);
 }
 
 // ── Prompt builders ───────────────────────────────────────────────────────────
@@ -154,8 +306,31 @@ spearheaded, spearhead, orchestrated, championed, transformed, drove, drives, pi
 REPLACEMENT VERBS (use these instead)
 Led, Delivered, Built, Designed, Managed, Reduced, Increased, Negotiated, Launched, Owned, Cut, Saved, Scaled, Shipped, Won, Closed, Migrated, Improved, Implemented, Coordinated, Investigated, Resolved, Recovered, Analysed, Configured
 
-BANNED PHRASES (these scream ChatGPT)
-"results-driven professional", "proven track record", "demonstrated ability to", "rapidly masters", "fast-paced environment", "in today's [X] world", "best-in-class", "world-class", "cross-functional excellence", "value-add", "data-driven analysis and strategic implementation", "strategic communication and collaborative problem-solving", "driving measurable improvements", "hits the ground running"
+BANNED PHRASES (these scream ChatGPT — never use ANY of these wordings or close paraphrases)
+- "results-driven professional", "proven track record", "demonstrated ability to", "rapidly masters", "fast-paced environment", "fast-moving [X] environment" (any), "in today's [X] world", "best-in-class", "world-class", "cross-functional excellence", "value-add"
+- "data-driven analysis and strategic implementation", "strategic communication and collaborative problem-solving", "driving measurable improvements", "hits the ground running"
+- "uninterrupted supply continuity", "uninterrupted [X]" patterns generally
+- "translating data into [X, Y, Z] information", "actionable information / actionable insight" (the words "actionable" and "translating data" are AI tells)
+- "enabling timely corrective action", "timely corrective action"
+- "supporting budget-conscious [X]", "budget-conscious"
+- "high-footfall [X] environment", "high-footfall"
+- "operational decision-making" used more than once in the whole CV
+- "looking to bring [X] to [Y environment]" — any forward-looking aspirational line in the Profile is BANNED. The Profile must read as evidence (what the candidate has done), never as aspiration.
+
+JD-ECHO RULE
+You are tailoring TO the JD, not echoing it. Do not lift any phrase of 4+ words verbatim from the JD into the candidate's CV. Surface JD vocabulary by integrating individual terms naturally into the candidate's own factual statements, NOT by parroting JD sentences back. If the JD says "fast-moving automotive supply chain environment", do not write that phrase. Use the underlying terms (e.g. "automotive supply chain") inside concrete bullets.
+
+SKILL ITEM RULES (HARD)
+- Each item in the "skills" array is 1–3 words. Never longer.
+- No parentheticals in skill items. "ERP system management (Airtable)" is WRONG. Write "ERP design" or "Airtable" as separate items.
+- No conjunctions inside an item. "Report writing and data visualisation" is WRONG. Split into "Reporting" and "Data visualisation".
+- 10–14 items total. Order by JD relevance.
+
+PROFILE RULES (HARD)
+- 3–4 sentences, all factual / evidence-based.
+- NO forward-looking sentence ("looking to apply…", "is looking to bring…", "seeks to leverage…", "eager to contribute…"). The Profile ends on a factual sentence about who the candidate is, not on what they hope to do.
+- NO mirroring of JD environment language ("fast-moving", "high-growth", "innovative", "dynamic environment").
+- Anchor the Profile on the candidate's strongest JD-relevant evidence: a specific achievement or distinctive role context.
 
 BULLET STRUCTURE — XYZ FORMULA
 Where the FactBase supports it, write bullets as: "Accomplished [X] as measured by [Y] by doing [Z]."

@@ -54,9 +54,9 @@ function renderBody(cv: TailoredCV): string {
     .map((s) => escapeHtml(String(s)));
 
   out.push(
-    `<div style="margin:0 0 6pt 0">
-      <div style="font-size:18pt;font-weight:bold;margin:0 0 2pt 0">${escapeHtml(cv.contact.name || "")}</div>
-      <div style="font-size:10pt;color:#333">${contactBits.join(" &nbsp;·&nbsp; ")}</div>
+    `<div style="margin:0 0 8pt 0">
+      <div style="font-size:22pt;font-weight:bold;letter-spacing:-0.01em;margin:0 0 3pt 0">${escapeHtml(cv.contact.name || "")}</div>
+      <div style="font-size:10.5pt;color:#444">${contactBits.join(" &nbsp;·&nbsp; ")}</div>
     </div>`
   );
 
@@ -64,15 +64,15 @@ function renderBody(cv: TailoredCV): string {
   if (cv.summary) {
     out.push(sectionHeading("Profile"));
     out.push(
-      `<p style="font-size:10.5pt;line-height:1.45;margin:0 0 8pt 0">${escapeHtml(cv.summary)}</p>`
+      `<p style="font-size:11pt;line-height:1.5;margin:0 0 8pt 0">${escapeHtml(cv.summary)}</p>`
     );
   }
 
-  // Key Skills
+  // Key Skills (comma-separated, single paragraph — ATS-safe and visually clean)
   if (cv.skills.length > 0) {
     out.push(sectionHeading("Key Skills"));
     out.push(
-      `<p style="font-size:10.5pt;line-height:1.45;margin:0 0 8pt 0">${cv.skills.map(escapeHtml).join(" &nbsp;·&nbsp; ")}</p>`
+      `<p style="font-size:11pt;line-height:1.5;margin:0 0 8pt 0">${cv.skills.map(escapeHtml).join(", ")}</p>`
     );
   }
 
@@ -80,16 +80,21 @@ function renderBody(cv: TailoredCV): string {
   if (cv.roles.length > 0) {
     out.push(sectionHeading("Experience"));
     for (const r of cv.roles) {
-      const dateLine = `${fmtDate(r.startDate)} – ${r.isCurrent ? "Present" : fmtDate(r.endDate || "")}`;
+      const start = fmtDate(r.startDate);
+      const end = r.isCurrent ? "Present" : fmtDate(r.endDate || "");
+      const dateLine = start && end ? `${start} – ${end}` : start || end || "";
+      const metaBits = [
+        escapeHtml(r.company),
+        r.location ? escapeHtml(r.location) : null,
+        dateLine ? `<span style="color:#555">${escapeHtml(dateLine)}</span>` : null,
+      ].filter(Boolean) as string[];
       out.push(
         `<div style="margin:0 0 10pt 0">
-          <div style="font-size:11pt;font-weight:bold;margin:0">${escapeHtml(r.title)}</div>
-          <div style="font-size:10.5pt;margin:0 0 1pt 0">${escapeHtml(r.company)}${
-            r.location ? ` &nbsp;·&nbsp; ${escapeHtml(r.location)}` : ""
-          } &nbsp;·&nbsp; <span style="color:#555">${escapeHtml(dateLine)}</span></div>
+          <div style="font-size:11.5pt;font-weight:bold;margin:0">${escapeHtml(r.title)}</div>
+          <div style="font-size:11pt;margin:0 0 1pt 0">${metaBits.join(" &nbsp;·&nbsp; ")}</div>
           ${
             r.bullets.length > 0
-              ? `<ul style="margin:4pt 0 0 18pt;padding:0;font-size:10.5pt;line-height:1.45">
+              ? `<ul style="margin:4pt 0 0 18pt;padding:0;font-size:11pt;line-height:1.5">
                   ${r.bullets.map((b) => `<li style="margin:0 0 2pt 0">${escapeHtml(b)}</li>`).join("")}
                 </ul>`
               : ""
@@ -105,14 +110,14 @@ function renderBody(cv: TailoredCV): string {
     for (const e of cv.education) {
       const years = [e.startYear, e.endYear].filter(Boolean).join(" – ");
       out.push(
-        `<div style="margin:0 0 6pt 0;font-size:10.5pt;line-height:1.45">
+        `<div style="margin:0 0 6pt 0;font-size:11pt;line-height:1.5">
           <div style="font-weight:bold">${escapeHtml(e.qualification)}${
-            years ? ` <span style="font-weight:normal;color:#555;font-size:10pt"> &nbsp;·&nbsp; ${escapeHtml(years)}</span>` : ""
+            years ? ` <span style="font-weight:normal;color:#555;font-size:10.5pt"> &nbsp;·&nbsp; ${escapeHtml(years)}</span>` : ""
           }</div>
           <div>${escapeHtml(e.institution)}${
             e.classification ? ` &nbsp;·&nbsp; ${escapeHtml(e.classification)}` : ""
           }</div>
-          ${e.details ? `<div style="font-size:10pt;color:#555">${escapeHtml(e.details)}</div>` : ""}
+          ${e.details ? `<div style="font-size:10.5pt;color:#555">${escapeHtml(e.details)}</div>` : ""}
         </div>`
       );
     }
@@ -122,7 +127,7 @@ function renderBody(cv: TailoredCV): string {
   if (cv.certifications.length > 0) {
     out.push(sectionHeading("Certifications"));
     out.push(
-      `<ul style="margin:0 0 6pt 18pt;padding:0;font-size:10.5pt;line-height:1.45">
+      `<ul style="margin:0 0 6pt 18pt;padding:0;font-size:11pt;line-height:1.5">
         ${cv.certifications
           .map((c) => {
             const meta = [c.issuer, c.year].filter(Boolean).join(", ");
@@ -139,9 +144,9 @@ function renderBody(cv: TailoredCV): string {
   if (cv.languages.length > 0) {
     out.push(sectionHeading("Languages"));
     out.push(
-      `<p style="font-size:10.5pt;line-height:1.45;margin:0 0 6pt 0">${cv.languages
-        .map((l) => `${escapeHtml(l.language)} (${escapeHtml(l.proficiency || "—")})`)
-        .join(" &nbsp;·&nbsp; ")}</p>`
+      `<p style="font-size:11pt;line-height:1.5;margin:0 0 6pt 0">${cv.languages
+        .map((l) => l.proficiency ? `${escapeHtml(l.language)} (${escapeHtml(l.proficiency)})` : escapeHtml(l.language))
+        .join(", ")}</p>`
     );
   }
 
@@ -149,7 +154,7 @@ function renderBody(cv: TailoredCV): string {
   if (cv.interests.length > 0) {
     out.push(sectionHeading("Interests"));
     out.push(
-      `<p style="font-size:10.5pt;line-height:1.45;margin:0 0 6pt 0">${cv.interests
+      `<p style="font-size:11pt;line-height:1.5;margin:0 0 6pt 0">${cv.interests
         .map(escapeHtml)
         .join(", ")}</p>`
     );
@@ -159,7 +164,7 @@ function renderBody(cv: TailoredCV): string {
 }
 
 function sectionHeading(label: string): string {
-  return `<div style="font-size:11pt;font-weight:bold;text-transform:uppercase;letter-spacing:0.04em;border-bottom:1px solid #888;padding:0 0 1pt 0;margin:10pt 0 4pt 0">${escapeHtml(
+  return `<div style="font-size:11.5pt;font-weight:bold;text-transform:uppercase;letter-spacing:0.06em;border-bottom:1px solid #777;padding:0 0 2pt 0;margin:12pt 0 5pt 0">${escapeHtml(
     label
   )}</div>`;
 }

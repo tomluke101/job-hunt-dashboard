@@ -32,6 +32,15 @@ function formatDate(ym: string | null | undefined): string {
   return `${MONTH_NAMES[month - 1]} ${year}`;
 }
 
+function dateLine(start: string, end: string | null, isCurrent: boolean): string {
+  const s = formatDate(start);
+  const e = isCurrent ? "Present" : formatDate(end || "");
+  if (s && e) return `${s} – ${e}`;
+  return s || e || "";
+}
+
+const cvFontStack = `"Calibri", "Arial", "Helvetica", sans-serif`;
+
 export default function TailoredCVView({ cv }: Props) {
   return (
     <div className="space-y-4">
@@ -73,139 +82,127 @@ export default function TailoredCVView({ cv }: Props) {
         </div>
       )}
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm font-serif text-slate-900">
-        <header className="border-b border-slate-200 pb-4">
-          <h1 className="text-2xl font-bold tracking-tight">{cv.contact.name || "—"}</h1>
-          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-600">
-            {cv.contact.location && <span>{cv.contact.location}</span>}
-            {cv.contact.email && (
-              <>
-                <span className="text-slate-300">·</span>
-                <span>{cv.contact.email}</span>
-              </>
-            )}
-            {cv.contact.phone && (
-              <>
-                <span className="text-slate-300">·</span>
-                <span>{cv.contact.phone}</span>
-              </>
-            )}
-            {cv.contact.linkedin && (
-              <>
-                <span className="text-slate-300">·</span>
-                <span>{cv.contact.linkedin}</span>
-              </>
-            )}
+      <div
+        className="rounded-2xl border border-slate-200 bg-white px-10 py-9 shadow-sm text-slate-900"
+        style={{ fontFamily: cvFontStack, fontSize: "11pt", lineHeight: 1.5 }}
+      >
+        <header className="mb-2">
+          <h1 className="font-bold tracking-tight" style={{ fontSize: "22pt", lineHeight: 1.1 }}>
+            {cv.contact.name || "—"}
+          </h1>
+          <div className="mt-1 text-slate-600" style={{ fontSize: "10.5pt" }}>
+            {[cv.contact.location, cv.contact.email, cv.contact.phone, cv.contact.linkedin]
+              .filter(Boolean)
+              .join("  ·  ")}
           </div>
         </header>
 
         {cv.summary && (
           <Section title="Profile">
-            <p className="text-sm leading-relaxed">{cv.summary}</p>
+            <p>{cv.summary}</p>
           </Section>
         )}
 
         {cv.skills.length > 0 && (
           <Section title="Key Skills">
-            <div className="flex flex-wrap gap-1.5">
-              {cv.skills.map((s, i) => (
-                <span
-                  key={i}
-                  className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-800"
-                >
-                  {s}
-                </span>
-              ))}
-            </div>
+            <p>{cv.skills.join(", ")}</p>
           </Section>
         )}
 
         {cv.roles.length > 0 && (
           <Section title="Experience">
-            <div className="space-y-5">
-              {cv.roles.map((r, i) => (
-                <div key={i}>
-                  <div className="flex items-baseline justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-semibold">{r.title}</div>
-                      <div className="text-sm text-slate-700">
-                        {r.company}
-                        {r.location ? ` · ${r.location}` : ""}
-                      </div>
+            <div className="space-y-4">
+              {cv.roles.map((r, i) => {
+                const dates = dateLine(r.startDate, r.endDate, r.isCurrent);
+                return (
+                  <div key={i}>
+                    <div className="font-bold" style={{ fontSize: "11.5pt" }}>
+                      {r.title}
                     </div>
-                    <div className="shrink-0 text-xs text-slate-500 tabular-nums">
-                      {formatDate(r.startDate)} – {r.isCurrent ? "Present" : formatDate(r.endDate)}
+                    <div className="text-slate-700">
+                      {[r.company, r.location, dates ? <span key="d" className="text-slate-500">{dates}</span> : null]
+                        .filter(Boolean)
+                        .map((part, idx, arr) => (
+                          <span key={idx}>
+                            {part}
+                            {idx < arr.length - 1 ? "  ·  " : ""}
+                          </span>
+                        ))}
                     </div>
+                    {r.bullets.length > 0 && (
+                      <ul className="mt-1.5 list-disc space-y-0.5 pl-6">
+                        {r.bullets.map((b, j) => (
+                          <li key={j}>{b}</li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
-                  {r.bullets.length > 0 && (
-                    <ul className="mt-2 list-disc space-y-1 pl-5 text-sm leading-relaxed">
-                      {r.bullets.map((b, j) => (
-                        <li key={j}>{b}</li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
           </Section>
         )}
 
         {cv.education.length > 0 && (
           <Section title="Education">
-            <div className="space-y-3">
-              {cv.education.map((e, i) => (
-                <div key={i}>
-                  <div className="flex items-baseline justify-between gap-3">
-                    <div className="text-sm font-semibold">{e.qualification}</div>
-                    <div className="shrink-0 text-xs text-slate-500 tabular-nums">
-                      {[e.startYear, e.endYear].filter(Boolean).join(" – ")}
+            <div className="space-y-2">
+              {cv.education.map((e, i) => {
+                const years = [e.startYear, e.endYear].filter(Boolean).join(" – ");
+                return (
+                  <div key={i}>
+                    <div className="font-bold">
+                      {e.qualification}
+                      {years && (
+                        <span className="ml-2 font-normal text-slate-500" style={{ fontSize: "10.5pt" }}>
+                          ·  {years}
+                        </span>
+                      )}
                     </div>
+                    <div className="text-slate-700">
+                      {e.institution}
+                      {e.classification ? `  ·  ${e.classification}` : ""}
+                    </div>
+                    {e.details && (
+                      <p className="text-slate-600" style={{ fontSize: "10.5pt" }}>
+                        {e.details}
+                      </p>
+                    )}
                   </div>
-                  <div className="text-sm text-slate-700">
-                    {e.institution}
-                    {e.classification ? ` · ${e.classification}` : ""}
-                  </div>
-                  {e.details && <p className="mt-1 text-xs text-slate-600">{e.details}</p>}
-                </div>
-              ))}
+                );
+              })}
             </div>
           </Section>
         )}
 
         {cv.certifications.length > 0 && (
           <Section title="Certifications">
-            <ul className="list-disc space-y-1 pl-5 text-sm">
-              {cv.certifications.map((c, i) => (
-                <li key={i}>
-                  {c.content}
-                  {(c.issuer || c.year) && (
-                    <span className="text-slate-500">
-                      {" "}
-                      ({[c.issuer, c.year].filter(Boolean).join(", ")})
-                    </span>
-                  )}
-                </li>
-              ))}
+            <ul className="list-disc space-y-0.5 pl-6">
+              {cv.certifications.map((c, i) => {
+                const meta = [c.issuer, c.year].filter(Boolean).join(", ");
+                return (
+                  <li key={i}>
+                    {c.content}
+                    {meta && <span className="text-slate-500"> ({meta})</span>}
+                  </li>
+                );
+              })}
             </ul>
           </Section>
         )}
 
         {cv.languages.length > 0 && (
           <Section title="Languages">
-            <div className="flex flex-wrap gap-2 text-sm">
-              {cv.languages.map((l, i) => (
-                <span key={i} className="text-slate-700">
-                  {l.language} ({l.proficiency})
-                  {i < cv.languages.length - 1 ? "  ·  " : ""}
-                </span>
-              ))}
-            </div>
+            <p>
+              {cv.languages
+                .map((l) => (l.proficiency ? `${l.language} (${l.proficiency})` : l.language))
+                .join(", ")}
+            </p>
           </Section>
         )}
 
         {cv.interests.length > 0 && (
           <Section title="Interests">
-            <p className="text-sm text-slate-700">{cv.interests.join(", ")}</p>
+            <p>{cv.interests.join(", ")}</p>
           </Section>
         )}
       </div>
@@ -215,8 +212,11 @@ export default function TailoredCVView({ cv }: Props) {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="mt-5">
-      <h2 className="mb-2 border-b border-slate-200 pb-1 text-xs font-bold uppercase tracking-wider text-slate-700">
+    <section className="mt-4">
+      <h2
+        className="mb-1.5 border-b border-slate-400 pb-0.5 font-bold uppercase tracking-wider text-slate-800"
+        style={{ fontSize: "11.5pt", letterSpacing: "0.06em" }}
+      >
         {title}
       </h2>
       {children}

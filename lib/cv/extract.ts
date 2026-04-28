@@ -1,4 +1,5 @@
 import { auth } from "@clerk/nextjs/server";
+import { createHash } from "crypto";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 import { callAI } from "@/lib/ai-router";
 import { getApiKeyValues } from "@/app/actions/api-keys";
@@ -185,143 +186,180 @@ export async function extractFactBase(
     } else if (!cv.content || !cv.content.trim()) {
       warnings.push("Base CV is empty. Re-upload the CV file in your Profile.");
     } else {
-      const keys = await getApiKeyValues();
-      if (Object.keys(keys).length === 0) {
-        warnings.push(
-          "No AI provider connected — CV bullets, education, and certifications were not extracted. Add an API key in Settings."
-        );
-      } else {
-        const knownEmployersBlock = employers
-          .map(
-            (e, i) =>
-              `${i + 1}. company: "${e.company_name}" | title: "${e.role_title}" | dates: ${
-                e.start_date ? String(e.start_date).slice(0, 7) : "?"
-              }–${e.is_current ? "Present" : e.end_date ? String(e.end_date).slice(0, 7) : "?"}`
-          )
-          .join("\n");
+      // Build a hash capturing everything that affects the AI parse: the CV
+      // content AND the known employer list (used in the prompt for matching).
+      const knownEmployersBlock = employers
+        .map(
+          (e, i) =>
+            `${i + 1}. company: "${e.company_name}" | title: "${e.role_title}" | dates: ${
+              e.start_date ? String(e.start_date).slice(0, 7) : "?"
+            }–${e.is_current ? "Present" : e.end_date ? String(e.end_date).slice(0, 7) : "?"}`
+        )
+        .join("\n");
+      const cacheHash = createHash("sha256")
+        .update(cv.content)
+        .update("\n--EMPLOYERS--\n")
+        .update(knownEmployersBlock)
+        .digest("hex");
 
-        try {
-          const result = await callAI({
-            task: "cv-tailor",
-            connectedProviders: keys,
-            systemPrompt: CV_PARSER_SYSTEM,
-            prompt: `Known employers (use these to match achievements):\n${
-              knownEmployersBlock || "(none — no work history entered yet)"
-            }\n\nCV TEXT:\n${cv.content.slice(0, 15000)}`,
-          });
+      let parsed: CVParseResult | null = null;
 
-          const parsed = safeParseJSON(result.text) as CVParseResult | null;
-          if (!parsed) {
-            warnings.push(
-              "CV parse returned non-JSON output. Bullets, education, and certifications were not extracted."
-            );
-          } else {
-            if (parsed.summary && parsed.summary.trim()) {
-              const summaryFact: SummaryFact = {
-                id: newId(),
-                kind: "summary",
-                content: parsed.summary.trim(),
-                source: { origin: "cv", refId: cv.id },
-              };
-              facts.push(summaryFact);
-            }
+      const cached = await supabase
+        .from("cv_parsed_cache")
+        .select("parsed, content_hash")
+        .eq("cv_id", cv.id)
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (cached.data && cached.data.content_hash === cacheHash) {
+        parsed = cached.data.parsed as CVParseResult;
+      }
 
-            const employersByCompany = new Map<string, string>();
-            for (const e of employers) {
-              const factId = employerIdToFactId.get(e.id);
-              if (factId) employersByCompany.set(normaliseCompany(e.company_name), factId);
-            }
-
-            for (const a of parsed.achievements ?? []) {
-              const content = (a.content ?? "").trim();
-              if (!content) continue;
-              const companyKey = a.company ? normaliseCompany(a.company) : "";
-              const matchedRoleId = companyKey ? employersByCompany.get(companyKey) ?? null : null;
-              const achievementFact: AchievementFact = {
-                id: newId(),
-                kind: "achievement",
-                content,
-                source: { origin: "cv", refId: cv.id },
-                roleId: matchedRoleId,
-                inferredCompany: matchedRoleId ? null : (a.company ?? null),
-              };
-              facts.push(achievementFact);
-            }
-
-            for (const ed of parsed.educations ?? []) {
-              const institution = (ed.institution ?? "").trim();
-              const qualification = (ed.qualification ?? "").trim();
-              if (!institution || !qualification) continue;
-              const eduFact: EducationFact = {
-                id: newId(),
-                kind: "education",
-                content: `${qualification}, ${institution}${
-                  ed.classification ? ` (${ed.classification.trim()})` : ""
-                }`,
-                source: { origin: "cv", refId: cv.id },
-                institution,
-                qualification,
-                classification: ed.classification?.trim() || null,
-                startYear: ed.startYear?.trim() || null,
-                endYear: ed.endYear?.trim() || null,
-                details: ed.details?.trim() || null,
-              };
-              facts.push(eduFact);
-            }
-
-            for (const c of parsed.certifications ?? []) {
-              const content = (c.content ?? "").trim();
-              if (!content) continue;
-              const certFact: CertificationFact = {
-                id: newId(),
-                kind: "certification",
-                content,
-                source: { origin: "cv", refId: cv.id },
-                issuer: c.issuer?.trim() || null,
-                year: c.year?.trim() || null,
-              };
-              facts.push(certFact);
-            }
-
-            for (const l of parsed.languages ?? []) {
-              const language = (l.language ?? "").trim();
-              if (!language) continue;
-              const proficiency = (l.proficiency ?? "").trim();
-              const langFact: LanguageFact = {
-                id: newId(),
-                kind: "language",
-                content: proficiency ? `${language} (${proficiency})` : language,
-                source: { origin: "cv", refId: cv.id },
-                language,
-                proficiency,
-              };
-              facts.push(langFact);
-            }
-
-            for (const i of parsed.interests ?? []) {
-              const trimmed = String(i || "").trim();
-              if (!trimmed) continue;
-              const interestFact: InterestFact = {
-                id: newId(),
-                kind: "interest",
-                content: trimmed,
-                source: { origin: "cv", refId: cv.id },
-              };
-              facts.push(interestFact);
-            }
-
-            unmatchedCompanies = (parsed.unmatchedCompanies ?? [])
-              .map((s) => String(s || "").trim())
-              .filter(Boolean);
-          }
-        } catch (e) {
-          console.error("[extractFactBase] CV parse failed:", e);
+      if (!parsed) {
+        const keys = await getApiKeyValues();
+        if (Object.keys(keys).length === 0) {
           warnings.push(
-            "CV parse failed: " +
-              (e instanceof Error ? e.message : "unknown error") +
-              ". Tailor mode can still run on Work History and Skills only."
+            "No AI provider connected — CV bullets, education, and certifications were not extracted. Add an API key in Settings."
           );
+        } else {
+          try {
+            const result = await callAI({
+              task: "cv-tailor",
+              connectedProviders: keys,
+              systemPrompt: CV_PARSER_SYSTEM,
+              prompt: `Known employers (use these to match achievements):\n${
+                knownEmployersBlock || "(none — no work history entered yet)"
+              }\n\nCV TEXT:\n${cv.content.slice(0, 15000)}`,
+            });
+
+            parsed = safeParseJSON(result.text) as CVParseResult | null;
+            if (parsed) {
+              const upsert = await supabase.from("cv_parsed_cache").upsert(
+                {
+                  cv_id: cv.id,
+                  user_id: userId,
+                  content_hash: cacheHash,
+                  parsed,
+                  updated_at: new Date().toISOString(),
+                },
+                { onConflict: "cv_id" }
+              );
+              if (upsert.error) {
+                console.error("[extractFactBase] cache upsert failed:", upsert.error);
+              }
+            } else {
+              warnings.push(
+                "CV parse returned non-JSON output. Bullets, education, and certifications were not extracted."
+              );
+            }
+          } catch (e) {
+            console.error("[extractFactBase] CV parse failed:", e);
+            warnings.push(
+              "CV parse failed: " +
+                (e instanceof Error ? e.message : "unknown error") +
+                ". Tailor mode can still run on Work History and Skills only."
+            );
+          }
         }
+      }
+
+      if (parsed) {
+        if (parsed.summary && parsed.summary.trim()) {
+          const summaryFact: SummaryFact = {
+            id: newId(),
+            kind: "summary",
+            content: parsed.summary.trim(),
+            source: { origin: "cv", refId: cv.id },
+          };
+          facts.push(summaryFact);
+        }
+
+        const employersByCompany = new Map<string, string>();
+        for (const e of employers) {
+          const factId = employerIdToFactId.get(e.id);
+          if (factId) employersByCompany.set(normaliseCompany(e.company_name), factId);
+        }
+
+        for (const a of parsed.achievements ?? []) {
+          const content = (a.content ?? "").trim();
+          if (!content) continue;
+          const companyKey = a.company ? normaliseCompany(a.company) : "";
+          const matchedRoleId = companyKey ? employersByCompany.get(companyKey) ?? null : null;
+          const achievementFact: AchievementFact = {
+            id: newId(),
+            kind: "achievement",
+            content,
+            source: { origin: "cv", refId: cv.id },
+            roleId: matchedRoleId,
+            inferredCompany: matchedRoleId ? null : (a.company ?? null),
+          };
+          facts.push(achievementFact);
+        }
+
+        for (const ed of parsed.educations ?? []) {
+          const institution = (ed.institution ?? "").trim();
+          const qualification = (ed.qualification ?? "").trim();
+          if (!institution || !qualification) continue;
+          const eduFact: EducationFact = {
+            id: newId(),
+            kind: "education",
+            content: `${qualification}, ${institution}${
+              ed.classification ? ` (${ed.classification.trim()})` : ""
+            }`,
+            source: { origin: "cv", refId: cv.id },
+            institution,
+            qualification,
+            classification: ed.classification?.trim() || null,
+            startYear: ed.startYear?.trim() || null,
+            endYear: ed.endYear?.trim() || null,
+            details: ed.details?.trim() || null,
+          };
+          facts.push(eduFact);
+        }
+
+        for (const c of parsed.certifications ?? []) {
+          const content = (c.content ?? "").trim();
+          if (!content) continue;
+          const certFact: CertificationFact = {
+            id: newId(),
+            kind: "certification",
+            content,
+            source: { origin: "cv", refId: cv.id },
+            issuer: c.issuer?.trim() || null,
+            year: c.year?.trim() || null,
+          };
+          facts.push(certFact);
+        }
+
+        for (const l of parsed.languages ?? []) {
+          const language = (l.language ?? "").trim();
+          if (!language) continue;
+          const proficiency = (l.proficiency ?? "").trim();
+          const langFact: LanguageFact = {
+            id: newId(),
+            kind: "language",
+            content: proficiency ? `${language} (${proficiency})` : language,
+            source: { origin: "cv", refId: cv.id },
+            language,
+            proficiency,
+          };
+          facts.push(langFact);
+        }
+
+        for (const i of parsed.interests ?? []) {
+          const trimmed = String(i || "").trim();
+          if (!trimmed) continue;
+          const interestFact: InterestFact = {
+            id: newId(),
+            kind: "interest",
+            content: trimmed,
+            source: { origin: "cv", refId: cv.id },
+          };
+          facts.push(interestFact);
+        }
+
+        unmatchedCompanies = (parsed.unmatchedCompanies ?? [])
+          .map((s) => String(s || "").trim())
+          .filter(Boolean);
       }
     }
 

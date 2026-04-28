@@ -124,7 +124,7 @@ Return ONLY a single valid JSON object. No preamble, no commentary, no markdown 
     "bullets": [string]
   }],
   "education": [{ "qualification": string, "institution": string, "classification": string|null, "startYear": string|null, "endYear": string|null, "details": string|null }],
-  "skills": [{ "category": string, "items": [string] }],
+  "skills": [string],
   "certifications": [{ "content": string, "issuer": string|null, "year": string|null }],
   "languages": [{ "language": string, "proficiency": string }],
   "interests": [string],
@@ -169,8 +169,9 @@ Vary bullet length deliberately. Mix short (10–15 words), medium (15–22), an
 
 ATS RULES
 - Standard section labels only: "Experience", "Education", "Skills", "Certifications", "Profile" (the renderer adds these — your job is to populate them).
-- Skills: organise into 2–4 categories (e.g. "Technical", "Tools", "Domain"). Items use exact JD vocabulary where evidence exists in the FactBase. Do not list skills that have no FactBase backing.
-- Each skill item should be a short noun phrase ("Power BI", "supplier negotiation", "SAP S/4HANA migration"), not a sentence.
+- Skills: a single flat array of 8–15 short noun-phrase items, ordered by JD relevance. Items use exact JD vocabulary where the FactBase supports the claim. Do not list skills that have no FactBase backing.
+- Each skill item is a short noun phrase ("Power BI", "supplier negotiation", "SAP S/4HANA migration"). Never a full sentence. Never categorised; just one ordered list.
+- The Skills section sits BETWEEN Profile and Experience in the rendered CV — it acts as a scan-friendly keyword block for ATS and recruiters. Pick the items that earn that prime placement.
 
 ROLE BULLET RULES
 - Each role gets 3–6 bullets. The most JD-relevant role can have up to 7. Older roles get 2–4.
@@ -368,12 +369,22 @@ function sanitiseTailoredCV(cv: TailoredCV, fb: FactBase): TailoredCV {
     bullets: (r.bullets ?? []).map(trim).filter(Boolean),
   }));
 
-  const skills: TailoredCV["skills"] = (cv.skills ?? [])
-    .map((s) => ({
-      category: trim(s.category) || "Skills",
-      items: (s.items ?? []).map(trim).filter(Boolean),
-    }))
-    .filter((s) => s.items.length > 0);
+  // Skills can arrive either as flat strings (new schema) or as legacy
+  // categorised objects (older AI outputs). Flatten either into a single list.
+  const rawSkills = (cv.skills ?? []) as unknown[];
+  const skills: string[] = [];
+  for (const s of rawSkills) {
+    if (typeof s === "string") {
+      const trimmed = trim(s);
+      if (trimmed) skills.push(trimmed);
+    } else if (s && typeof s === "object" && "items" in s) {
+      const items = (s as { items?: unknown[] }).items ?? [];
+      for (const it of items) {
+        const trimmed = trim(String(it ?? ""));
+        if (trimmed) skills.push(trimmed);
+      }
+    }
+  }
 
   return {
     contact,

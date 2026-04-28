@@ -7,7 +7,9 @@ import {
   Building2,
   ChevronDown,
   ClipboardList,
+  FileDown,
   FileText,
+  Printer,
   Sparkles,
   Loader2,
   RefreshCw,
@@ -16,6 +18,11 @@ import { tailorCV } from "@/app/actions/cv-tailoring";
 import type { Application } from "@/app/actions/applications";
 import type { UserCV } from "@/app/actions/profile";
 import type { TailoredCV } from "@/lib/cv/tailored-cv";
+import {
+  cvFileBaseName,
+  tailoredCVToPrintHtml,
+  tailoredCVToWordHtml,
+} from "@/lib/cv/export";
 import TailoredCVView from "./TailoredCVView";
 
 interface Props {
@@ -98,6 +105,27 @@ export default function CVTailorClient({ applications, cvs }: Props) {
     setTailored(null);
     setError(null);
     setWarnings([]);
+  }
+
+  function handleDownloadWord() {
+    if (!tailored) return;
+    const base = cvFileBaseName(tailored, companyName || undefined, roleName || undefined);
+    const html = tailoredCVToWordHtml(tailored);
+    const blob = new Blob(["﻿", html], { type: "application/msword" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${base}.doc`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleDownloadPDF() {
+    if (!tailored) return;
+    const win = window.open("", "_blank", "width=900,height=1100");
+    if (!win) return;
+    win.document.write(tailoredCVToPrintHtml(tailored));
+    win.document.close();
   }
 
   return (
@@ -340,14 +368,28 @@ export default function CVTailorClient({ applications, cvs }: Props) {
 
       {tailored && (
         <div ref={outputRef} className="space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
             <h2 className="text-lg font-semibold text-slate-900">Tailored CV</h2>
-            <button
-              onClick={handleStartOver}
-              className="text-xs text-slate-500 hover:text-slate-900 inline-flex items-center gap-1"
-            >
-              <RefreshCw size={12} /> Start over
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleDownloadWord}
+                className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                <FileDown size={13} /> Word
+              </button>
+              <button
+                onClick={handleDownloadPDF}
+                className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                <Printer size={13} /> PDF
+              </button>
+              <button
+                onClick={handleStartOver}
+                className="text-xs text-slate-500 hover:text-slate-900 inline-flex items-center gap-1 px-2 py-1.5"
+              >
+                <RefreshCw size={12} /> Start over
+              </button>
+            </div>
           </div>
 
           <TailoredCVView cv={tailored} />

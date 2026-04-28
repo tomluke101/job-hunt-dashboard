@@ -105,6 +105,21 @@ export default function TailoredCVView({ cv }: Props) {
           </Section>
         )}
 
+        {cv.skills.length > 0 && (
+          <Section title="Key Skills">
+            <div className="flex flex-wrap gap-1.5">
+              {cv.skills.map((s, i) => (
+                <span
+                  key={i}
+                  className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-800"
+                >
+                  {s}
+                </span>
+              ))}
+            </div>
+          </Section>
+        )}
+
         {cv.roles.length > 0 && (
           <Section title="Experience">
             <div className="space-y-5">
@@ -151,19 +166,6 @@ export default function TailoredCVView({ cv }: Props) {
                     {e.classification ? ` · ${e.classification}` : ""}
                   </div>
                   {e.details && <p className="mt-1 text-xs text-slate-600">{e.details}</p>}
-                </div>
-              ))}
-            </div>
-          </Section>
-        )}
-
-        {cv.skills.length > 0 && (
-          <Section title="Skills">
-            <div className="space-y-2">
-              {cv.skills.map((g, i) => (
-                <div key={i} className="text-sm">
-                  <span className="font-semibold">{g.category}: </span>
-                  <span className="text-slate-700">{g.items.join(", ")}</span>
                 </div>
               ))}
             </div>

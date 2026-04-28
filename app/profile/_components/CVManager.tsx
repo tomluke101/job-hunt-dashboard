@@ -2,7 +2,7 @@
 
 import { useState, useTransition, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { FileText, Star, Trash2, Plus, X, Upload, Loader2 } from "lucide-react";
+import { FileText, Star, Trash2, Plus, X, Upload, Loader2, Maximize2 } from "lucide-react";
 import { saveCV, setDefaultCV, deleteCV, type UserCV } from "@/app/actions/profile";
 import { parseDocument } from "@/app/actions/parse-document";
 
@@ -15,6 +15,7 @@ export default function CVManager({ initial }: { initial: UserCV[] }) {
   const [setAsDefault, setSetAsDefault] = useState(cvs.length === 0);
   const [isPending, startTransition] = useTransition();
   const [previewId, setPreviewId] = useState<string | null>(null);
+  const [fullScreenId, setFullScreenId] = useState<string | null>(null);
   const [parsing, setParsing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -108,10 +109,51 @@ export default function CVManager({ initial }: { initial: UserCV[] }) {
 
         {cvs.map((cv) => previewId === cv.id && (
           <div key={`preview-${cv.id}`} className="bg-slate-50 border border-slate-200 rounded-xl p-4">
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Preview — {cv.name}</p>
-            <pre className="text-xs text-slate-600 whitespace-pre-wrap font-sans leading-relaxed max-h-48 overflow-y-auto">{cv.content.slice(0, 1000)}{cv.content.length > 1000 ? "\n\n[…]" : ""}</pre>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Preview — {cv.name}</p>
+              <button
+                onClick={() => setFullScreenId(cv.id)}
+                className="text-xs text-slate-500 hover:text-blue-600 inline-flex items-center gap-1 font-medium px-2 py-0.5 rounded hover:bg-blue-50 transition-colors"
+              >
+                <Maximize2 size={11} /> Full view
+              </button>
+            </div>
+            <pre className="text-sm text-slate-700 whitespace-pre-wrap font-sans leading-relaxed max-h-[480px] overflow-y-auto">{cv.content}</pre>
           </div>
         ))}
+
+        {fullScreenId && (() => {
+          const cv = cvs.find((c) => c.id === fullScreenId);
+          if (!cv) return null;
+          return (
+            <div
+              className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
+              onClick={() => setFullScreenId(null)}
+            >
+              <div
+                className="bg-white rounded-2xl max-w-3xl w-full max-h-[90vh] flex flex-col shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between p-5 border-b border-slate-200 shrink-0">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">{cv.name}</p>
+                    <p className="text-xs text-slate-400">{cv.content.split(/\s+/).filter(Boolean).length} words</p>
+                  </div>
+                  <button
+                    onClick={() => setFullScreenId(null)}
+                    className="text-slate-400 hover:text-slate-700 transition-colors p-1"
+                    aria-label="Close"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="overflow-y-auto p-6 flex-1">
+                  <pre className="text-sm text-slate-800 whitespace-pre-wrap font-sans leading-relaxed">{cv.content}</pre>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {showAdd ? (

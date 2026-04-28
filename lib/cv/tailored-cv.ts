@@ -36,11 +36,6 @@ export interface TailoredCertification {
   year: string | null;
 }
 
-export interface TailoredSkillGroup {
-  category: string;
-  items: string[];
-}
-
 export interface TailoredLanguage {
   language: string;
   proficiency: string;
@@ -49,9 +44,9 @@ export interface TailoredLanguage {
 export interface TailoredCV {
   contact: TailoredContact;
   summary: string;
+  skills: string[];        // flat list of 8-15 JD-relevant skills, ordered by relevance
   roles: TailoredRole[];
   education: TailoredEducation[];
-  skills: TailoredSkillGroup[];
   certifications: TailoredCertification[];
   languages: TailoredLanguage[];
   interests: string[];

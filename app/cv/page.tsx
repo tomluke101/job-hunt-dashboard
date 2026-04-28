@@ -1,20 +1,28 @@
-import { ScrollText } from "lucide-react";
+import { Suspense } from "react";
 import PageHeader from "../_components/PageHeader";
-import ComingSoon from "../_components/ComingSoon";
+import CVTailorClient from "./_components/CVTailorClient";
 import ProviderSelector from "../_components/ProviderSelector";
 import { getApiKeys } from "@/app/actions/api-keys";
 import { getTaskPreferences } from "@/app/actions/preferences";
+import { getApplications } from "@/app/actions/applications";
+import { getCVs } from "@/app/actions/profile";
 import type { Provider } from "@/lib/ai-providers";
 
 export default async function CVPage() {
-  const [savedKeys, preferences] = await Promise.all([getApiKeys(), getTaskPreferences()]);
+  const [savedKeys, preferences, applications, cvs] = await Promise.all([
+    getApiKeys(),
+    getTaskPreferences(),
+    getApplications(),
+    getCVs(),
+  ]);
+
   const connectedProviders = savedKeys.map((k) => k.provider as Provider);
 
   return (
     <div className="p-8">
       <PageHeader
-        title="CV Builder"
-        description="Adapt your CV to every role automatically"
+        title="CV Tailor"
+        description="Adapt your CV to each role — every claim traced to your profile, no invented metrics."
       >
         <ProviderSelector
           task="cv-tailor"
@@ -22,18 +30,12 @@ export default async function CVPage() {
           connectedProviders={connectedProviders}
         />
       </PageHeader>
-      <ComingSoon
-        icon={ScrollText}
-        title="Adaptive CV Generator"
-        description="Your base CV, intelligently reordered and reworded for each application — surfacing the skills and experience that matter most for that specific role."
-        features={[
-          "Upload your master CV once",
-          "AI reorders and rewrites sections to match each JD",
-          "Keyword optimisation for ATS systems",
-          "Preserves your authentic voice and facts",
-          "Side-by-side diff view to see what changed and why",
-        ]}
-      />
+
+      <div className="mt-6">
+        <Suspense fallback={null}>
+          <CVTailorClient applications={applications} cvs={cvs} />
+        </Suspense>
+      </div>
     </div>
   );
 }

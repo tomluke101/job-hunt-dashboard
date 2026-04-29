@@ -104,9 +104,13 @@ export async function tailorCV(input: TailorInput): Promise<TailorResult> {
 
   const sanitised = sanitiseTailoredCV(parsed, fb);
 
-  // Post-process critic: scan for banned phrases / patterns and surface as warnings.
-  // If any are found, make one targeted AI call to rewrite the offenders.
-  const flagged = scanBannedPhrases(sanitised);
+  // Post-process critic: scan for banned phrases, JD echo, and uniform-length
+  // bullets. Any hit triggers a single targeted AI call to rewrite the offenders.
+  const flagged = [
+    ...scanBannedPhrases(sanitised),
+    ...scanJDEcho(sanitised, input.jdText),
+    ...scanBulletVariance(sanitised),
+  ];
   if (flagged.length > 0) {
     try {
       const fixed = await rewriteOffendingSections({
@@ -204,7 +208,11 @@ Return ONLY the JSON object.`;
   }
   const sanitised = sanitiseTailoredCV(parsed, fb);
 
-  const flagged = scanBannedPhrases(sanitised);
+  const flagged = [
+    ...scanBannedPhrases(sanitised),
+    ...scanJDEcho(sanitised, input.jdText),
+    ...scanBulletVariance(sanitised),
+  ];
   if (flagged.length > 0) {
     try {
       const fixed = await rewriteOffendingSections({
@@ -301,6 +309,81 @@ function scanBannedPhrases(cv: TailoredCV): BannedHit[] {
   }
   for (const e of cv.education) {
     if (e.details) scanText(`Education: ${e.qualification}`, e.details, hits);
+  }
+  return hits;
+}
+
+// JD-echo: any 5-word window from the CV body that appears verbatim in the JD
+// is a paste-back. Recruiters subconsciously register this as inauthentic.
+function tokens(s: string): string[] {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9\s\-]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 1);
+}
+
+function ngrams(words: string[], n: number): Set<string> {
+  const out = new Set<string>();
+  for (let i = 0; i + n <= words.length; i++) {
+    out.add(words.slice(i, i + n).join(" "));
+  }
+  return out;
+}
+
+const JD_ECHO_GRAM_SIZE = 5;
+// Words so common that a 5-gram including only them isn't really "echo" —
+// don't penalise for these natural overlaps.
+const JD_ECHO_STOP_PHRASES = new Set([
+  "as well as the",
+  "in order to",
+  "and the team",
+  "the team and",
+]);
+
+function scanJDEcho(cv: TailoredCV, jdText: string): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!jdText || !jdText.trim()) return hits;
+  const jdGrams = ngrams(tokens(jdText), JD_ECHO_GRAM_SIZE);
+
+  const check = (label: string, text: string) => {
+    if (!text) return;
+    const cvGrams = ngrams(tokens(text), JD_ECHO_GRAM_SIZE);
+    for (const g of cvGrams) {
+      if (jdGrams.has(g) && !JD_ECHO_STOP_PHRASES.has(g)) {
+        hits.push({ section: label, phrase: `JD echo: "${g}"` });
+        return; // one hit per text segment is enough to trigger rewrite
+      }
+    }
+  };
+
+  check("Profile", cv.summary);
+  for (let i = 0; i < cv.roles.length; i++) {
+    const r = cv.roles[i];
+    for (let j = 0; j < r.bullets.length; j++) {
+      check(`Experience: ${r.title} bullet ${j + 1}`, r.bullets[j]);
+    }
+  }
+  return hits;
+}
+
+// Bullet-length variance — if a role's bullets are all within ±2 words of each
+// other (low variance), that's an AI cadence tell.
+function scanBulletVariance(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  for (const r of cv.roles) {
+    if (r.bullets.length < 4) continue;
+    const lengths = r.bullets.map((b) => b.split(/\s+/).filter(Boolean).length);
+    const mean = lengths.reduce((a, b) => a + b, 0) / lengths.length;
+    const variance =
+      lengths.reduce((a, b) => a + (b - mean) ** 2, 0) / lengths.length;
+    const stddev = Math.sqrt(variance);
+    if (mean > 0 && stddev / mean < 0.18) {
+      hits.push({
+        section: `Experience: ${r.title}`,
+        phrase: `bullets are uniform length (mean ${mean.toFixed(0)} words, stddev ${stddev.toFixed(1)}) — vary deliberately`,
+      });
+    }
   }
   return hits;
 }

@@ -24,6 +24,11 @@ export interface TailorInput {
   roleName?: string;
 }
 
+export interface RefineInput extends TailorInput {
+  previousCV: TailoredCV;
+  instruction: string;
+}
+
 export interface TailorResult {
   tailoredCV?: TailoredCV;
   error?: string;
@@ -124,6 +129,104 @@ export async function tailorCV(input: TailorInput): Promise<TailorResult> {
     }
     warnings.push(
       `Critic flagged ${flagged.length} AI-tell phrase${flagged.length === 1 ? "" : "s"} that auto-rewrite couldn't fix. Click "Tailor CV" again to regenerate.`
+    );
+  }
+
+  return {
+    tailoredCV: sanitised,
+    warnings,
+    jdKeywords: sanitised.jdKeywords,
+    gaps: sanitised.gaps,
+  };
+}
+
+// ── Refine: take the previous output + a natural-language instruction ────────
+
+export async function refineTailoredCV(input: RefineInput): Promise<TailorResult> {
+  const warnings: string[] = [];
+
+  if (!input.instruction || !input.instruction.trim()) {
+    return { error: "Tell me what to change first.", warnings };
+  }
+
+  const fbResult = await extractFactBase({ cvId: input.cvId });
+  if (fbResult.error || !fbResult.factBase) {
+    return { error: fbResult.error ?? "Could not load your profile data.", warnings };
+  }
+  const fb = fbResult.factBase;
+  warnings.push(...fb.warnings);
+
+  const keys = await getApiKeyValues();
+  if (Object.keys(keys).length === 0) {
+    return { error: "No AI provider connected. Add an API key in Settings.", warnings };
+  }
+
+  const factbaseText = serialiseFactBase(fb);
+  const systemPrompt = buildSystemPrompt();
+  const userPrompt = `${
+    [input.companyName && `Target company: ${input.companyName}`, input.roleName && `Target role: ${input.roleName}`]
+      .filter(Boolean)
+      .join("\n") + "\n\n"
+  }=== JOB DESCRIPTION ===
+${input.jdText.trim()}
+
+=== CANDIDATE FACTBASE ===
+${factbaseText}
+
+=== PREVIOUS OUTPUT (rewrite this, do not abandon what works) ===
+${JSON.stringify(input.previousCV)}
+
+=== USER REFINEMENT INSTRUCTION ===
+${input.instruction.trim()}
+
+=== TASK ===
+Apply the user's instruction to the previous output. Keep everything that wasn't called out. Maintain the Truth Contract — every claim still traces to the FactBase. Apply ALL system-prompt rules: banned phrases, no JD echo, no forward-looking aspiration in Profile, skill items 1-3 words, categorised skills, etc. Return the FULL updated TailoredCV JSON.
+
+Return ONLY the JSON object.`;
+
+  let raw: string;
+  try {
+    const result = await callAI({
+      task: "cv-tailor",
+      connectedProviders: keys,
+      systemPrompt,
+      prompt: userPrompt,
+    });
+    raw = result.text;
+  } catch (e) {
+    console.error("[refineTailoredCV] AI call failed:", e);
+    return { error: e instanceof Error ? e.message : "AI call failed.", warnings };
+  }
+
+  const parsed = parseTailoredCV(raw);
+  if (!parsed) {
+    return { error: "The AI returned an output we couldn't parse. Try again.", warnings };
+  }
+  const sanitised = sanitiseTailoredCV(parsed, fb);
+
+  const flagged = scanBannedPhrases(sanitised);
+  if (flagged.length > 0) {
+    try {
+      const fixed = await rewriteOffendingSections({
+        cv: sanitised,
+        flagged,
+        jdText: input.jdText,
+        factbaseText,
+        connectedProviders: keys,
+      });
+      if (fixed) {
+        return {
+          tailoredCV: fixed,
+          warnings,
+          jdKeywords: fixed.jdKeywords,
+          gaps: fixed.gaps,
+        };
+      }
+    } catch (e) {
+      console.error("[refineTailoredCV] critic rewrite failed:", e);
+    }
+    warnings.push(
+      `Critic flagged ${flagged.length} AI-tell phrase${flagged.length === 1 ? "" : "s"} that auto-rewrite couldn't fix.`
     );
   }
 

@@ -14,7 +14,7 @@ import {
   Loader2,
   RefreshCw,
 } from "lucide-react";
-import { tailorCV } from "@/app/actions/cv-tailoring";
+import { tailorCV, refineTailoredCV } from "@/app/actions/cv-tailoring";
 import type { Application } from "@/app/actions/applications";
 import type { UserCV } from "@/app/actions/profile";
 import type { TailoredCV } from "@/lib/cv/tailored-cv";
@@ -50,6 +50,8 @@ export default function CVTailorClient({ applications, cvs }: Props) {
   const [warnings, setWarnings] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isTailoring, startTailor] = useTransition();
+  const [refineText, setRefineText] = useState("");
+  const [isRefining, startRefine] = useTransition();
 
   const outputRef = useRef<HTMLDivElement>(null);
   const jdTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -105,6 +107,54 @@ export default function CVTailorClient({ applications, cvs }: Props) {
     setTailored(null);
     setError(null);
     setWarnings([]);
+    setRefineText("");
+  }
+
+  function handleRegenerate() {
+    setError(null);
+    setWarnings([]);
+    startTailor(async () => {
+      const result = await tailorCV({
+        jdText: jobDescription,
+        cvId: selectedCvId || undefined,
+        companyName: companyName || undefined,
+        roleName: roleName || undefined,
+      });
+      if (result.error) {
+        setError(result.error);
+        setWarnings(result.warnings ?? []);
+        return;
+      }
+      if (result.tailoredCV) {
+        setTailored(result.tailoredCV);
+        setWarnings(result.warnings ?? []);
+      }
+    });
+  }
+
+  function handleRefine() {
+    if (!tailored || !refineText.trim()) return;
+    setError(null);
+    startRefine(async () => {
+      const result = await refineTailoredCV({
+        jdText: jobDescription,
+        cvId: selectedCvId || undefined,
+        companyName: companyName || undefined,
+        roleName: roleName || undefined,
+        previousCV: tailored,
+        instruction: refineText.trim(),
+      });
+      if (result.error) {
+        setError(result.error);
+        setWarnings(result.warnings ?? []);
+        return;
+      }
+      if (result.tailoredCV) {
+        setTailored(result.tailoredCV);
+        setWarnings(result.warnings ?? []);
+        setRefineText("");
+      }
+    });
   }
 
   function handleDownloadWord() {
@@ -373,26 +423,75 @@ export default function CVTailorClient({ applications, cvs }: Props) {
             <div className="flex items-center gap-2">
               <button
                 onClick={handleDownloadWord}
-                className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors"
+                disabled={isRefining || isTailoring}
+                className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-40"
               >
                 <FileDown size={13} /> Word
               </button>
               <button
                 onClick={handleDownloadPDF}
-                className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors"
+                disabled={isRefining || isTailoring}
+                className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-40"
               >
                 <Printer size={13} /> PDF
               </button>
               <button
-                onClick={handleStartOver}
-                className="text-xs text-slate-500 hover:text-slate-900 inline-flex items-center gap-1 px-2 py-1.5"
+                onClick={handleRegenerate}
+                disabled={isRefining || isTailoring}
+                className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-40"
+                title="Roll a fresh generation with no instruction"
               >
-                <RefreshCw size={12} /> Start over
+                <RefreshCw size={13} /> Regenerate
+              </button>
+              <button
+                onClick={handleStartOver}
+                disabled={isRefining || isTailoring}
+                className="text-xs text-slate-500 hover:text-slate-900 inline-flex items-center gap-1 px-2 py-1.5 disabled:opacity-40"
+              >
+                Start over
               </button>
             </div>
           </div>
 
           <TailoredCVView cv={tailored} />
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-5">
+            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-2">
+              Refine — tell me what to change
+            </label>
+            <textarea
+              value={refineText}
+              onChange={(e) => setRefineText(e.target.value)}
+              placeholder='e.g. "Drop the lifeguard role", "Make Grain & Frame bullets punchier", "Reorder skills with analytics first", "Sharpen the profile around the ERP build".'
+              rows={3}
+              disabled={isRefining || isTailoring}
+              className="w-full text-sm border border-slate-200 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 resize-none leading-relaxed placeholder-slate-300 disabled:opacity-50"
+            />
+            <div className="flex items-center justify-between mt-3">
+              <p className="text-xs text-slate-400">
+                Refining keeps your truth contract intact and re-runs the critic.
+              </p>
+              <button
+                onClick={handleRefine}
+                disabled={isRefining || isTailoring || !refineText.trim()}
+                className={`flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-xl transition-all ${
+                  refineText.trim() && !isRefining && !isTailoring
+                    ? "bg-slate-900 text-white hover:bg-slate-800 shadow-sm"
+                    : "bg-slate-100 text-slate-400 cursor-not-allowed"
+                }`}
+              >
+                {isRefining ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin" /> Refining…
+                  </>
+                ) : (
+                  <>
+                    <Sparkles size={14} /> Refine
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

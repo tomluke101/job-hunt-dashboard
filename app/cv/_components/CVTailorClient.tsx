@@ -21,6 +21,7 @@ import { updateApplication } from "@/app/actions/applications";
 import type { Application } from "@/app/actions/applications";
 import type { UserCV } from "@/app/actions/profile";
 import type { TailoredCV } from "@/lib/cv/tailored-cv";
+import type { SavedTailoredCV } from "@/app/actions/cv-tailoring";
 import {
   cvFileBaseName,
   tailoredCVToPrintHtml,
@@ -31,11 +32,13 @@ import TailoredCVView from "./TailoredCVView";
 interface Props {
   applications: Application[];
   cvs: UserCV[];
+  savedCVByApp?: Record<string, SavedTailoredCV>;
 }
 
-export default function CVTailorClient({ applications, cvs }: Props) {
+export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }: Props) {
   const searchParams = useSearchParams();
   const preselectedAppId = searchParams.get("applicationId");
+  const preloadedSaved = preselectedAppId ? savedCVByApp[preselectedAppId] : undefined;
 
   const [mode, setMode] = useState<"application" | "manual">(
     preselectedAppId ? "application" : "application"
@@ -49,13 +52,13 @@ export default function CVTailorClient({ applications, cvs }: Props) {
   );
   const [inlineJd, setInlineJd] = useState("");
 
-  const [tailored, setTailored] = useState<TailoredCV | null>(null);
+  const [tailored, setTailored] = useState<TailoredCV | null>(preloadedSaved?.tailored_data ?? null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isTailoring, startTailor] = useTransition();
   const [refineText, setRefineText] = useState("");
   const [isRefining, startRefine] = useTransition();
-  const [savedId, setSavedId] = useState<string | null>(null);
+  const [savedId, setSavedId] = useState<string | null>(preloadedSaved?.id ?? null);
   const [isSaving, startSave] = useTransition();
   const [saveError, setSaveError] = useState<string | null>(null);
 

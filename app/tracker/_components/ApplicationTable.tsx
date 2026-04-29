@@ -509,7 +509,15 @@ function AddCoverLetterModal({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function ApplicationTable({ initialApps, initialCoverLetterMap = {} }: { initialApps: Application[]; initialCoverLetterMap?: Record<string, SavedCoverLetter> }) {
+export default function ApplicationTable({
+  initialApps,
+  initialCoverLetterMap = {},
+  initialTailoredCVMap = {},
+}: {
+  initialApps: Application[];
+  initialCoverLetterMap?: Record<string, SavedCoverLetter>;
+  initialTailoredCVMap?: Record<string, { id: string }>;
+}) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
@@ -530,6 +538,7 @@ export default function ApplicationTable({ initialApps, initialCoverLetterMap = 
   const [clApp, setClApp]           = useState<Application | null>(null);
   const [addClApp, setAddClApp]     = useState<Application | null>(null);
   const [coverLetterMap, setCoverLetterMap] = useState<Record<string, SavedCoverLetter>>(initialCoverLetterMap);
+  const [tailoredCVMap] = useState<Record<string, { id: string }>>(initialTailoredCVMap);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { setApps(initialApps); }, [initialApps]);
@@ -992,6 +1001,25 @@ export default function ApplicationTable({ initialApps, initialCoverLetterMap = 
                             <Sparkles size={11} />
                             CL
                           </button>
+                        )}
+                        {tailoredCVMap[app.id] ? (
+                          <a
+                            href={`/cv?applicationId=${app.id}`}
+                            className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border bg-cyan-50 text-cyan-700 border-cyan-200 hover:bg-cyan-100 transition-colors"
+                            title="Open the tailored CV for this role"
+                          >
+                            <FileText size={11} />
+                            CV
+                          </a>
+                        ) : (
+                          <a
+                            href={`/cv?applicationId=${app.id}`}
+                            className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border bg-slate-50 text-slate-400 border-slate-200 hover:bg-slate-100 hover:text-slate-600 transition-colors"
+                            title="Tailor a CV for this role"
+                          >
+                            <Sparkles size={11} />
+                            CV
+                          </a>
                         )}
                         {app.url && (
                           <a href={app.url} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-blue-500 transition-colors">

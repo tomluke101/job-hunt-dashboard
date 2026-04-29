@@ -13,6 +13,7 @@ import {
   bulkUpdateStatus, bulkDeleteApplications, bulkImportApplications,
 } from "@/app/actions/applications";
 import { saveManualCoverLetter, type SavedCoverLetter } from "@/app/actions/cover-letters";
+import { saveManualCV, type SavedTailoredCV } from "@/app/actions/cv-tailoring";
 
 const statusStyles: Record<Status, string> = {
   considering: "bg-amber-50 text-amber-700 border-amber-200",
@@ -507,6 +508,149 @@ function AddCoverLetterModal({
   );
 }
 
+// ── Add CV Modal — paste a CV used externally ────────────────────────────────
+
+function AddCVModal({
+  app,
+  onSaved,
+  onClose,
+}: {
+  app: Application;
+  onSaved: (cv: SavedTailoredCV) => void;
+  onClose: () => void;
+}) {
+  const [text, setText] = useState("");
+  const [isPending, startTransition] = useTransition();
+
+  function handleSave() {
+    if (!text.trim()) return;
+    startTransition(async () => {
+      const result = await saveManualCV(app.id, text.trim());
+      if (result.error) {
+        console.error("[saveManualCV]", result.error);
+        return;
+      }
+      onSaved({
+        id: result.id ?? crypto.randomUUID(),
+        application_id: app.id,
+        company: app.company,
+        role: app.role,
+        jd_text: app.job_description ?? null,
+        tailored_data: null,
+        content: text.trim(),
+        created_at: new Date().toISOString(),
+      });
+      onClose();
+    });
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-6">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col" style={{ height: "85vh" }}>
+        <div className="flex items-start justify-between px-7 py-5 border-b border-slate-100 shrink-0">
+          <div>
+            <h2 className="font-bold text-slate-900 text-lg leading-tight">{app.role}</h2>
+            <p className="text-slate-500 text-sm mt-0.5">{app.company} · Paste the CV you used</p>
+          </div>
+          <div className="flex items-center gap-2 ml-4">
+            <Link
+              href={`/cv?applicationId=${app.id}`}
+              className="flex items-center gap-1.5 text-sm font-medium text-cyan-700 hover:text-cyan-800 px-3 py-1.5 rounded-lg bg-cyan-50 hover:bg-cyan-100 border border-cyan-200 transition-colors"
+            >
+              <Sparkles size={13} /> Tailor with AI
+            </Link>
+            <button onClick={onClose} className="text-slate-400 hover:text-slate-600 ml-1 p-1">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-hidden px-7 py-5">
+          <textarea
+            autoFocus
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Paste the CV you used for this application — it will be saved here so you can refer back to it if you get to interview."
+            className="w-full h-full text-sm border border-slate-200 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 resize-none leading-relaxed font-mono"
+          />
+        </div>
+
+        <div className="px-7 py-4 border-t border-slate-100 bg-slate-50 rounded-b-2xl shrink-0 flex items-center justify-between">
+          <p className="text-xs text-slate-400">{text.trim().split(/\s+/).filter(Boolean).length} words</p>
+          <div className="flex items-center gap-2">
+            <button onClick={onClose} className="text-sm text-slate-500 hover:text-slate-700 px-4 py-2 rounded-lg hover:bg-slate-100 transition-colors">
+              Cancel
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={!text.trim() || isPending}
+              className="flex items-center gap-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium px-4 py-2 rounded-lg transition-colors"
+            >
+              {isPending ? "Saving…" : "Save CV"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── View CV Modal — show a manually-saved CV ──────────────────────────────────
+
+function ViewCVModal({
+  app,
+  saved,
+  onClose,
+}: {
+  app: Application;
+  saved: SavedTailoredCV;
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const text = saved.content ?? "";
+
+  function handleCopy() {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  const date = new Date(saved.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "2-digit" });
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-6">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col" style={{ height: "85vh" }}>
+        <div className="flex items-start justify-between px-7 py-5 border-b border-slate-100 shrink-0">
+          <div>
+            <h2 className="font-bold text-slate-900 text-lg leading-tight">{app.role}</h2>
+            <p className="text-slate-500 text-sm mt-0.5">{app.company} · Saved {date}</p>
+          </div>
+          <div className="flex items-center gap-2 ml-4">
+            <button
+              onClick={handleCopy}
+              className="flex items-center gap-1.5 text-sm font-medium bg-slate-900 hover:bg-slate-800 text-white px-3 py-1.5 rounded-lg transition-colors"
+            >
+              {copied ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy</>}
+            </button>
+            <button onClick={onClose} className="text-slate-400 hover:text-slate-600 ml-1 p-1">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-8 py-7">
+          <pre className="text-sm text-slate-800 whitespace-pre-wrap font-sans leading-relaxed">{text}</pre>
+        </div>
+
+        <div className="px-7 py-3 border-t border-slate-100 bg-slate-50 rounded-b-2xl shrink-0">
+          <p className="text-xs text-slate-400">{text.split(/\s+/).filter(Boolean).length} words</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function ApplicationTable({
@@ -516,7 +660,7 @@ export default function ApplicationTable({
 }: {
   initialApps: Application[];
   initialCoverLetterMap?: Record<string, SavedCoverLetter>;
-  initialTailoredCVMap?: Record<string, { id: string }>;
+  initialTailoredCVMap?: Record<string, SavedTailoredCV>;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -538,7 +682,9 @@ export default function ApplicationTable({
   const [clApp, setClApp]           = useState<Application | null>(null);
   const [addClApp, setAddClApp]     = useState<Application | null>(null);
   const [coverLetterMap, setCoverLetterMap] = useState<Record<string, SavedCoverLetter>>(initialCoverLetterMap);
-  const [tailoredCVMap] = useState<Record<string, { id: string }>>(initialTailoredCVMap);
+  const [tailoredCVMap, setTailoredCVMap] = useState<Record<string, SavedTailoredCV>>(initialTailoredCVMap);
+  const [addCvApp, setAddCvApp] = useState<Application | null>(null);
+  const [viewCvApp, setViewCvApp] = useState<Application | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { setApps(initialApps); }, [initialApps]);
@@ -727,6 +873,26 @@ export default function ApplicationTable({
             setCoverLetterMap((m) => ({ ...m, [addClApp.id]: letter }));
           }}
           onClose={() => setAddClApp(null)}
+        />
+      )}
+
+      {/* Add CV Modal — paste a CV used externally */}
+      {addCvApp && (
+        <AddCVModal
+          app={addCvApp}
+          onSaved={(cv) => {
+            setTailoredCVMap((m) => ({ ...m, [addCvApp.id]: cv }));
+          }}
+          onClose={() => setAddCvApp(null)}
+        />
+      )}
+
+      {/* View CV Modal — show a manually-saved CV */}
+      {viewCvApp && tailoredCVMap[viewCvApp.id] && (
+        <ViewCVModal
+          app={viewCvApp}
+          saved={tailoredCVMap[viewCvApp.id]}
+          onClose={() => setViewCvApp(null)}
         />
       )}
 
@@ -1003,23 +1169,34 @@ export default function ApplicationTable({
                           </button>
                         )}
                         {tailoredCVMap[app.id] ? (
-                          <a
-                            href={`/cv?applicationId=${app.id}`}
-                            className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border bg-cyan-50 text-cyan-700 border-cyan-200 hover:bg-cyan-100 transition-colors"
-                            title="Open the tailored CV for this role"
-                          >
-                            <FileText size={11} />
-                            CV
-                          </a>
+                          tailoredCVMap[app.id].tailored_data ? (
+                            <a
+                              href={`/cv?applicationId=${app.id}`}
+                              className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border bg-cyan-50 text-cyan-700 border-cyan-200 hover:bg-cyan-100 transition-colors"
+                              title="Open the tailored CV for this role"
+                            >
+                              <FileText size={11} />
+                              CV
+                            </a>
+                          ) : (
+                            <button
+                              onClick={() => setViewCvApp(app)}
+                              className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border bg-cyan-50 text-cyan-700 border-cyan-200 hover:bg-cyan-100 transition-colors"
+                              title="View saved CV"
+                            >
+                              <FileText size={11} />
+                              CV
+                            </button>
+                          )
                         ) : (
-                          <a
-                            href={`/cv?applicationId=${app.id}`}
+                          <button
+                            onClick={() => setAddCvApp(app)}
                             className="flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border bg-slate-50 text-slate-400 border-slate-200 hover:bg-slate-100 hover:text-slate-600 transition-colors"
-                            title="Tailor a CV for this role"
+                            title="Add CV (paste existing or generate new)"
                           >
                             <Sparkles size={11} />
                             CV
-                          </a>
+                          </button>
                         )}
                         {app.url && (
                           <a href={app.url} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-blue-500 transition-colors">

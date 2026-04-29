@@ -34,6 +34,7 @@ export interface SavedTailoredCV {
   application_id: string | null;
   company: string | null;
   role: string | null;
+  jd_text: string | null;
   tailored_data: TailoredCV;
   created_at: string;
 }
@@ -88,7 +89,7 @@ export async function getSavedTailoredCVs(
   const supabase = await createServerSupabaseClient();
   const query = supabase
     .from("cv_versions")
-    .select("id, application_id, company, role, tailored_data, created_at")
+    .select("id, application_id, company, role, jd_text, tailored_data, created_at")
     .eq("user_id", userId)
     .not("tailored_data", "is", null)
     .order("created_at", { ascending: false });

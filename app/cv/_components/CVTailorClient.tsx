@@ -50,7 +50,9 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }:
   const [selectedCvId, setSelectedCvId] = useState<string>(
     cvs.find((c) => c.is_default)?.id ?? cvs[0]?.id ?? ""
   );
-  const [inlineJd, setInlineJd] = useState("");
+  // Pre-fill the JD textarea from the saved CV when restoring — so a refine
+  // run after navigating from the tracker has the JD context it needs.
+  const [inlineJd, setInlineJd] = useState(preloadedSaved?.jd_text ?? "");
 
   const [tailored, setTailored] = useState<TailoredCV | null>(preloadedSaved?.tailored_data ?? null);
   const [warnings, setWarnings] = useState<string[]>([]);

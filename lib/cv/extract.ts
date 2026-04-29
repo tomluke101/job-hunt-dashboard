@@ -19,9 +19,22 @@ import {
 
 const newId = () => crypto.randomUUID();
 
+// Bump this whenever the CV parser prompt / output schema changes. The cache
+// hash includes it, so all stored parses invalidate and re-run with the new
+// logic on the next FactBase extraction.
+const PARSER_VERSION = "v2-2026-04-29-inferred-roles";
+
 interface CVParseResult {
   summary?: string;
   achievements?: { content: string; company?: string | null }[];
+  inferredRoles?: {
+    company?: string;
+    title?: string;
+    startDate?: string | null;        // YYYY-MM
+    endDate?: string | null;          // YYYY-MM
+    isCurrent?: boolean;
+    location?: string | null;
+  }[];
   educations?: {
     institution?: string;
     qualification?: string;
@@ -49,6 +62,7 @@ You will be given the CV text AND a list of the candidate's known employers. You
 - languages: any language proficiencies. Return language and proficiency level.
 - interests: any hobbies / interests / volunteering / extracurricular activities as short strings.
 - unmatchedCompanies: any company names you found in the CV's experience section that don't appear in the known employers list — return as bare strings.
+- inferredRoles: for each role in the CV's Experience / Work History section that ISN'T in the known employers list, return { company, title, startDate, endDate, isCurrent, location }. Dates are YYYY-MM (use YYYY-01 if only year is given for a start, YYYY-12 for end). Set isCurrent=true and endDate=null if it says "Present"/"Current"/"Now". This lets the system render those roles with correct dates without the user re-entering them.
 
 CRITICAL RULES:
 - Do NOT extract contact info (name, email, phone, address, LinkedIn) — we already have these.
@@ -62,6 +76,7 @@ Return ONLY the JSON object, schema:
 {
   "summary": string,
   "achievements": [{ "content": string, "company": string | null }],
+  "inferredRoles": [{ "company": string, "title": string, "startDate": "YYYY-MM"|null, "endDate": "YYYY-MM"|null, "isCurrent": boolean, "location": string|null }],
   "educations": [{ "institution": string, "qualification": string, "classification": string | null, "startYear": string | null, "endYear": string | null, "details": string | null }],
   "certifications": [{ "content": string, "issuer": string | null, "year": string | null }],
   "languages": [{ "language": string, "proficiency": string }],
@@ -197,6 +212,8 @@ export async function extractFactBase(
         )
         .join("\n");
       const cacheHash = createHash("sha256")
+        .update(PARSER_VERSION)
+        .update("\n--CV--\n")
         .update(cv.content)
         .update("\n--EMPLOYERS--\n")
         .update(knownEmployersBlock)
@@ -277,6 +294,33 @@ export async function extractFactBase(
         for (const e of employers) {
           const factId = employerIdToFactId.get(e.id);
           if (factId) employersByCompany.set(normaliseCompany(e.company_name), factId);
+        }
+
+        // Inferred roles: roles found in CV that aren't in Work History.
+        // Materialise as RoleFact(source: cv) so achievements can link AND
+        // tailor renders them with their CV-derived dates.
+        for (const ir of parsed.inferredRoles ?? []) {
+          const company = (ir.company ?? "").trim();
+          const title = (ir.title ?? "").trim();
+          if (!company || !title) continue;
+          const key = normaliseCompany(company);
+          if (employersByCompany.has(key)) continue; // already covered by user_employers
+          const inferredRoleFact: RoleFact = {
+            id: newId(),
+            kind: "role",
+            content: `${title} at ${company}`,
+            source: { origin: "cv", refId: cv.id },
+            company,
+            title,
+            startDate: (ir.startDate ?? "").trim() || "",
+            endDate: ir.isCurrent ? null : ((ir.endDate ?? "")?.trim() || null),
+            isCurrent: !!ir.isCurrent,
+            location: ir.location?.trim() || null,
+            employmentType: null,
+            summary: null,
+          };
+          facts.push(inferredRoleFact);
+          employersByCompany.set(key, inferredRoleFact.id);
         }
 
         for (const a of parsed.achievements ?? []) {

@@ -445,7 +445,25 @@ PROFILE RULES (HARD)
 - 3–4 sentences, all factual / evidence-based.
 - NO forward-looking sentence ("looking to apply…", "is looking to bring…", "seeks to leverage…", "eager to contribute…"). The Profile ends on a factual sentence about who the candidate is, not on what they hope to do.
 - NO mirroring of JD environment language ("fast-moving", "high-growth", "innovative", "dynamic environment").
+- NO weak closers ("with strong [X] capability", "with a passion for [Y]", "with proven [Z]"). Close the Profile on a fact.
 - Anchor the Profile on the candidate's strongest JD-relevant evidence: a specific achievement or distinctive role context.
+
+WORD-LEVEL BANS (always replace with specifics)
+- "multiple" — replace with a number or names: "across 4 overseas vendors", "procurement, finance, operations"
+- "various", "several", "numerous" — same — give a count or list
+- "extensive", "significant" — drop, or quantify
+- "successfully" — always filler in a CV bullet — drop it ("successfully recovered" → "recovered")
+- "actionable" — banned (AI tell)
+- "translating" — banned when followed by "data"/"datasets"/"insight"/"information"
+- "ensure", "ensuring" — usually weak; prefer the concrete verb of what was done
+
+GOOD BULLET PRINCIPLES
+- Lead with the concrete verb of the action (Built, Designed, Negotiated, Reduced, Cut, Investigated, Migrated, Implemented, Coordinated).
+- Specify the scope (count, geography, headcount, £ value, system) where the FactBase supports it.
+- Name the method when distinctive (the system used, the approach, the collaboration).
+- Close with the outcome — a number, a before/after, a clear result.
+- A great bullet is 12–24 words. Vary the length across a role's bullets.
+- If you cannot quantify because the FactBase has no numbers, replace the metric with concrete scope (team size, geography, frequency, before/after qualitative).
 
 BULLET STRUCTURE — XYZ FORMULA
 Where the FactBase supports it, write bullets as: "Accomplished [X] as measured by [Y] by doing [Z]."

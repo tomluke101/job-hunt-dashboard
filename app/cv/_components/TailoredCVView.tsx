@@ -1,10 +1,40 @@
 "use client";
 
 import type { TailoredCV } from "@/lib/cv/tailored-cv";
-import { Target, AlertTriangle } from "lucide-react";
+import { Target, AlertTriangle, Check, X } from "lucide-react";
 
 interface Props {
   cv: TailoredCV;
+}
+
+// Check whether a JD keyword surfaces verbatim (or as a clear stem) anywhere
+// in the rendered CV body. Recruiter boolean searches hit literal strings.
+function buildBodyText(cv: TailoredCV): string {
+  return [
+    cv.summary,
+    ...cv.skills.flatMap((g) => [g.category, ...g.items]),
+    ...cv.roles.flatMap((r) => [r.title, r.company, r.location ?? "", ...r.bullets]),
+    ...cv.education.flatMap((e) =>
+      [e.qualification, e.institution, e.classification, e.details].filter(Boolean) as string[]
+    ),
+    ...cv.certifications.flatMap((c) => [c.content, c.issuer, c.year].filter(Boolean) as string[]),
+  ]
+    .join(" \n ")
+    .toLowerCase();
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function keywordPresent(body: string, keyword: string): boolean {
+  const k = keyword.trim().toLowerCase();
+  if (!k) return false;
+  // Word-boundary check for short terms; substring for multi-word phrases.
+  if (!k.includes(" ") && k.length < 5) {
+    return new RegExp(`\\b${escapeRegex(k)}\\b`, "i").test(body);
+  }
+  return body.includes(k);
 }
 
 const MONTH_NAMES = [
@@ -42,22 +72,37 @@ function dateRange(start: string, end: string | null, isCurrent: boolean): strin
 const cvFontStack = `"Calibri", "Arial", "Helvetica", sans-serif`;
 
 export default function TailoredCVView({ cv }: Props) {
+  const bodyText = buildBodyText(cv);
+  const keywordChecks = cv.jdKeywords.map((k) => ({
+    keyword: k,
+    present: keywordPresent(bodyText, k),
+  }));
+  const presentCount = keywordChecks.filter((k) => k.present).length;
+
   return (
     <div className="space-y-4">
       {(cv.jdKeywords.length > 0 || cv.gaps.length > 0) && (
         <div className="grid gap-4 md:grid-cols-2">
           {cv.jdKeywords.length > 0 && (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
-              <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-emerald-800">
-                <Target size={12} /> JD keywords surfaced ({cv.jdKeywords.length})
+              <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-emerald-800">
+                <Target size={12} /> Recruiter search terms ({presentCount}/{keywordChecks.length} surfaced)
               </div>
+              <p className="mb-2 text-[11px] text-emerald-700/80">
+                Recruiters run boolean searches for these terms. Green = literal match in your CV body. Amber = missing — refine to add it (only if the FactBase supports it).
+              </p>
               <div className="flex flex-wrap gap-1.5">
-                {cv.jdKeywords.map((k, i) => (
+                {keywordChecks.map((k, i) => (
                   <span
                     key={i}
-                    className="rounded-full bg-white/80 px-2 py-0.5 text-xs text-emerald-900"
+                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${
+                      k.present
+                        ? "bg-emerald-600/10 text-emerald-900 border border-emerald-300"
+                        : "bg-amber-100/60 text-amber-900 border border-amber-300"
+                    }`}
                   >
-                    {k}
+                    {k.present ? <Check size={10} /> : <X size={10} />}
+                    {k.keyword}
                   </span>
                 ))}
               </div>

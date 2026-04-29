@@ -2,7 +2,12 @@
 
 import { extractText } from "unpdf";
 
-export async function parseDocument(formData: FormData): Promise<{ text: string }> {
+export interface ParseDocumentResult {
+  text: string;          // plain text (for AI / search)
+  html?: string;         // structured HTML when the source supports it (.docx)
+}
+
+export async function parseDocument(formData: FormData): Promise<ParseDocumentResult> {
   const file = formData.get("file") as File | null;
   if (!file) throw new Error("No file provided");
 
@@ -17,8 +22,27 @@ export async function parseDocument(formData: FormData): Promise<{ text: string 
 
   if (name.endsWith(".docx") || name.endsWith(".doc")) {
     const mammoth = await import("mammoth");
-    const result = await mammoth.extractRawText({ buffer });
-    return { text: result.value };
+    // Run text + HTML extraction in parallel. Text is for AI/search, HTML is
+    // for the rendered preview so the user sees the real CV structure.
+    const [textResult, htmlResult] = await Promise.all([
+      mammoth.extractRawText({ buffer }),
+      mammoth.convertToHtml(
+        { buffer },
+        {
+          // Map common Word styles to clean semantic HTML. ATS won't see this
+          // (we keep `text` separately) — this is purely for the preview.
+          styleMap: [
+            "p[style-name='Heading 1'] => h2:fresh",
+            "p[style-name='Heading 2'] => h3:fresh",
+            "p[style-name='Heading 3'] => h4:fresh",
+            "p[style-name='Title'] => h1:fresh",
+            "b => strong",
+            "i => em",
+          ],
+        }
+      ),
+    ]);
+    return { text: textResult.value, html: htmlResult.value };
   }
 
   if (name.endsWith(".txt") || name.endsWith(".text")) {

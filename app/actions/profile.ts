@@ -23,6 +23,7 @@ export interface UserCV {
   id: string;
   name: string;
   content: string;
+  content_html?: string | null;
   is_default: boolean;
   created_at: string;
 }
@@ -115,7 +116,12 @@ export async function getCVs(): Promise<UserCV[]> {
   return data ?? [];
 }
 
-export async function saveCV(name: string, content: string, setAsDefault: boolean) {
+export async function saveCV(
+  name: string,
+  content: string,
+  setAsDefault: boolean,
+  contentHtml?: string | null
+) {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorised");
 
@@ -125,7 +131,13 @@ export async function saveCV(name: string, content: string, setAsDefault: boolea
     await supabase.from("user_cvs").update({ is_default: false }).eq("user_id", userId);
   }
 
-  await supabase.from("user_cvs").insert({ user_id: userId, name, content, is_default: setAsDefault });
+  await supabase.from("user_cvs").insert({
+    user_id: userId,
+    name,
+    content,
+    content_html: contentHtml ?? null,
+    is_default: setAsDefault,
+  });
   revalidatePath("/profile");
 }
 

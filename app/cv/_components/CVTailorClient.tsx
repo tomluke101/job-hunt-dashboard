@@ -5,16 +5,19 @@ import { useSearchParams } from "next/navigation";
 import {
   AlertCircle,
   Building2,
+  Check,
   ChevronDown,
   ClipboardList,
   FileDown,
   FileText,
   Printer,
+  Save,
   Sparkles,
   Loader2,
   RefreshCw,
 } from "lucide-react";
-import { tailorCV, refineTailoredCV } from "@/app/actions/cv-tailoring";
+import { tailorCV, refineTailoredCV, saveTailoredCV } from "@/app/actions/cv-tailoring";
+import { updateApplication } from "@/app/actions/applications";
 import type { Application } from "@/app/actions/applications";
 import type { UserCV } from "@/app/actions/profile";
 import type { TailoredCV } from "@/lib/cv/tailored-cv";
@@ -52,6 +55,9 @@ export default function CVTailorClient({ applications, cvs }: Props) {
   const [isTailoring, startTailor] = useTransition();
   const [refineText, setRefineText] = useState("");
   const [isRefining, startRefine] = useTransition();
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [isSaving, startSave] = useTransition();
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const outputRef = useRef<HTMLDivElement>(null);
   const jdTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -84,6 +90,8 @@ export default function CVTailorClient({ applications, cvs }: Props) {
     setError(null);
     setTailored(null);
     setWarnings([]);
+    setSavedId(null);
+    setSaveError(null);
     startTailor(async () => {
       const result = await tailorCV({
         jdText: jobDescription,
@@ -108,11 +116,47 @@ export default function CVTailorClient({ applications, cvs }: Props) {
     setError(null);
     setWarnings([]);
     setRefineText("");
+    setSavedId(null);
+    setSaveError(null);
+  }
+
+  function handleSave() {
+    if (!tailored) return;
+    setSaveError(null);
+    startSave(async () => {
+      // If JD was pasted in tracker mode but not yet on the application, save it.
+      if (
+        mode === "application" &&
+        selectedAppId &&
+        inlineJd.trim() &&
+        !selectedApp?.job_description
+      ) {
+        try {
+          await updateApplication(selectedAppId, { job_description: inlineJd.trim() });
+        } catch {
+          /* non-blocking */
+        }
+      }
+      const result = await saveTailoredCV({
+        tailoredCV: tailored,
+        applicationId: mode === "application" ? selectedAppId || undefined : undefined,
+        companyName: companyName || undefined,
+        roleName: roleName || undefined,
+        jdText: jobDescription || undefined,
+      });
+      if (result.error) {
+        setSaveError(result.error);
+        return;
+      }
+      if (result.id) setSavedId(result.id);
+    });
   }
 
   function handleRegenerate() {
     setError(null);
     setWarnings([]);
+    setSavedId(null);
+    setSaveError(null);
     startTailor(async () => {
       const result = await tailorCV({
         jdText: jobDescription,
@@ -135,6 +179,8 @@ export default function CVTailorClient({ applications, cvs }: Props) {
   function handleRefine() {
     if (!tailored || !refineText.trim()) return;
     setError(null);
+    setSavedId(null);
+    setSaveError(null);
     startRefine(async () => {
       const result = await refineTailoredCV({
         jdText: jobDescription,
@@ -422,6 +468,34 @@ export default function CVTailorClient({ applications, cvs }: Props) {
             <h2 className="text-lg font-semibold text-slate-900">Tailored CV</h2>
             <div className="flex items-center gap-2">
               <button
+                onClick={handleSave}
+                disabled={isRefining || isTailoring || isSaving}
+                className={`text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-40 ${
+                  savedId
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                }`}
+                title={
+                  mode === "application" && selectedAppId
+                    ? "Save this version to the selected application"
+                    : "Save this version (not linked to an application)"
+                }
+              >
+                {isSaving ? (
+                  <>
+                    <Loader2 size={13} className="animate-spin" /> Saving…
+                  </>
+                ) : savedId ? (
+                  <>
+                    <Check size={13} /> Saved
+                  </>
+                ) : (
+                  <>
+                    <Save size={13} /> Save
+                  </>
+                )}
+              </button>
+              <button
                 onClick={handleDownloadWord}
                 disabled={isRefining || isTailoring}
                 className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-40"
@@ -452,6 +526,12 @@ export default function CVTailorClient({ applications, cvs }: Props) {
               </button>
             </div>
           </div>
+
+          {saveError && (
+            <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+              {saveError}
+            </div>
+          )}
 
           <TailoredCVView cv={tailored} />
 

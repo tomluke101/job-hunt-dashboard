@@ -1,5 +1,8 @@
 "use server";
 
+import { auth } from "@clerk/nextjs/server";
+import { revalidatePath } from "next/cache";
+import { createServerSupabaseClient } from "@/lib/supabase-server";
 import { extractFactBase, ExtractFactBaseOptions, ExtractFactBaseResult } from "@/lib/cv/extract";
 import {
   tailorCV as tailorCVImpl,
@@ -8,6 +11,7 @@ import {
   RefineInput,
   TailorResult,
 } from "@/lib/cv/tailor";
+import type { TailoredCV } from "@/lib/cv/tailored-cv";
 
 export async function getFactBase(
   options: ExtractFactBaseOptions = {}
@@ -21,4 +25,129 @@ export async function tailorCV(input: TailorInput): Promise<TailorResult> {
 
 export async function refineTailoredCV(input: RefineInput): Promise<TailorResult> {
   return refineTailoredCVImpl(input);
+}
+
+// ── Saved tailored CVs (linked to applications) ──────────────────────────────
+
+export interface SavedTailoredCV {
+  id: string;
+  application_id: string | null;
+  company: string | null;
+  role: string | null;
+  tailored_data: TailoredCV;
+  created_at: string;
+}
+
+export async function saveTailoredCV(input: {
+  tailoredCV: TailoredCV;
+  applicationId?: string;
+  companyName?: string;
+  roleName?: string;
+  jdText?: string;
+}): Promise<{ id?: string; error?: string }> {
+  try {
+    const { userId } = await auth();
+    if (!userId) return { error: "Not signed in" };
+
+    const supabase = await createServerSupabaseClient();
+    const plain = serialiseTailoredCVPlain(input.tailoredCV);
+
+    const { data, error } = await supabase
+      .from("cv_versions")
+      .insert({
+        user_id: userId,
+        application_id: input.applicationId ?? null,
+        company: input.companyName ?? null,
+        role: input.roleName ?? null,
+        jd_text: input.jdText ?? null,
+        tailored_data: input.tailoredCV,
+        content: plain,
+      })
+      .select("id")
+      .single();
+
+    if (error) {
+      console.error("[saveTailoredCV] supabase error:", error);
+      return { error: error.message };
+    }
+    revalidatePath("/tracker");
+    revalidatePath("/cv");
+    return { id: data?.id };
+  } catch (e) {
+    console.error("[saveTailoredCV] unexpected:", e);
+    return { error: e instanceof Error ? e.message : "Failed to save tailored CV." };
+  }
+}
+
+export async function getSavedTailoredCVs(
+  applicationId?: string
+): Promise<SavedTailoredCV[]> {
+  const { userId } = await auth();
+  if (!userId) return [];
+
+  const supabase = await createServerSupabaseClient();
+  const query = supabase
+    .from("cv_versions")
+    .select("id, application_id, company, role, tailored_data, created_at")
+    .eq("user_id", userId)
+    .not("tailored_data", "is", null)
+    .order("created_at", { ascending: false });
+
+  if (applicationId) {
+    query.eq("application_id", applicationId);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    console.error("[getSavedTailoredCVs] error:", error);
+    return [];
+  }
+  return (data ?? []) as SavedTailoredCV[];
+}
+
+function serialiseTailoredCVPlain(cv: TailoredCV): string {
+  const lines: string[] = [];
+  lines.push(cv.contact.name);
+  lines.push(
+    [cv.contact.location, cv.contact.email, cv.contact.phone, cv.contact.linkedin]
+      .filter(Boolean)
+      .join("  ·  ")
+  );
+  if (cv.summary) {
+    lines.push("", "PROFILE", cv.summary);
+  }
+  if (cv.skills.length > 0) {
+    lines.push("", "KEY SKILLS");
+    for (const g of cv.skills) lines.push(`${g.category}: ${g.items.join(", ")}`);
+  }
+  if (cv.roles.length > 0) {
+    lines.push("", "EXPERIENCE");
+    for (const r of cv.roles) {
+      const dates = r.isCurrent ? `${r.startDate} – Present` : `${r.startDate} – ${r.endDate ?? ""}`;
+      lines.push(`${r.title} — ${r.company}${r.location ? `, ${r.location}` : ""} (${dates.trim()})`);
+      for (const b of r.bullets) lines.push(`• ${b}`);
+    }
+  }
+  if (cv.education.length > 0) {
+    lines.push("", "EDUCATION");
+    for (const e of cv.education) {
+      const years = [e.startYear, e.endYear].filter(Boolean).join(" – ");
+      lines.push(`${e.qualification} — ${e.institution}${e.classification ? ` (${e.classification})` : ""}${years ? ` [${years}]` : ""}`);
+      if (e.details) lines.push(`  ${e.details}`);
+    }
+  }
+  if (cv.certifications.length > 0) {
+    lines.push("", "CERTIFICATIONS");
+    for (const c of cv.certifications) {
+      const meta = [c.issuer, c.year].filter(Boolean).join(", ");
+      lines.push(`• ${c.content}${meta ? ` (${meta})` : ""}`);
+    }
+  }
+  if (cv.languages.length > 0) {
+    lines.push("", "LANGUAGES", cv.languages.map((l) => `${l.language} (${l.proficiency})`).join(", "));
+  }
+  if (cv.interests.length > 0) {
+    lines.push("", "INTERESTS", cv.interests.join(", "));
+  }
+  return lines.join("\n");
 }

@@ -41,10 +41,15 @@ export interface TailoredLanguage {
   proficiency: string;
 }
 
+export interface TailoredSkillGroup {
+  category: string;       // e.g. "Procurement & Supply Chain"
+  items: string[];        // 3-5 short noun-phrase items in this group
+}
+
 export interface TailoredCV {
   contact: TailoredContact;
   summary: string;
-  skills: string[];        // flat list of 8-15 JD-relevant skills, ordered by relevance
+  skills: TailoredSkillGroup[];   // 3-4 groups; each group renders as one categorised line
   roles: TailoredRole[];
   education: TailoredEducation[];
   certifications: TailoredCertification[];

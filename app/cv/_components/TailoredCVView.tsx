@@ -32,7 +32,7 @@ function formatDate(ym: string | null | undefined): string {
   return `${MONTH_NAMES[month - 1]} ${year}`;
 }
 
-function dateLine(start: string, end: string | null, isCurrent: boolean): string {
+function dateRange(start: string, end: string | null, isCurrent: boolean): string {
   const s = formatDate(start);
   const e = isCurrent ? "Present" : formatDate(end || "");
   if (s && e) return `${s} – ${e}`;
@@ -83,11 +83,11 @@ export default function TailoredCVView({ cv }: Props) {
       )}
 
       <div
-        className="rounded-2xl border border-slate-200 bg-white px-10 py-9 shadow-sm text-slate-900"
+        className="rounded-2xl border border-slate-200 bg-white px-12 py-10 shadow-sm text-slate-900"
         style={{ fontFamily: cvFontStack, fontSize: "11pt", lineHeight: 1.5 }}
       >
-        <header className="mb-2">
-          <h1 className="font-bold tracking-tight" style={{ fontSize: "22pt", lineHeight: 1.1 }}>
+        <header className="mb-3">
+          <h1 className="font-bold tracking-tight" style={{ fontSize: "24pt", lineHeight: 1.1 }}>
             {cv.contact.name || "—"}
           </h1>
           <div className="mt-1 text-slate-600" style={{ fontSize: "10.5pt" }}>
@@ -99,38 +99,47 @@ export default function TailoredCVView({ cv }: Props) {
 
         {cv.summary && (
           <Section title="Profile">
-            <p>{cv.summary}</p>
+            <p className="text-justify">{cv.summary}</p>
           </Section>
         )}
 
         {cv.skills.length > 0 && (
           <Section title="Key Skills">
-            <p>{cv.skills.join(", ")}</p>
+            <div className="space-y-1">
+              {cv.skills.map((g, i) => (
+                <p key={i} style={{ lineHeight: 1.55 }}>
+                  <span className="font-bold">{g.category}:</span>{" "}
+                  <span className="text-slate-800">{g.items.join(", ")}</span>
+                </p>
+              ))}
+            </div>
           </Section>
         )}
 
         {cv.roles.length > 0 && (
           <Section title="Experience">
-            <div className="space-y-4">
+            <div className="space-y-3">
               {cv.roles.map((r, i) => {
-                const dates = dateLine(r.startDate, r.endDate, r.isCurrent);
+                const dates = dateRange(r.startDate, r.endDate, r.isCurrent);
+                const sub = [r.company, r.location].filter(Boolean).join("  ·  ");
                 return (
                   <div key={i}>
-                    <div className="font-bold" style={{ fontSize: "11.5pt" }}>
-                      {r.title}
+                    <div className="flex items-baseline justify-between gap-3">
+                      <div className="font-bold" style={{ fontSize: "11.5pt" }}>
+                        {r.title}
+                      </div>
+                      {dates && (
+                        <div
+                          className="shrink-0 text-slate-500 tabular-nums whitespace-nowrap"
+                          style={{ fontSize: "10.5pt" }}
+                        >
+                          {dates}
+                        </div>
+                      )}
                     </div>
-                    <div className="text-slate-700">
-                      {[r.company, r.location, dates ? <span key="d" className="text-slate-500">{dates}</span> : null]
-                        .filter(Boolean)
-                        .map((part, idx, arr) => (
-                          <span key={idx}>
-                            {part}
-                            {idx < arr.length - 1 ? "  ·  " : ""}
-                          </span>
-                        ))}
-                    </div>
+                    {sub && <div className="text-slate-800">{sub}</div>}
                     {r.bullets.length > 0 && (
-                      <ul className="mt-1.5 list-disc space-y-0.5 pl-6">
+                      <ul className="mt-1 list-disc space-y-1 pl-6">
                         {r.bullets.map((b, j) => (
                           <li key={j}>{b}</li>
                         ))}
@@ -148,24 +157,25 @@ export default function TailoredCVView({ cv }: Props) {
             <div className="space-y-2">
               {cv.education.map((e, i) => {
                 const years = [e.startYear, e.endYear].filter(Boolean).join(" – ");
+                const sub = [e.institution, e.classification].filter(Boolean).join("  ·  ");
                 return (
                   <div key={i}>
-                    <div className="font-bold">
-                      {e.qualification}
+                    <div className="flex items-baseline justify-between gap-3">
+                      <div className="font-bold">{e.qualification}</div>
                       {years && (
-                        <span className="ml-2 font-normal text-slate-500" style={{ fontSize: "10.5pt" }}>
-                          ·  {years}
-                        </span>
+                        <div
+                          className="shrink-0 text-slate-500 tabular-nums whitespace-nowrap"
+                          style={{ fontSize: "10.5pt" }}
+                        >
+                          {years}
+                        </div>
                       )}
                     </div>
-                    <div className="text-slate-700">
-                      {e.institution}
-                      {e.classification ? `  ·  ${e.classification}` : ""}
-                    </div>
+                    {sub && <div className="text-slate-800">{sub}</div>}
                     {e.details && (
-                      <p className="text-slate-600" style={{ fontSize: "10.5pt" }}>
+                      <div className="text-slate-600" style={{ fontSize: "10.5pt" }}>
                         {e.details}
-                      </p>
+                      </div>
                     )}
                   </div>
                 );
@@ -176,7 +186,7 @@ export default function TailoredCVView({ cv }: Props) {
 
         {cv.certifications.length > 0 && (
           <Section title="Certifications">
-            <ul className="list-disc space-y-0.5 pl-6">
+            <ul className="list-disc space-y-1 pl-6">
               {cv.certifications.map((c, i) => {
                 const meta = [c.issuer, c.year].filter(Boolean).join(", ");
                 return (
@@ -212,10 +222,10 @@ export default function TailoredCVView({ cv }: Props) {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="mt-4">
+    <section className="mt-5">
       <h2
-        className="mb-1.5 border-b border-slate-400 pb-0.5 font-bold uppercase tracking-wider text-slate-800"
-        style={{ fontSize: "11.5pt", letterSpacing: "0.06em" }}
+        className="mb-2 border-b border-slate-400 pb-0.5 font-bold uppercase text-slate-900"
+        style={{ fontSize: "10.5pt", letterSpacing: "0.10em" }}
       >
         {title}
       </h2>

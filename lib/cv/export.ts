@@ -1,7 +1,8 @@
 // ATS-safe export of a TailoredCV.
-// Single-column. Standard sans-serif fonts. No tables, no text-boxes, no
-// images, no headers/footers. Section headings are plain text, NOT styled
-// with <h1>/<h2> background colours that confuse parsers.
+// Single-column flow. Standard sans-serif font (Calibri/Arial/Helvetica).
+// Date right-alignment uses a 2-cell single-row borderless table — the only
+// reliable Word-HTML pattern for inline alignment without breaking ATS reading
+// order (cells contain plain inline text only, no nested layout).
 
 import type { TailoredCV } from "./tailored-cv";
 
@@ -29,6 +30,13 @@ function fmtDate(ym: string | null | undefined): string {
   return `${MONTHS[month - 1]} ${m[1]}`;
 }
 
+function dateRange(start: string, end: string | null, isCurrent: boolean): string {
+  const s = fmtDate(start);
+  const e = isCurrent ? "Present" : fmtDate(end || "");
+  if (s && e) return `${s} – ${e}`;
+  return s || e || "";
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -38,8 +46,19 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#039;");
 }
 
-// Body of the CV — shared by Word + PDF exports.
-// Uses INLINE styles (Word strips/ignores <style> tags reliably; inline wins).
+// Title-left + date-right alignment row. Borderless 2-cell table; ATS parses
+// these as plain inline text in reading order.
+function titleDateRow(titleHtml: string, dateText: string): string {
+  return `<table cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse;margin:0 0 1pt 0">
+    <tr>
+      <td style="padding:0;vertical-align:baseline">${titleHtml}</td>
+      <td style="padding:0;vertical-align:baseline;text-align:right;color:#555;font-size:10.5pt;white-space:nowrap">${escapeHtml(
+        dateText
+      )}</td>
+    </tr>
+  </table>`;
+}
+
 function renderBody(cv: TailoredCV): string {
   const out: string[] = [];
 
@@ -54,8 +73,8 @@ function renderBody(cv: TailoredCV): string {
     .map((s) => escapeHtml(String(s)));
 
   out.push(
-    `<div style="margin:0 0 8pt 0">
-      <div style="font-size:22pt;font-weight:bold;letter-spacing:-0.01em;margin:0 0 3pt 0">${escapeHtml(cv.contact.name || "")}</div>
+    `<div style="margin:0 0 10pt 0">
+      <div style="font-size:24pt;font-weight:bold;letter-spacing:-0.01em;line-height:1.1;margin:0 0 4pt 0">${escapeHtml(cv.contact.name || "")}</div>
       <div style="font-size:10.5pt;color:#444">${contactBits.join(" &nbsp;·&nbsp; ")}</div>
     </div>`
   );
@@ -64,43 +83,52 @@ function renderBody(cv: TailoredCV): string {
   if (cv.summary) {
     out.push(sectionHeading("Profile"));
     out.push(
-      `<p style="font-size:11pt;line-height:1.5;margin:0 0 8pt 0">${escapeHtml(cv.summary)}</p>`
+      `<p style="font-size:11pt;line-height:1.5;margin:0 0 10pt 0;text-align:justify">${escapeHtml(cv.summary)}</p>`
     );
   }
 
-  // Key Skills (comma-separated, single paragraph — ATS-safe and visually clean)
+  // Key Skills — categorised lines with bold category labels
   if (cv.skills.length > 0) {
     out.push(sectionHeading("Key Skills"));
-    out.push(
-      `<p style="font-size:11pt;line-height:1.5;margin:0 0 8pt 0">${cv.skills.map(escapeHtml).join(", ")}</p>`
-    );
+    out.push(`<div style="margin:0 0 10pt 0">`);
+    for (const g of cv.skills) {
+      out.push(
+        `<p style="font-size:11pt;line-height:1.55;margin:0 0 3pt 0"><span style="font-weight:bold">${escapeHtml(
+          g.category
+        )}:</span> <span style="color:#222">${g.items.map(escapeHtml).join(", ")}</span></p>`
+      );
+    }
+    out.push(`</div>`);
   }
 
   // Experience
   if (cv.roles.length > 0) {
     out.push(sectionHeading("Experience"));
     for (const r of cv.roles) {
-      const start = fmtDate(r.startDate);
-      const end = r.isCurrent ? "Present" : fmtDate(r.endDate || "");
-      const dateLine = start && end ? `${start} – ${end}` : start || end || "";
-      const metaBits = [
-        escapeHtml(r.company),
-        r.location ? escapeHtml(r.location) : null,
-        dateLine ? `<span style="color:#555">${escapeHtml(dateLine)}</span>` : null,
-      ].filter(Boolean) as string[];
+      const dates = dateRange(r.startDate, r.endDate, r.isCurrent);
+      out.push(`<div style="margin:0 0 11pt 0">`);
       out.push(
-        `<div style="margin:0 0 10pt 0">
-          <div style="font-size:11.5pt;font-weight:bold;margin:0">${escapeHtml(r.title)}</div>
-          <div style="font-size:11pt;margin:0 0 1pt 0">${metaBits.join(" &nbsp;·&nbsp; ")}</div>
-          ${
-            r.bullets.length > 0
-              ? `<ul style="margin:4pt 0 0 18pt;padding:0;font-size:11pt;line-height:1.5">
-                  ${r.bullets.map((b) => `<li style="margin:0 0 2pt 0">${escapeHtml(b)}</li>`).join("")}
-                </ul>`
-              : ""
-          }
-        </div>`
+        titleDateRow(
+          `<span style="font-size:11.5pt;font-weight:bold">${escapeHtml(r.title)}</span>`,
+          dates
+        )
       );
+      const sub = [escapeHtml(r.company), r.location ? escapeHtml(r.location) : null]
+        .filter(Boolean)
+        .join(" &nbsp;·&nbsp; ");
+      if (sub) {
+        out.push(
+          `<div style="font-size:11pt;color:#222;margin:0 0 3pt 0">${sub}</div>`
+        );
+      }
+      if (r.bullets.length > 0) {
+        out.push(
+          `<ul style="margin:2pt 0 0 18pt;padding:0;font-size:11pt;line-height:1.5">
+            ${r.bullets.map((b) => `<li style="margin:0 0 3pt 0">${escapeHtml(b)}</li>`).join("")}
+          </ul>`
+        );
+      }
+      out.push(`</div>`);
     }
   }
 
@@ -109,17 +137,30 @@ function renderBody(cv: TailoredCV): string {
     out.push(sectionHeading("Education"));
     for (const e of cv.education) {
       const years = [e.startYear, e.endYear].filter(Boolean).join(" – ");
+      out.push(`<div style="margin:0 0 7pt 0">`);
       out.push(
-        `<div style="margin:0 0 6pt 0;font-size:11pt;line-height:1.5">
-          <div style="font-weight:bold">${escapeHtml(e.qualification)}${
-            years ? ` <span style="font-weight:normal;color:#555;font-size:10.5pt"> &nbsp;·&nbsp; ${escapeHtml(years)}</span>` : ""
-          }</div>
-          <div>${escapeHtml(e.institution)}${
-            e.classification ? ` &nbsp;·&nbsp; ${escapeHtml(e.classification)}` : ""
-          }</div>
-          ${e.details ? `<div style="font-size:10.5pt;color:#555">${escapeHtml(e.details)}</div>` : ""}
-        </div>`
+        titleDateRow(
+          `<span style="font-size:11pt;font-weight:bold">${escapeHtml(e.qualification)}</span>`,
+          years
+        )
       );
+      const subBits = [
+        escapeHtml(e.institution),
+        e.classification ? escapeHtml(e.classification) : null,
+      ]
+        .filter(Boolean)
+        .join(" &nbsp;·&nbsp; ");
+      if (subBits) {
+        out.push(
+          `<div style="font-size:11pt;color:#222;margin:0 0 1pt 0">${subBits}</div>`
+        );
+      }
+      if (e.details) {
+        out.push(
+          `<div style="font-size:10.5pt;color:#555;margin:0">${escapeHtml(e.details)}</div>`
+        );
+      }
+      out.push(`</div>`);
     }
   }
 
@@ -127,11 +168,11 @@ function renderBody(cv: TailoredCV): string {
   if (cv.certifications.length > 0) {
     out.push(sectionHeading("Certifications"));
     out.push(
-      `<ul style="margin:0 0 6pt 18pt;padding:0;font-size:11pt;line-height:1.5">
+      `<ul style="margin:0 0 8pt 18pt;padding:0;font-size:11pt;line-height:1.5">
         ${cv.certifications
           .map((c) => {
             const meta = [c.issuer, c.year].filter(Boolean).join(", ");
-            return `<li style="margin:0 0 2pt 0">${escapeHtml(c.content)}${
+            return `<li style="margin:0 0 3pt 0">${escapeHtml(c.content)}${
               meta ? ` <span style="color:#555">(${escapeHtml(meta)})</span>` : ""
             }</li>`;
           })
@@ -144,8 +185,10 @@ function renderBody(cv: TailoredCV): string {
   if (cv.languages.length > 0) {
     out.push(sectionHeading("Languages"));
     out.push(
-      `<p style="font-size:11pt;line-height:1.5;margin:0 0 6pt 0">${cv.languages
-        .map((l) => l.proficiency ? `${escapeHtml(l.language)} (${escapeHtml(l.proficiency)})` : escapeHtml(l.language))
+      `<p style="font-size:11pt;line-height:1.5;margin:0 0 8pt 0">${cv.languages
+        .map((l) =>
+          l.proficiency ? `${escapeHtml(l.language)} (${escapeHtml(l.proficiency)})` : escapeHtml(l.language)
+        )
         .join(", ")}</p>`
     );
   }
@@ -154,7 +197,7 @@ function renderBody(cv: TailoredCV): string {
   if (cv.interests.length > 0) {
     out.push(sectionHeading("Interests"));
     out.push(
-      `<p style="font-size:11pt;line-height:1.5;margin:0 0 6pt 0">${cv.interests
+      `<p style="font-size:11pt;line-height:1.5;margin:0 0 8pt 0">${cv.interests
         .map(escapeHtml)
         .join(", ")}</p>`
     );
@@ -164,13 +207,13 @@ function renderBody(cv: TailoredCV): string {
 }
 
 function sectionHeading(label: string): string {
-  return `<div style="font-size:11.5pt;font-weight:bold;text-transform:uppercase;letter-spacing:0.06em;border-bottom:1px solid #777;padding:0 0 2pt 0;margin:12pt 0 5pt 0">${escapeHtml(
+  return `<div style="font-size:10.5pt;font-weight:bold;text-transform:uppercase;letter-spacing:0.10em;color:#1a1a1a;border-bottom:0.75pt solid #888;padding:0 0 2pt 0;margin:14pt 0 6pt 0">${escapeHtml(
     label
   )}</div>`;
 }
 
 export function tailoredCVToWordHtml(cv: TailoredCV): string {
-  return `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"></head><body style="font-family:Calibri,Arial,sans-serif;color:#111;max-width:680px;margin:30pt auto;padding:0">${renderBody(
+  return `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"></head><body style="font-family:Calibri,Arial,sans-serif;color:#111;max-width:680px;margin:36pt auto;padding:0 18pt">${renderBody(
     cv
   )}</body></html>`;
 }
@@ -180,6 +223,10 @@ export function tailoredCVToPrintHtml(cv: TailoredCV): string {
 <style>
   @page { size: A4; margin: 18mm 18mm; }
   body { font-family: Calibri, Arial, sans-serif; color: #111; max-width: 680px; margin: 0 auto; padding: 12pt 0 0 0; }
+  table { page-break-inside: avoid; }
+  ul { page-break-inside: avoid; }
+  li { page-break-inside: avoid; }
+  div { page-break-inside: avoid; }
 </style>
 </head><body>${renderBody(cv)}<script>window.addEventListener('load',function(){setTimeout(function(){window.print();},150);});<\/script></body></html>`;
 }

@@ -146,8 +146,12 @@ const BANNED_REGEX: Array<[string, RegExp]> = [
   ["fast-moving X environment", /fast[- ]moving[^.,;]{0,40}environment/gi],
   ["fast-paced environment", /fast[- ]paced environment/gi],
   ["uninterrupted X", /\buninterrupted\b/gi],
-  ["translating data", /translating data/gi],
-  ["actionable information", /actionable (information|insight|insights)/gi],
+  // 'translating' + nearby data noun (catches "translating complex datasets",
+  // "translating data into actionable insight", etc.)
+  ["translating data/datasets", /\btranslat(?:ing|e)\b[^.;,\n]{0,40}\b(?:data|dataset|datasets|information|insight|insights|metrics|figures|numbers)\b/gi],
+  ["actionable information / insight", /\bactionable (?:information|insight|insights|business intelligence)\b/gi],
+  ["concise business information", /\bconcise business (?:information|intelligence)\b/gi],
+  ["complex datasets into", /\bcomplex datasets? into\b/gi],
   ["timely corrective action", /timely corrective action/gi],
   ["budget-conscious", /budget[- ]conscious/gi],
   ["high-footfall", /high[- ]footfall/gi],
@@ -155,7 +159,7 @@ const BANNED_REGEX: Array<[string, RegExp]> = [
   ["proven track record", /proven track record/gi],
   ["demonstrated ability", /demonstrated ability/gi],
   ["spearheaded", /\bspearheaded?\b/gi],
-  ["leveraged", /\bleverag(ed|e|ing)\b/gi],
+  ["leveraged", /\bleverag(?:ed|e|ing)\b/gi],
   ["orchestrated", /\borchestrated?\b/gi],
   ["championed", /\bchampioned?\b/gi],
   ["pioneered", /\bpioneered?\b/gi],
@@ -164,6 +168,10 @@ const BANNED_REGEX: Array<[string, RegExp]> = [
   ["cross-functional excellence", /cross[- ]functional excellence/gi],
   ["value-add", /\bvalue[- ]add\b/gi],
   ["hits the ground running", /hits the ground running/gi],
+  ["under pressure cliché", /\b(?:thrives|excels|performs) under pressure\b/gi],
+  // "successfully recovered" / "successfully delivered" — the "successfully"
+  // adverb is filler that always gets stripped from polished CVs.
+  ["successfully [verb] filler", /\bsuccessfully (?:delivered|recovered|implemented|launched|completed|managed|achieved)\b/gi],
 ];
 
 function scanText(label: string, text: string, hits: BannedHit[]): void {
@@ -185,7 +193,9 @@ function scanBannedPhrases(cv: TailoredCV): BannedHit[] {
       scanText(`Experience: ${r.title} bullet ${j + 1}`, r.bullets[j], hits);
     }
   }
-  for (const s of cv.skills) scanText("Key Skills", s, hits);
+  for (const g of cv.skills) {
+    for (const item of g.items) scanText(`Key Skills: ${g.category}`, item, hits);
+  }
   for (const e of cv.education) {
     if (e.details) scanText(`Education: ${e.qualification}`, e.details, hits);
   }
@@ -276,7 +286,7 @@ Return ONLY a single valid JSON object. No preamble, no commentary, no markdown 
     "bullets": [string]
   }],
   "education": [{ "qualification": string, "institution": string, "classification": string|null, "startYear": string|null, "endYear": string|null, "details": string|null }],
-  "skills": [string],
+  "skills": [{ "category": string, "items": [string] }],
   "certifications": [{ "content": string, "issuer": string|null, "year": string|null }],
   "languages": [{ "language": string, "proficiency": string }],
   "interests": [string],
@@ -320,11 +330,13 @@ BANNED PHRASES (these scream ChatGPT — never use ANY of these wordings or clos
 JD-ECHO RULE
 You are tailoring TO the JD, not echoing it. Do not lift any phrase of 4+ words verbatim from the JD into the candidate's CV. Surface JD vocabulary by integrating individual terms naturally into the candidate's own factual statements, NOT by parroting JD sentences back. If the JD says "fast-moving automotive supply chain environment", do not write that phrase. Use the underlying terms (e.g. "automotive supply chain") inside concrete bullets.
 
-SKILL ITEM RULES (HARD)
-- Each item in the "skills" array is 1–3 words. Never longer.
-- No parentheticals in skill items. "ERP system management (Airtable)" is WRONG. Write "ERP design" or "Airtable" as separate items.
+SKILL GROUP RULES (HARD)
+- Skills are organised into 3–4 groups for visual scannability. Each group has a category label and 3–5 items.
+- Category labels: short, sector-aware, JD-aligned. Examples: "Procurement & Supply Chain", "Analytics & Reporting", "Systems & Tools", "Stakeholder & Project Management". Pick categories that match the candidate's actual evidence and the JD's structure.
+- Each item is 1–3 words. NEVER longer.
+- No parentheticals in items. "ERP system management (Airtable)" is WRONG. Use "ERP design" or "Airtable" as separate items.
 - No conjunctions inside an item. "Report writing and data visualisation" is WRONG. Split into "Reporting" and "Data visualisation".
-- 10–14 items total. Order by JD relevance.
+- Total across all groups: 10–14 items. Order both groups and items within them by JD relevance.
 
 PROFILE RULES (HARD)
 - 3–4 sentences, all factual / evidence-based.
@@ -544,21 +556,26 @@ function sanitiseTailoredCV(cv: TailoredCV, fb: FactBase): TailoredCV {
     bullets: (r.bullets ?? []).map(trim).filter(Boolean),
   }));
 
-  // Skills can arrive either as flat strings (new schema) or as legacy
-  // categorised objects (older AI outputs). Flatten either into a single list.
+  // Skills as grouped categories. Accept both the new shape and any legacy
+  // flat-array output from cached generations.
   const rawSkills = (cv.skills ?? []) as unknown[];
-  const skills: string[] = [];
+  const skills: { category: string; items: string[] }[] = [];
+  const looseFlat: string[] = [];
   for (const s of rawSkills) {
     if (typeof s === "string") {
-      const trimmed = trim(s);
-      if (trimmed) skills.push(trimmed);
-    } else if (s && typeof s === "object" && "items" in s) {
-      const items = (s as { items?: unknown[] }).items ?? [];
-      for (const it of items) {
-        const trimmed = trim(String(it ?? ""));
-        if (trimmed) skills.push(trimmed);
-      }
+      const t = trim(s);
+      if (t) looseFlat.push(t);
+    } else if (s && typeof s === "object") {
+      const obj = s as { category?: unknown; items?: unknown[] };
+      const cat = trim(String(obj.category ?? "")) || "Skills";
+      const items = (obj.items ?? [])
+        .map((it) => trim(String(it ?? "")))
+        .filter(Boolean);
+      if (items.length > 0) skills.push({ category: cat, items });
     }
+  }
+  if (skills.length === 0 && looseFlat.length > 0) {
+    skills.push({ category: "Key Skills", items: looseFlat });
   }
 
   return {

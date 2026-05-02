@@ -299,6 +299,8 @@ const BANNED_REGEX: Array<[string, RegExp]> = [
   ["forward-thinking organisation", /\bforward[- ]thinking organi[sz]ation\b/gi],
   ["innovative solutions", /\binnovative solutions?\b/gi],
   ["dynamic environment", /\bdynamic environment\b/gi],
+  // Awkward corporate verbs (caught from JLR test outputs)
+  ["underpin", /\bunderpin(?:s|ned|ning)?\b/gi],
 ];
 
 function scanText(label: string, text: string, hits: BannedHit[]): void {
@@ -566,20 +568,22 @@ function scanProfileSentence2HasNumber(cv: TailoredCV): BannedHit[] {
   return hits;
 }
 
-// 4. NO TRICOLON IN SENTENCE 2 — pattern is "X, Y, and Z" or "X, Y and Z" with
-// 2+ commas in the sentence and an "and" before the last item.
+// 4. NO TRICOLON IN ANY PROFILE SENTENCE — pattern is "X, Y, and Z" with 2+
+// commas + "and" before the last item. Tricolons in S2 weaken the load-bearing
+// sentence; tricolons elsewhere read as AI cadence. Apply broadly.
 function scanProfileTricolon(cv: TailoredCV): BannedHit[] {
   const hits: BannedHit[] = [];
   if (!cv.summary) return hits;
   const sentences = splitSentences(cv.summary);
-  if (sentences.length < 2) return hits;
-  const s2 = sentences[1];
-  const commaCount = (s2.match(/,/g) || []).length;
-  if (commaCount >= 2 && /,\s*(?:and|&)\s+/i.test(s2)) {
-    hits.push({
-      section: "Profile",
-      phrase: `sentence 2 is a tricolon (X, Y, and Z list). Pick the single strongest achievement; do not list three.`,
-    });
+  for (let i = 0; i < sentences.length; i++) {
+    const s = sentences[i];
+    const commaCount = (s.match(/,/g) || []).length;
+    if (commaCount >= 2 && /,\s*(?:and|&)\s+/i.test(s)) {
+      hits.push({
+        section: "Profile",
+        phrase: `sentence ${i + 1} is a tricolon (X, Y, and Z list). Pick one or two items; do not list three.`,
+      });
+    }
   }
   return hits;
 }
@@ -847,8 +851,20 @@ VOICE — IMPLIED FIRST PERSON (NON-NEGOTIABLE):
 
 STRUCTURE — WHO / WHAT / HOW:
 - Sentence 1 (WHO): role + experience anchor + specialism. Lead with the ROLE and the WORK, not the employer name. ONLY include the current employer's name in sentence 1 if it is a widely-recognised brand (FTSE 100, Big 4, Magic Circle, FAANG, well-known global firm). If the employer is a small business or unknown brand, omit the employer from sentence 1 — the employer name lives in the Experience section. Example (small employer, omit name): "Sole Supply Chain Analyst running end-to-end procurement and materials planning across an overseas supplier base." Example (brand-name employer, keep name): "Senior Associate at Goldman Sachs covering Strategic Supplier Management."
+
 - Sentence 2 (WHAT): a quantified, specific achievement that proves Sentence 1. **MUST contain a number, scope, or scale-anchor** (£, %, count, growth multiple like "2x revenue", before/after delta, geography count, frequency, "from scratch", "first-ever"). This is the load-bearing sentence.
-- Sentence 3 (HOW): skills, methods, tools, or context that deliver the achievement. May tie to JD vocabulary if FactBase supports.
+
+  DOMINANT SCOPE ANCHOR RULE (HARD): if the FactBase contains a single dominant scope/scale signal — e.g. "managed through 2x revenue growth", "during a £40M category build", "across 12 overseas suppliers", "at a £200M ARR business" — that anchor MUST be the centrepiece of sentence 2, not a buried clause anywhere else. Identify the single strongest scope anchor in the candidate's evidence and lead sentence 2 with it. Do not let JD-aligned-but-smaller achievements (e.g. a tracking system) outrank a bigger scope anchor.
+
+- Sentence 3 (HOW): distinctive context, breadth, ownership, stakeholder level, or methods that deliver the achievement. NOT a list of tools. Tools belong in the Skills section. Sentence 3 should sell what makes the candidate different — sole ownership, function breadth, director-level reporting, multi-year tenure, founding-team status, etc. Examples of GOOD S3:
+  - "Acts as the only person in the role, with weekly procurement and supplier-performance reporting going direct to the directors."
+  - "Owns the function end-to-end across procurement, planning, logistics, and supplier management as the sole hire in the seat."
+  - "Reports weekly to the senior leadership team on supplier performance, stock position, and procurement spend."
+  Examples of BAD S3 (do NOT do this):
+  - "Excel and Airtable underpin daily demand analysis and reporting."  (tool-led, weak verb)
+  - "Skilled in Excel, Power BI, supplier management, and stakeholder reporting." (skill list — belongs in Skills)
+  - "Strong analytical and process improvement capability." (vague self-claim)
+
 - Sentence 4 (OPTIONAL CLOSE): either a NAMED target ("Targeting a Strategic Supplier Management Associate role at Goldman Sachs…") OR a fact-anchored close (degree class + uni, named credential, named credibility signal). Never generic forward-looking aspiration.
 
 BANNED STRUCTURAL PATTERNS:

@@ -849,23 +849,87 @@ VOICE — IMPLIED FIRST PERSON (NON-NEGOTIABLE):
 - Never use third-person verbs about the candidate: "Produces…", "Holds…", "Brings…", "Manages…", "Tracks…", "Delivers…", "Demonstrates…", "Possesses…", "Operates…", "Specialises…" — these read as a recruiter speaking ABOUT a person, not as the person themselves. Banned.
 - The right voice is implied first person: state actions and facts directly without subject pronouns. Example: "Sole Supply Chain Analyst at Grain and Frame, running end-to-end procurement…" NOT "Tom is a Supply Chain Analyst…" NOR "I am a Supply Chain Analyst…" NOR "Produces reports for senior stakeholders…".
 
-STRUCTURE — WHO / WHAT / HOW:
-- Sentence 1 (WHO): role + experience anchor + specialism. Lead with the ROLE and the WORK, not the employer name. ONLY include the current employer's name in sentence 1 if it is a widely-recognised brand (FTSE 100, Big 4, Magic Circle, FAANG, well-known global firm). If the employer is a small business or unknown brand, omit the employer from sentence 1 — the employer name lives in the Experience section. Example (small employer, omit name): "Sole Supply Chain Analyst running end-to-end procurement and materials planning across an overseas supplier base." Example (brand-name employer, keep name): "Senior Associate at Goldman Sachs covering Strategic Supplier Management."
+PROFILE TEMPLATE BY USER SITUATION (CRITICAL — pick the right template):
 
-- Sentence 2 (WHAT): a quantified, specific achievement that proves Sentence 1. **MUST contain a number, scope, or scale-anchor** (£, %, count, growth multiple like "2x revenue", before/after delta, geography count, frequency, "from scratch", "first-ever"). This is the load-bearing sentence.
+Determine which template to use by inspecting the candidate's most recent role/sector against the target JD:
 
-  DOMINANT SCOPE ANCHOR RULE (HARD): if the FactBase contains a single dominant scope/scale signal — e.g. "managed through 2x revenue growth", "during a £40M category build", "across 12 overseas suppliers", "at a £200M ARR business" — that anchor MUST be the centrepiece of sentence 2, not a buried clause anywhere else. Identify the single strongest scope anchor in the candidate's evidence and lead sentence 2 with it. Do not let JD-aligned-but-smaller achievements (e.g. a tracking system) outrank a bigger scope anchor.
+(a) ACHIEVEMENT-LED — same-sector mid-career. Candidate's current sector matches or closely adjacent to JD sector, and they have 1+ years in the role. **Default for most users.**
+(b) CAREER-CHANGER — current sector differs significantly from JD sector (e.g. marketing → supply chain, law → tech, finance → product). The bridge IS the story.
+(c) STACK-LED — JD is engineering/data/product/devops/ML. Stack and named tools are credentials.
+(d) BRAND-LED — JD is creative/marketing/content. Named brands and engagement metrics lead.
+(e) GRADUATE-LED — candidate has under 12 months full-time experience. Degree + classification + university lead.
 
-- Sentence 3 (HOW): distinctive context, breadth, ownership, stakeholder level, or methods that deliver the achievement. NOT a list of tools. Tools belong in the Skills section. Sentence 3 should sell what makes the candidate different — sole ownership, function breadth, director-level reporting, multi-year tenure, founding-team status, etc. Examples of GOOD S3:
-  - "Acts as the only person in the role, with weekly procurement and supplier-performance reporting going direct to the directors."
-  - "Owns the function end-to-end across procurement, planning, logistics, and supplier management as the sole hire in the seat."
-  - "Reports weekly to the senior leadership team on supplier performance, stock position, and procurement spend."
-  Examples of BAD S3 (do NOT do this):
-  - "Excel and Airtable underpin daily demand analysis and reporting."  (tool-led, weak verb)
-  - "Skilled in Excel, Power BI, supplier management, and stakeholder reporting." (skill list — belongs in Skills)
-  - "Strong analytical and process improvement capability." (vague self-claim)
+Pick ONE template. If genuinely ambiguous, default to (a) Achievement-Led. The user may also override via their CV preferences.
 
-- Sentence 4 (OPTIONAL CLOSE): either a NAMED target ("Targeting a Strategic Supplier Management Associate role at Goldman Sachs…") OR a fact-anchored close (degree class + uni, named credential, named credibility signal). Never generic forward-looking aspiration.
+— TEMPLATE (a) ACHIEVEMENT-LED —
+S1: role + scope/breadth + sole/team status. NOT employer name (unless brand-tier — see below).
+S2: dominant scope anchor (£/x revenue/multi-year/headcount/supplier count). MUST contain a number/scale.
+S3: ownership/breadth/stakeholder level. NOT skills, NOT tools (those live in the Skills section).
+S4: optional fact close (degree+classification+uni) OR named target ("Targeting [specific role] at [specific employer/sector]").
+
+— TEMPLATE (b) CAREER-CHANGER —
+S1: anchor the pivot honestly. Format: "[Old credential / current discipline] now running [new function] at [scope]". Example: "Marketing graduate now running end-to-end supply chain at a small overseas-supplier business as the sole analyst."
+S2: 2-3 NAMED transferable skills tied to the JD requirements (e.g. data analysis, stakeholder management, structured reporting, supplier negotiation). Specific, JD-aligned, evidence-backed — not generic.
+S3: dominant achievement from current role that proves the transferable skills (the bridge).
+S4: optional fact close OR named target.
+
+— TEMPLATE (c) STACK-LED —
+S1: years + stack + specialism. Example: "Full-stack engineer with 5 years building React/Node/AWS systems for B2B SaaS."
+S2: scale/scope (users, QPS, ARR, transactions, named clients).
+S3: distinctive engineering achievement or context (open-source, founding engineer, on-call, named system).
+S4: optional GitHub/portfolio anchor or named target.
+
+— TEMPLATE (d) BRAND-LED —
+S1: role + named brands or named clients.
+S2: engagement/conversion/audience metric.
+S3: distinctive method, signature campaign, or sector specialism.
+S4: portfolio URL or named target.
+
+— TEMPLATE (e) GRADUATE-LED —
+S1: degree + classification + university + cohort signal (top of cohort, dean's list).
+S2: strongest placement/internship/project achievement WITH measurable outcome.
+S3: target-role context + 2-3 transferable skills.
+S4: target role/sector close.
+
+EMPLOYER NAME IN S1 (HARD RULE — applies to all templates):
+ONLY include the current employer's name in S1 if it is a widely-recognised brand. The acceptable list:
+- FTSE 100 / S&P 500 / EuroStoxx 50
+- FAANG / Big Tech (Apple, Microsoft, Google, Meta, Amazon, Netflix, Tesla, Nvidia)
+- MBB consulting (McKinsey, Bain, BCG)
+- Magic Circle law (Allen & Overy, Clifford Chance, Freshfields, Linklaters, Slaughter and May)
+- Big 4 (Deloitte, PwC, EY, KPMG)
+- Bulge Bracket banks (Goldman Sachs, JPMorgan, Morgan Stanley, BofA, Citi, etc.)
+- Globally household-name unicorns (Stripe, Airbnb, Uber, OpenAI, Anthropic, etc.)
+
+If the employer is NOT on this level of recognition, OMIT the employer name from S1. The employer name belongs in the Experience section. This is non-negotiable. A small or unknown employer in S1 weakens the candidate.
+
+DOMINANT SCOPE ANCHOR RULE (HARD — applies to S2 of templates a, b, c):
+If the FactBase contains a single dominant scope/scale signal — e.g. "managed through 2x revenue growth", "during a £40M category build", "across 12 overseas suppliers", "$100M ARR business" — that anchor MUST be the centrepiece of sentence 2, not a buried clause anywhere else. Do not let JD-aligned-but-smaller achievements (e.g. a tracking system) outrank a bigger scope anchor.
+
+S3 OWNERSHIP-LED RULE (HARD — applies to template (a)):
+S3 must surface what makes the candidate distinctive — sole ownership, function breadth, director-level reporting, multi-year tenure, founding-team status. NOT a list of tools or a skills mention.
+
+GOOD S3 examples (implied first person, no third-person -s verbs):
+- "Owning the supply chain function end-to-end as the only person in the role, with weekly reporting direct to the directors."  (gerund opener)
+- "Sole owner of the function across procurement, planning, logistics, and supplier management."  (noun-form opener)
+- "Acts as the only Supply Chain Analyst across the business, reporting weekly to senior leadership."  (compound verb opener — "Acts as" is OK)
+- "As the only person in the role, the function spans procurement, planning, and supplier management with weekly senior-leadership reporting."  (descriptive opener)
+
+BAD S3 (do NOT do these):
+- "Excel and Airtable underpin daily demand analysis and reporting."  (tool-led, banned verb)
+- "Skilled in Excel, Power BI, supplier management, and stakeholder reporting."  (skill list — belongs in Skills section, not Profile)
+- "Strong analytical and process improvement capability."  (vague self-claim)
+- "Owns the function end-to-end…"  (BANNED: "Owns" is a third-person -s verb at sentence start. Use "Owning…" instead.)
+
+NO TRICOLON IN ANY PROFILE SENTENCE (HARD):
+Tricolon = a list of 3 items separated by commas with "and" before the last item. Banned in S1, S2, S3, AND S4. Always pick one or two; never three.
+
+GOOD: "running procurement and planning across an overseas supplier base" (2 items)
+GOOD: "scaled the function through 2x revenue growth, building a supplier scorecard from scratch" (2 distinct claims)
+BAD:  "running procurement, planning, and supplier performance" (tricolon)
+BAD:  "managing higher purchase order volumes, greater product complexity, and a wider supplier base" (tricolon)
+
+If you find yourself listing three things, prune to one or two and let other strengths land in the Experience section.
 
 BANNED STRUCTURAL PATTERNS:
 - NO tricolons in sentence 2 — i.e. "built X, designed Y, and resolved Z". Pick the strongest single achievement; do not list three.

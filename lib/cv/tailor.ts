@@ -283,6 +283,20 @@ const BANNED_REGEX: Array<[string, RegExp]> = [
   // "successfully recovered" / "successfully delivered" — the "successfully"
   // adverb is filler that always gets stripped from polished CVs.
   ["successfully [verb] filler", /\bsuccessfully (?:delivered|recovered|implemented|launched|completed|managed|achieved)\b/gi],
+
+  // Sprint 1 — May 2026 research additions (UK-2026 ChatGPT signature words)
+  ["delve / delved", /\bdelv(?:e|ed|ing)\b/gi],
+  ["embark / embarked", /\bembark(?:ed|ing|s)?\b/gi],
+  ["seamless / seamlessly", /\bseamless(?:ly)?\b/gi],
+  ["robust", /\brobust\b/gi],
+  ["cutting-edge", /\bcutting[- ]edge\b/gi],
+  ["synergised / synergies", /\bsynerg(?:ised|ize|ies|y)\b/gi],
+  ["utilised", /\butilis(?:ed|e|ing)\b/gi],
+  ["streamlined", /\bstreamlin(?:ed|e|ing)\b/gi],
+  ["drove (verb)", /\bdrove\b/gi],
+  ["forward-thinking organisation", /\bforward[- ]thinking organi[sz]ation\b/gi],
+  ["innovative solutions", /\binnovative solutions?\b/gi],
+  ["dynamic environment", /\bdynamic environment\b/gi],
 ];
 
 function scanText(label: string, text: string, hits: BannedHit[]): void {

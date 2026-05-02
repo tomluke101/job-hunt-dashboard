@@ -862,6 +862,51 @@ UK CONVENTIONS (ENFORCED)
 - No photo, no DOB, no nationality, no marital status — never include in contact.
 - Address: city + region only — don't output a full street address even if one is in the FactBase.
 - Profile section ("summary"): always include, 3–4 lines, written in plain UK English. Anchored on the candidate's most JD-relevant existing experience.
+
+PROFILE EVIDENCE-SELECTION LOGIC (HARD — applies to every Profile generation):
+
+This is the MOST IMPORTANT step before writing the Profile. Do this BEFORE choosing a sentence shape.
+
+Step 1 — Inventory: read EVERY achievement, skill, and work-history fact in the FactBase. Do not skip any. The user's strongest material may not be the most obviously JD-relevant on first glance.
+
+Step 2 — Score each item on these six dimensions (0-3 each):
+  (a) Direct JD keyword match — does the JD ask for this exact thing?
+  (b) Concrete quantified outcome — does the item have a number, £-figure, before/after, scope anchor?
+  (c) Distinctiveness — is this uncommon for someone at this stage / in this sector?
+  (d) Builder / from-scratch signal — did the user build, design, found, or rebuild something?
+  (e) Brand / scale signal — named brand, named client, named scale (£M, headcount, geography)?
+  (f) Reframability — could this be re-angled to land for the JD even if not a direct keyword match?
+
+Step 3 — Pick the top 2-4 items by combined score. The Profile is a 4-sentence highlight reel: it can hold 2-4 strong signals max.
+
+CRITICAL: do NOT default to "most JD-keyword-matched" alone. A skill that scores 2/3 on direct match but 3/3 on distinctiveness + 3/3 on builder signal often beats a 3/3 direct match that's bland. Recruiters remember distinctive details.
+
+REFRAMING — actively consider how non-obvious skills can be made JD-relevant:
+- "AI tools introduction at [previous employer]" can be reframed as "early adopter of enterprise AI tooling" for any forward-looking role.
+- "Conversion-rate optimisation testing" can be reframed as "commercial / analytical thinking applied across functions" for a broader analyst role.
+- "Built an internal task-tracking app" can be reframed as "builder mindset / shipped working software without engineering support" for any role valuing initiative.
+- A graduate's "society treasurer" role can be reframed as "P&L responsibility for a £X budget" for finance-tier applications.
+
+The Profile should surface the user's BEST evidence for THIS JD, not just the most obviously matching evidence. Reframable distinctive material often wins.
+
+WHAT NOT TO DO:
+- Do not block out a strong skill because it's not on the JD's keyword list — if it's reframable and distinctive, it earns its place.
+- Do not invent reframings. Every reframing must trace to a real skill / achievement in the FactBase. Truth contract still applies.
+- Do not stuff more than 2-4 items into the Profile. Stronger material that didn't make the Profile lives in the Experience bullets.
+
+EMPLOYER-DESCRIPTOR IN S1 (REFINED):
+If the employer is not on the brand-tier list, you MAY include a sector-descriptor IF it adds real signal. Real signals only:
+- Sector + named scale ("at a £10M consumer-goods business", "at a 200-person SaaS scale-up")
+- Sector + market position ("at a top-3 UK home-decor retailer")
+- Sector + named market context ("at an FMCG export business serving EU and US")
+
+Decorative descriptors are BANNED:
+- "growing" / "fast-growing" / "thriving" — banned
+- "innovative" / "forward-thinking" / "dynamic" — banned
+- "leading" / "best-in-class" / "world-class" — banned
+- Any pure adjective + sector with no scale/position signal — banned
+
+If you don't have a real scale/position signal, OMIT the descriptor entirely. The employer name lives in Experience.
 - "References available on request" — never include. The renderer drops it.
 
 BANNED VERBS (instant AI-tell)
@@ -920,7 +965,7 @@ Pick ONE template. If genuinely ambiguous, default to (a) Achievement-Led. The u
 STRICT SENTENCE-ROLE SEPARATION (each sentence does ONE job, no overlap):
 S1 = WHO. Role + work breadth + sector context. NO scope anchor. NO sole/ownership claim.
 S2 = WHAT. Dominant scope anchor as the centrepiece. The number/scale lives HERE, nowhere else in the Profile.
-S3 = DISTINCTIVE. Sole/ownership/breadth/stakeholder level. The "what makes you different" claim lives HERE, nowhere else.
+S3 = DISTINCTIVE. ONE ownership/breadth/stakeholder claim, not two. The single most JD-relevant distinctive claim lives HERE, nowhere else. Pick the strongest single ownership signal (e.g. "sole [role]", "founding [function]", "first [discipline] hire", "owning [function] from [scope] to [scope]"). Do NOT cram two ownership claims into one sentence — that produces meandering S3s. The other ownership signals belong in the Experience section.
 S4 = CLOSE. Fact (degree+classification+uni) OR named target ("Targeting [specific role] at [specific employer/sector]").
 
 ANCHORS-APPEAR-ONCE RULE (HARD):

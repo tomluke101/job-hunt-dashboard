@@ -704,6 +704,51 @@ function scanProfile(cv: TailoredCV): BannedHit[] {
 
 // ── Targeted rewrite of offending sections ────────────────────────────────────
 
+// Map each flagged issue to a specific, actionable fix instruction so the model
+// knows HOW to fix it, not just that it's wrong. Generic "fix the flagged stuff"
+// prompts result in the model regenerating the same shape.
+function buildFixGuidance(flagged: BannedHit[], cv: TailoredCV): string {
+  const lines: string[] = [];
+  for (const f of flagged) {
+    const where = f.section;
+    const what = f.phrase;
+    let fix = "";
+    if (/tricolon/i.test(what)) {
+      fix = "Pick the TWO strongest items from the 3-item list and drop the third. Use 'X and Y' (no third item). Do NOT replace with another tricolon.";
+    } else if (/third-person verb/i.test(what)) {
+      fix = "Restart the sentence with either a gerund ('Owning…', 'Running…', 'Building…') or a noun-form ('Sole [role]', 'As the only person in the role…') — NEVER a verb ending in -s.";
+    } else if (/first-person pronoun/i.test(what)) {
+      fix = "Drop 'I/my/me' entirely. Lead with the action or role: 'Built X…' not 'I built X…'.";
+    } else if (/sentence 2 contains no number/i.test(what)) {
+      fix = "Lead Sentence 2 with the dominant scope anchor from the FactBase (e.g. '2x revenue growth', 'across 12 overseas suppliers', '£40M category'). The number is the centrepiece, not a clause.";
+    } else if (/em-dash/i.test(what)) {
+      fix = "Replace every em-dash (—) with a comma, full stop, or restructure the sentence. Em-dashes are a Claude tell.";
+    } else if (/adjective stack/i.test(what)) {
+      fix = "Restart Sentence 1 with role + context. Drop ALL leading adjectives ('Dedicated', 'Results-driven', 'Passionate', etc.).";
+    } else if (/closing sentence is a generic/i.test(what)) {
+      fix = "Replace the close with either a fact-anchored close (degree + classification + university) OR a NAMED target close ('Targeting [specific role] at [specific employer/sector]'). Drop any 'seeking to leverage' / 'in a dynamic environment' phrasing.";
+    } else if (/uniform length/i.test(what)) {
+      fix = "Rewrite at least one sentence to be shorter (<14 words) and one to be longer (>20 words). Variance is a quality signal.";
+    } else if (/length is .* words/i.test(what)) {
+      fix = "Adjust to 60-100 words across 3-4 sentences. Cut filler if too long; add a load-bearing claim if too short.";
+    } else if (/translating data/i.test(what) || /actionable/i.test(what)) {
+      fix = "Drop the buzz phrase entirely. Use the concrete verb of what was actually done (analysed, reported, surfaced).";
+    } else if (/spearhead|leverage|orchestrate|champion|pioneer|drove|underpin/i.test(what)) {
+      fix = "Replace the banned verb with a plain, concrete alternative: built, designed, ran, led, delivered, reduced, recovered, switched, negotiated.";
+    } else if (/JD echo/i.test(what)) {
+      fix = "Reword to use individual JD terms in your own factual statements; do NOT copy 4+ word phrases from the JD verbatim.";
+    } else if (/uniform length/i.test(what) || /bullets are uniform/i.test(what)) {
+      fix = "Vary bullet length: at least one short bullet (10-13 words), one medium (15-20), and one longer (22-28).";
+    } else {
+      fix = "Rewrite to follow the system prompt rules.";
+    }
+    lines.push(`- [${where}] ${what}\n  → FIX: ${fix}`);
+  }
+  // Suppress unused-arg warning if cv ever stops being read
+  void cv;
+  return lines.join("\n");
+}
+
 async function rewriteOffendingSections(args: {
   cv: TailoredCV;
   flagged: BannedHit[];
@@ -714,13 +759,22 @@ async function rewriteOffendingSections(args: {
   const { cv, flagged, jdText, factbaseText, connectedProviders } = args;
   const flaggedList = flagged.map((f) => `  - [${f.section}] phrase: "${f.phrase}"`).join("\n");
 
-  const fixupPrompt = `Your previous CV output contained banned phrases that scream AI-written. The flagged offenders:
+  // Build per-issue-type fix instructions so the model knows EXACTLY how to fix
+  // each flagged item, not just that it's flagged.
+  const fixGuidance = buildFixGuidance(flagged, cv);
 
-${flaggedList}
+  const fixupPrompt = `Your previous CV output failed the critic. Each flagged issue below comes with the EXACT fix to apply. Apply every fix.
 
-Rewrite the ENTIRE CV JSON, removing those phrases and any close paraphrases. Apply ALL the rules from the system prompt: no banned phrases, no JD echo, no forward-looking aspiration in Profile, skill items 1-3 words, no parentheticals in skills, no "in today's [X] world" patterns, no buzz adjectives, no aspirational closings.
+FLAGGED ISSUES AND FIXES:
+${fixGuidance}
 
-Keep all factual content and the Truth Contract intact — every claim must still trace to the FactBase. Return the FULL TailoredCV JSON object, not a diff.
+GLOBAL RULES (re-apply on rewrite):
+- Profile: 3-4 sentences, 60-100 words. Implied first person (no I/my, no third-person -s verbs at sentence start). Strict sentence-role separation: S1=role+work, S2=dominant scope anchor (anchor appears HERE only), S3=ownership/distinctive (appears HERE only), S4=close.
+- Anchors-appear-once: scope anchor in S2 only, sole/ownership claim in S3 only, role title in S1 only. No repetition across sentences.
+- No tricolons (X, Y, and Z) in any Profile sentence — use 2 items max.
+- No em-dashes in Profile.
+- No banned phrases or JD echo anywhere in the CV.
+- Truth Contract: every claim must still trace to the FactBase.
 
 Previous (flawed) output:
 ${JSON.stringify(cv)}
@@ -731,7 +785,7 @@ ${jdText.trim()}
 CANDIDATE FACTBASE:
 ${factbaseText}
 
-Return ONLY the corrected JSON.`;
+Return ONLY the corrected JSON, fully rewritten.`;
 
   const result = await callAI({
     task: "cv-tailor",
@@ -862,10 +916,31 @@ Determine which template to use by inspecting the candidate's most recent role/s
 Pick ONE template. If genuinely ambiguous, default to (a) Achievement-Led. The user may also override via their CV preferences.
 
 — TEMPLATE (a) ACHIEVEMENT-LED —
-S1: role + scope/breadth + sole/team status. NOT employer name (unless brand-tier — see below).
-S2: dominant scope anchor (£/x revenue/multi-year/headcount/supplier count). MUST contain a number/scale.
-S3: ownership/breadth/stakeholder level. NOT skills, NOT tools (those live in the Skills section).
-S4: optional fact close (degree+classification+uni) OR named target ("Targeting [specific role] at [specific employer/sector]").
+
+STRICT SENTENCE-ROLE SEPARATION (each sentence does ONE job, no overlap):
+S1 = WHO. Role + work breadth + sector context. NO scope anchor. NO sole/ownership claim.
+S2 = WHAT. Dominant scope anchor as the centrepiece. The number/scale lives HERE, nowhere else in the Profile.
+S3 = DISTINCTIVE. Sole/ownership/breadth/stakeholder level. The "what makes you different" claim lives HERE, nowhere else.
+S4 = CLOSE. Fact (degree+classification+uni) OR named target ("Targeting [specific role] at [specific employer/sector]").
+
+ANCHORS-APPEAR-ONCE RULE (HARD):
+- The dominant scope anchor (e.g. "2x revenue growth", "£40M category", "12 overseas suppliers") appears in S2 ONLY. Do NOT mention it in S1 or S3.
+- The sole/ownership claim (e.g. "Sole [role]", "only person in the role", "single-handedly") appears in S3 ONLY. Do NOT mention it in S1 or S2.
+- The role title appears in S1 ONLY (it can be implicit later but never repeated as a claim).
+- Each Profile claim has ONE home. Repetition across sentences is banned — every word should be earning new information.
+
+GOOD example (Tom-style, achievement-led, all rules followed):
+S1: "Supply Chain Analyst running procurement, planning, and reporting across an overseas supplier base."
+S2: "Scaled the function through a period of 2x revenue growth, building a supplier scorecard and a custom Airtable ERP from scratch to absorb the wider product range and higher PO volumes."
+S3: "Sole Supply Chain Analyst in the business, with weekly procurement and supplier-performance reporting going direct to the directors."
+S4: "First-Class Business with Marketing graduate from Birmingham City University, top of cohort."
+
+Note in the example above: 2x revenue is in S2 only. "Sole" is in S3 only. Role title in S1 only. Every claim has one home.
+
+BAD example (the failure mode we keep hitting):
+S1: "Supply Chain Analyst owning end-to-end procurement and materials planning across an overseas supplier base through a period of 2x revenue growth." [WRONG — scope anchor in S1]
+S2: "Sole analyst in the business, scaling the function as revenue doubled while managing higher PO volumes and a wider supplier base." [WRONG — sole-status in S2; scope anchor REPEATED]
+S3: "Reporting directly to the directors..." [WRONG — S3 reduced to reporting-only because S2 stole the ownership claim]
 
 — TEMPLATE (b) CAREER-CHANGER —
 S1: anchor the pivot honestly. Format: "[Old credential / current discipline] now running [new function] at [scope]". Example: "Marketing graduate now running end-to-end supply chain at a small overseas-supplier business as the sole analyst."

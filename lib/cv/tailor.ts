@@ -689,6 +689,119 @@ function scanProfileSentenceVariance(cv: TailoredCV): BannedHit[] {
   return hits;
 }
 
+// 9. SPECIFICITY ANCHOR — Profile MUST contain at least one specific named item:
+// a built system, named brand, named project, named tool, recovered £-amount,
+// named market position, named credential. Pure scope/ownership claims without
+// any specific named thing are forgettable to recruiters.
+const SPECIFICITY_HINTS = [
+  // Specific tools / systems / platforms
+  /\b(?:Airtable|SAP|Oracle|Salesforce|Workday|Tableau|Power\s?BI|Excel|Python|JavaScript|TypeScript|React|Node\.js|AWS|Azure|GCP|HubSpot|Mailchimp|Adobe|Figma|Jira|Asana|Notion|Slack|Microsoft|Google|Apple|Amazon|Meta)\b/i,
+  // Built / designed / from-scratch signals
+  /\b(?:from\s+scratch|in[- ]house|founding|first[- ]ever|first\s+hire|sole\s+designer|sole\s+architect)\b/i,
+  // Named system patterns ("supplier scorecard", "ERP system", "tracking system", etc.)
+  /\b(?:scorecard|ERP|CRM|dashboard|pipeline|playbook|framework|model|tracker|tracking system|management system)\b/i,
+  // Currency-amounts / specific figures
+  /(?:£|\$|€)\d|(?:\d+(?:,\d{3})*(?:\.\d+)?)(?:\s?(?:million|billion|m|bn|k|%))/i,
+  // Named brand contexts in fact close
+  /\b(?:Goldman\s+Sachs|JPMorgan|Morgan\s+Stanley|McKinsey|Bain|BCG|Deloitte|PwC|EY|KPMG|Siemens|Bosch|Unilever|Diageo|Apple|Google|Meta|Amazon|Microsoft|Stripe|Airbnb|Uber|OpenAI|Anthropic|Tesla|Nvidia|Netflix|Cambridge|Oxford|LSE|Imperial|Russell\s+Group)\b/i,
+  // Named degree class / credential
+  /\b(?:First[- ]Class|2:1|2:2|MCIPS|CFA|ACA|ACCA|CIMA|CIPS|PRINCE2|MBA|PhD)\b/i,
+  // Specific scale anchors
+  /\bacross\s+\d+\s+(?:countries|markets|regions|sites|locations|distribution\s+centres|stores|teams|suppliers|vendors|clients|customers|product\s+lines)\b/i,
+  /\b(?:portfolio|category|book|spend)\s+(?:of|worth)\s+£/i,
+];
+function scanProfileSpecificityAnchor(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  let hasSpecificity = false;
+  for (const re of SPECIFICITY_HINTS) {
+    if (re.test(cv.summary)) {
+      hasSpecificity = true;
+      break;
+    }
+  }
+  if (!hasSpecificity) {
+    hits.push({
+      section: "Profile",
+      phrase: `contains no specific named item (system / brand / £-figure / named project / named credential). A Profile that's all abstract scope/ownership without one specific named thing is forgettable. Add at least one named anchor from the FactBase.`,
+    });
+  }
+  return hits;
+}
+
+// 10. BRAND-TIER EMPLOYER ENFORCEMENT — if the current employer's name appears
+// in S1 and that employer is NOT on the brand-tier list, flag it. The rule
+// previously relied on the LLM to follow soft instructions; this makes it
+// deterministic.
+const BRAND_TIER_EMPLOYERS = new Set<string>([
+  // Bulge bracket / banking
+  "goldman sachs", "jpmorgan", "jp morgan", "morgan stanley", "bank of america",
+  "citigroup", "citi", "barclays", "deutsche bank", "ubs", "credit suisse",
+  "hsbc", "lloyds", "natwest", "santander", "blackrock",
+  // MBB consulting
+  "mckinsey", "bain", "bcg", "boston consulting group",
+  // Big 4
+  "deloitte", "pwc", "pricewaterhousecoopers", "ernst young", "ey", "kpmg",
+  // Magic Circle
+  "allen overy", "clifford chance", "freshfields", "linklaters",
+  "slaughter and may",
+  // Big Tech / FAANG
+  "apple", "microsoft", "google", "alphabet", "meta", "facebook",
+  "amazon", "netflix", "tesla", "nvidia",
+  // Household-name scaleups
+  "stripe", "airbnb", "uber", "openai", "anthropic", "spotify",
+  "shopify", "snowflake", "databricks",
+  // Industrial / FMCG household
+  "siemens", "bosch", "rolls-royce", "rolls royce", "bae systems",
+  "unilever", "diageo", "nestle", "p&g", "procter gamble", "innocent",
+  // Telco / utility household UK
+  "bt", "vodafone", "ee", "british gas", "centrica",
+]);
+
+function scanProfileBrandTierEmployer(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  const sentences = splitSentences(cv.summary);
+  if (sentences.length === 0) return hits;
+  const s1Lower = sentences[0].toLowerCase();
+
+  // Check current-role employer from the TailoredCV's first role.
+  const currentEmployer = cv.roles[0]?.company?.toLowerCase().trim();
+  if (!currentEmployer) return hits;
+
+  // Only flag if the employer name appears in S1 AND the employer is not brand-tier.
+  if (s1Lower.includes(currentEmployer) && !BRAND_TIER_EMPLOYERS.has(currentEmployer)) {
+    hits.push({
+      section: "Profile",
+      phrase: `S1 contains current employer name "${cv.roles[0]?.company}" — not on the brand-tier list. Omit the employer name from S1; it lives in the Experience section.`,
+    });
+  }
+  return hits;
+}
+
+// 11. ANCHOR-LEAK — sole/ownership claim words must appear in S3 only, not S1
+// or S2. Deterministic enforcement.
+const SOLE_OWNERSHIP_KEYWORDS = /\b(?:sole|only\s+(?:person|analyst|hire|owner|engineer|manager|specialist)|single[- ]handed|founding|first\s+hire|first[- ]ever)\b/i;
+function scanProfileAnchorLeak(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  const sentences = splitSentences(cv.summary);
+  if (sentences.length < 2) return hits;
+  if (SOLE_OWNERSHIP_KEYWORDS.test(sentences[0])) {
+    hits.push({
+      section: "Profile",
+      phrase: `S1 contains a sole/ownership claim word ("sole" / "only [role]" / "founding" / etc.). The ownership claim must live in S3 only — remove it from S1.`,
+    });
+  }
+  if (SOLE_OWNERSHIP_KEYWORDS.test(sentences[1])) {
+    hits.push({
+      section: "Profile",
+      phrase: `S2 contains a sole/ownership claim word ("sole" / "only [role]" / "founding" / etc.). The ownership claim must live in S3 only — remove it from S2.`,
+    });
+  }
+  return hits;
+}
+
 function scanProfile(cv: TailoredCV): BannedHit[] {
   return [
     ...scanProfileLength(cv),
@@ -699,6 +812,9 @@ function scanProfile(cv: TailoredCV): BannedHit[] {
     ...scanProfileOpeningAdjectiveStack(cv),
     ...scanProfileCloseValidity(cv),
     ...scanProfileSentenceVariance(cv),
+    ...scanProfileSpecificityAnchor(cv),
+    ...scanProfileBrandTierEmployer(cv),
+    ...scanProfileAnchorLeak(cv),
   ];
 }
 
@@ -737,6 +853,12 @@ function buildFixGuidance(flagged: BannedHit[], cv: TailoredCV): string {
       fix = "Replace the banned verb with a plain, concrete alternative: built, designed, ran, led, delivered, reduced, recovered, switched, negotiated.";
     } else if (/JD echo/i.test(what)) {
       fix = "Reword to use individual JD terms in your own factual statements; do NOT copy 4+ word phrases from the JD verbatim.";
+    } else if (/contains no specific named item/i.test(what)) {
+      fix = "Replace one abstract claim with a SPECIFIC named item from the FactBase: a built system (e.g. 'Airtable ERP', 'supplier scorecard'), a named brand from a previous role (e.g. 'Siemens DISW', 'Goldman Sachs'), a recovered £-amount, a named tool (e.g. 'Power BI'), or a named credential. The Profile must include at least ONE specific named anchor.";
+    } else if (/S1 contains current employer name/i.test(what)) {
+      fix = "Remove the current employer's name from sentence 1 entirely. The employer name lives in the Experience section. Replace 'X at [Employer]' with just 'X' (no employer mention) OR add a real scale/sector descriptor instead (e.g. 'at a £10M consumer-goods business' — only if you have a real scale signal).";
+    } else if (/sole\/ownership claim word/i.test(what)) {
+      fix = "Remove the word 'sole' / 'only [role]' / 'founding' / 'first hire' from this sentence. The ownership claim moves to S3 only. Restructure the sentence around the work scope or scope anchor instead.";
     } else if (/uniform length/i.test(what) || /bullets are uniform/i.test(what)) {
       fix = "Vary bullet length: at least one short bullet (10-13 words), one medium (15-20), and one longer (22-28).";
     } else {

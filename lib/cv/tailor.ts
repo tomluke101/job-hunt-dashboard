@@ -929,18 +929,68 @@ ANCHORS-APPEAR-ONCE RULE (HARD):
 - The role title appears in S1 ONLY (it can be implicit later but never repeated as a claim).
 - Each Profile claim has ONE home. Repetition across sentences is banned — every word should be earning new information.
 
-GOOD example (Tom-style, achievement-led, all rules followed):
-S1: "Supply Chain Analyst running procurement, planning, and reporting across an overseas supplier base."
-S2: "Scaled the function through a period of 2x revenue growth, building a supplier scorecard and a custom Airtable ERP from scratch to absorb the wider product range and higher PO volumes."
-S3: "Sole Supply Chain Analyst in the business, with weekly procurement and supplier-performance reporting going direct to the directors."
-S4: "First-Class Business with Marketing graduate from Birmingham City University, top of cohort."
+GOOD EXAMPLES — 5 sectors, all rules followed (anchors-appear-once, no tricolons, implied first person, strict sentence-role separation):
 
-Note in the example above: 2x revenue is in S2 only. "Sole" is in S3 only. Role title in S1 only. Every claim has one home.
+(i) PROCUREMENT / OPERATIONS (achievement-led):
+S1: "Procurement Analyst running supplier negotiation and category management across packaging and indirect spend."
+S2: "Cut £2.1m from indirect-spend categories in 12 months, consolidating fragmented vendor base from 180 to 47 suppliers."
+S3: "Sole category lead for indirect spend across the business, with weekly category-spend reporting to the CFO."
+S4: "Chartered Member of CIPS (MCIPS), 2:1 Economics from Durham University."
 
-BAD example (the failure mode we keep hitting):
-S1: "Supply Chain Analyst owning end-to-end procurement and materials planning across an overseas supplier base through a period of 2x revenue growth." [WRONG — scope anchor in S1]
-S2: "Sole analyst in the business, scaling the function as revenue doubled while managing higher PO volumes and a wider supplier base." [WRONG — sole-status in S2; scope anchor REPEATED]
-S3: "Reporting directly to the directors..." [WRONG — S3 reduced to reporting-only because S2 stole the ownership claim]
+(ii) SOFTWARE ENGINEERING (stack-led):
+S1: "Full-stack engineer with 5 years building React and Node systems for B2B SaaS."
+S2: "Shipped the user-facing checkout for a 1.4M-user fintech, sustaining sub-200ms latency at 3x peak traffic."
+S3: "Founding engineer at the company, owning all production deploys and on-call rotation."
+S4: "Targeting a senior platform-engineering role at a Series-B fintech."
+
+(iii) MARKETING / CREATIVE (brand-led):
+S1: "Senior Brand Marketer with 6 years across Unilever, Diageo, and Innocent Drinks."
+S2: "Led the 2024 Diageo flagship campaign across UK and Ireland, lifting brand-aided recall 18 points."
+S3: "Single point of contact for the agency relationship across paid, earned, and owned channels."
+S4: "Targeting a Director of Brand role at a challenger consumer business."
+
+(iv) CAREER-CHANGER (teacher → data analyst):
+S1: "Secondary maths teacher of 4 years now training as a data analyst, with two completed projects in Python and SQL."
+S2: "Brings analytical rigour, structured stakeholder communication, and curriculum-data analysis from previous role."
+S3: "Built and shipped a 6-month dataset-modelling project on UK education attainment as part of a recognised conversion programme."
+S4: "Targeting an analyst role at an education-tech business."
+
+(v) GRADUATE (degree-led):
+S1: "First-Class Economics graduate from the University of Bristol, top decile of the cohort."
+S2: "Completed a 12-month placement at PwC Audit, contributing to FTSE-250 audit engagements during reporting season."
+S3: "Strongest in financial modelling, structured client-facing communication, and Excel/Power BI."
+S4: "Targeting a graduate Investment Banking analyst role at a London-based bank."
+
+Note across ALL FIVE:
+- Scope anchor in S2 only, never repeated.
+- Distinctive / ownership claim in S3 only, never repeated.
+- Role title or candidate identity stated once in S1.
+- No tricolons in any sentence.
+- Implied first person — no "I/my", no third-person -s verbs at sentence start.
+- Each claim has one home; no information is repeated across sentences.
+
+BAD EXAMPLES — common failure modes to avoid:
+
+(i) Scope anchor in S1 instead of S2 (anchor-leak):
+"Procurement Analyst running supplier negotiation across £2.1m of indirect spend." [WRONG — that anchor belongs in S2]
+
+(ii) Tricolon in any sentence:
+"Cutting costs, consolidating suppliers, and improving compliance across the business." [WRONG — 3-item list with "and"]
+
+(iii) Adjective stack opener:
+"Results-driven, detail-oriented Procurement Analyst with a passion for data." [WRONG — banned adjectives, no role/scope]
+
+(iv) Third-person -s verb opener in S3:
+"Owns category strategy across indirect spend." [WRONG — "Owns" is third-person; use "Owning…" gerund or "Sole owner of…" noun-form]
+
+(v) Generic forward-looking close:
+"Seeking a dynamic environment where I can leverage my skills." [WRONG — generic aspiration; close must be a fact OR a NAMED target]
+
+(vi) Skill-list S3 (this is a Skills-section job, not Profile):
+"Excel, SQL, Power BI, and stakeholder management." [WRONG — skill list belongs in Skills section, not Profile S3]
+
+(vii) Repeated claim across sentences:
+S2 mentions "£2.1m of cost cut" and S3 also says "having cut £2.1m" — WRONG, anchor appears in S2 only.
 
 — TEMPLATE (b) CAREER-CHANGER —
 S1: anchor the pivot honestly. Format: "[Old credential / current discipline] now running [new function] at [scope]". Example: "Marketing graduate now running end-to-end supply chain at a small overseas-supplier business as the sole analyst."

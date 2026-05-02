@@ -110,6 +110,7 @@ export async function tailorCV(input: TailorInput): Promise<TailorResult> {
     ...scanBannedPhrases(sanitised),
     ...scanJDEcho(sanitised, input.jdText),
     ...scanBulletVariance(sanitised),
+    ...scanProfile(sanitised),
   ];
   if (flagged.length > 0) {
     try {
@@ -212,6 +213,7 @@ Return ONLY the JSON object.`;
     ...scanBannedPhrases(sanitised),
     ...scanJDEcho(sanitised, input.jdText),
     ...scanBulletVariance(sanitised),
+    ...scanProfile(sanitised),
   ];
   if (flagged.length > 0) {
     try {
@@ -402,6 +404,255 @@ function scanBulletVariance(cv: TailoredCV): BannedHit[] {
   return hits;
 }
 
+// ── Profile-section critics (Sprint: Profile batch) ──────────────────────────
+//
+// These all run against cv.summary only. Each returns 0..n hits. A hit triggers
+// the same auto-rewrite loop the banned-phrase critic already uses.
+
+// Split a profile string into sentences. Conservative: split on `. ` followed
+// by capital, plus newlines. Keeps trailing fragments.
+function splitSentences(text: string): string[] {
+  if (!text) return [];
+  return text
+    .split(/(?<=[.!?])\s+(?=[A-Z])/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function wordCount(s: string): number {
+  return s.split(/\s+/).filter(Boolean).length;
+}
+
+// 1. LENGTH — 60-100 words, 3-4 sentences. Outside that range → flag.
+function scanProfileLength(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  const wc = wordCount(cv.summary);
+  const sc = splitSentences(cv.summary).length;
+  if (wc < 50 || wc > 110) {
+    hits.push({
+      section: "Profile",
+      phrase: `length is ${wc} words — target 60–100. Tighten or expand to fit.`,
+    });
+  }
+  if (sc < 3 || sc > 4) {
+    hits.push({
+      section: "Profile",
+      phrase: `${sc} sentence${sc === 1 ? "" : "s"} — target 3–4 sentences.`,
+    });
+  }
+  return hits;
+}
+
+// 2. IMPLIED FIRST PERSON — no "I/my", no third-person self-reference verbs.
+const PROFILE_FIRST_PERSON_PRONOUN = /\b(?:I|I'm|I've|I'd|I'll|me|my|mine|myself)\b/;
+// Verbs that, when used as the SUBJECTLESS opener of a sentence in a Profile,
+// signal third-person ("Produces reports…" / "Holds a degree…"). Any of these
+// at the start of a sentence in the Profile is a violation.
+const PROFILE_THIRD_PERSON_VERBS = [
+  "Produces",
+  "Produced",
+  "Holds",
+  "Held",
+  "Brings",
+  "Brought",
+  "Manages",
+  "Managed",
+  "Tracks",
+  "Tracked",
+  "Delivers",
+  "Delivered",
+  "Demonstrates",
+  "Demonstrated",
+  "Possesses",
+  "Possessed",
+  "Operates",
+  "Operated",
+  "Specialises",
+  "Specialised",
+  "Maintains",
+  "Maintained",
+  "Combines",
+  "Combined",
+  "Carries",
+  "Carried",
+  "Owns",
+  "Owned",
+  "Has",
+  "Have",
+];
+function scanProfileImpliedFirstPerson(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  if (PROFILE_FIRST_PERSON_PRONOUN.test(cv.summary)) {
+    hits.push({
+      section: "Profile",
+      phrase: `uses first-person pronoun (I / my / me). Profile must be implied first person — drop the pronoun and lead with the action or role.`,
+    });
+  }
+  for (const sentence of splitSentences(cv.summary)) {
+    const firstWord = sentence.split(/\s+/)[0]?.replace(/[^A-Za-z']/g, "");
+    if (firstWord && PROFILE_THIRD_PERSON_VERBS.includes(firstWord)) {
+      hits.push({
+        section: "Profile",
+        phrase: `sentence opens with third-person verb "${firstWord}…". Profile must be implied first person, not narrated about the candidate.`,
+      });
+      break; // one hit triggers regen
+    }
+  }
+  return hits;
+}
+
+// 3. SENTENCE 2 MUST CONTAIN A NUMBER — load-bearing sentence; without quantification
+// the Profile is unfounded.
+const NUMBER_HINT = /[\d£$%]|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|fifty|hundred|thousand|million|billion|first|second|third|weekly|monthly|quarterly|annual|annually|daily|dozens?)\b/i;
+function scanProfileSentence2HasNumber(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  const sentences = splitSentences(cv.summary);
+  if (sentences.length < 2) return hits;
+  const sentence2 = sentences[1];
+  if (!NUMBER_HINT.test(sentence2)) {
+    hits.push({
+      section: "Profile",
+      phrase: `sentence 2 contains no number, scope, or quantifier. The load-bearing sentence must include £/%/count/named scale (e.g. "12 overseas suppliers", "weekly", "from scratch") to anchor the claim.`,
+    });
+  }
+  return hits;
+}
+
+// 4. NO TRICOLON IN SENTENCE 2 — pattern is "X, Y, and Z" or "X, Y and Z" with
+// 2+ commas in the sentence and an "and" before the last item.
+function scanProfileTricolon(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  const sentences = splitSentences(cv.summary);
+  if (sentences.length < 2) return hits;
+  const s2 = sentences[1];
+  const commaCount = (s2.match(/,/g) || []).length;
+  if (commaCount >= 2 && /,\s*(?:and|&)\s+/i.test(s2)) {
+    hits.push({
+      section: "Profile",
+      phrase: `sentence 2 is a tricolon (X, Y, and Z list). Pick the single strongest achievement; do not list three.`,
+    });
+  }
+  return hits;
+}
+
+// 5. NO EM-DASH IN PROFILE — em-dash is a Claude tell.
+function scanProfileEmDash(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  if (/—/.test(cv.summary)) {
+    hits.push({
+      section: "Profile",
+      phrase: `contains em-dash (—) — replace with comma, full stop, or restructure.`,
+    });
+  }
+  return hits;
+}
+
+// 6. NO OPENING ADJECTIVE STACK — sentence 1 must not start with 2+ comma-separated adjectives.
+const PROFILE_OPENING_ADJECTIVE_STACK_OPENERS = [
+  "dedicated",
+  "organised",
+  "organized",
+  "results-driven",
+  "results-oriented",
+  "passionate",
+  "detail-oriented",
+  "hard-working",
+  "hardworking",
+  "motivated",
+  "dynamic",
+  "innovative",
+  "creative",
+  "diligent",
+  "ambitious",
+  "driven",
+  "enthusiastic",
+  "proactive",
+  "self-motivated",
+  "highly motivated",
+  "highly organised",
+];
+function scanProfileOpeningAdjectiveStack(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  const first = (splitSentences(cv.summary)[0] ?? "").toLowerCase().trim();
+  // Stack: starts with adjective_word + "," + ... + adjective_word
+  for (const opener of PROFILE_OPENING_ADJECTIVE_STACK_OPENERS) {
+    if (first.startsWith(opener + ",") || first.startsWith(opener + " and ")) {
+      hits.push({
+        section: "Profile",
+        phrase: `sentence 1 opens with adjective stack "${opener}, …" — banned. Lead with role + context, not adjectives.`,
+      });
+      break;
+    }
+  }
+  return hits;
+}
+
+// 7. CLOSE VALIDITY — last sentence must NOT be a generic forward-looking close.
+// Banned close patterns. The Profile may close on either a fact (degree, named credential)
+// or a NAMED target ("Targeting a [specific role] at [specific employer]"). Generic
+// aspiration is not a valid close.
+const PROFILE_BANNED_CLOSE_PATTERNS = [
+  /\b(?:looking|seeking|eager|excited|keen) to\s+(?:apply|leverage|bring|contribute|join|use|deliver)/i,
+  /\b(?:apply|bring|use|leverage|deliver) (?:my|the)?\s*(?:skills?|experience|expertise|capability|capabilities|knowledge)\s+(?:to|in|within)/i,
+  /\bin (?:a |an )?(?:dynamic|innovative|fast[- ]paced|fast[- ]moving|forward[- ]thinking|high[- ]growth|growing) (?:environment|organisation|organization|company|workplace|team)/i,
+  /\bsupported by (?:advanced|strong|excellent|proven) [a-z\s]+ (?:skills?|experience)/i,
+];
+function scanProfileCloseValidity(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  const sentences = splitSentences(cv.summary);
+  if (sentences.length === 0) return hits;
+  const last = sentences[sentences.length - 1];
+  for (const re of PROFILE_BANNED_CLOSE_PATTERNS) {
+    if (re.test(last)) {
+      hits.push({
+        section: "Profile",
+        phrase: `closing sentence is a generic / forward-looking aspiration. Close on a fact (degree, named credential) or a NAMED target (specific role at specific employer).`,
+      });
+      break;
+    }
+  }
+  return hits;
+}
+
+// 8. SENTENCE-LENGTH VARIANCE — at least one short (<14 words) AND one long (>20 words).
+// If all sentences are within 4 words of each other, that's uniform AI cadence.
+function scanProfileSentenceVariance(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  const sentences = splitSentences(cv.summary);
+  if (sentences.length < 3) return hits;
+  const lengths = sentences.map(wordCount);
+  const min = Math.min(...lengths);
+  const max = Math.max(...lengths);
+  if (max - min < 6) {
+    hits.push({
+      section: "Profile",
+      phrase: `sentence lengths are uniform (range ${min}-${max} words). Vary the cadence — at least one short (<14 words) and one longer (>20 words).`,
+    });
+  }
+  return hits;
+}
+
+function scanProfile(cv: TailoredCV): BannedHit[] {
+  return [
+    ...scanProfileLength(cv),
+    ...scanProfileImpliedFirstPerson(cv),
+    ...scanProfileSentence2HasNumber(cv),
+    ...scanProfileTricolon(cv),
+    ...scanProfileEmDash(cv),
+    ...scanProfileOpeningAdjectiveStack(cv),
+    ...scanProfileCloseValidity(cv),
+    ...scanProfileSentenceVariance(cv),
+  ];
+}
+
 // ── Targeted rewrite of offending sections ────────────────────────────────────
 
 async function rewriteOffendingSections(args: {
@@ -538,12 +789,39 @@ SKILL GROUP RULES (HARD)
 - No conjunctions inside an item. "Report writing and data visualisation" is WRONG. Split into "Reporting" and "Data visualisation".
 - Total across all groups: 10–14 items. Order both groups and items within them by JD relevance.
 
-PROFILE RULES (HARD)
-- 3–4 sentences, all factual / evidence-based.
-- NO forward-looking sentence ("looking to apply…", "is looking to bring…", "seeks to leverage…", "eager to contribute…"). The Profile ends on a factual sentence about who the candidate is, not on what they hope to do.
-- NO mirroring of JD environment language ("fast-moving", "high-growth", "innovative", "dynamic environment").
-- NO weak closers ("with strong [X] capability", "with a passion for [Y]", "with proven [Z]"). Close the Profile on a fact.
-- Anchor the Profile on the candidate's strongest JD-relevant evidence: a specific achievement or distinctive role context.
+PROFILE RULES (HARD — these are the structural spec for the Profile section)
+
+LENGTH:
+- 3–4 sentences, 60–100 words total.
+- Paragraph form only — never bullets.
+
+VOICE — IMPLIED FIRST PERSON (NON-NEGOTIABLE):
+- Never use "I", "I'm", "I've", "I am", "I have", "my", "me" anywhere in the Profile.
+- Never use third-person verbs about the candidate: "Produces…", "Holds…", "Brings…", "Manages…", "Tracks…", "Delivers…", "Demonstrates…", "Possesses…", "Operates…", "Specialises…" — these read as a recruiter speaking ABOUT a person, not as the person themselves. Banned.
+- The right voice is implied first person: state actions and facts directly without subject pronouns. Example: "Sole Supply Chain Analyst at Grain and Frame, running end-to-end procurement…" NOT "Tom is a Supply Chain Analyst…" NOR "I am a Supply Chain Analyst…" NOR "Produces reports for senior stakeholders…".
+
+STRUCTURE — WHO / WHAT / HOW:
+- Sentence 1 (WHO): role + experience anchor + specialism. e.g. "Marketing graduate now running end-to-end supply chain at Grain and Frame as their sole Supply Chain Analyst."
+- Sentence 2 (WHAT): a quantified, specific achievement that proves Sentence 1. **MUST contain a number** (£, %, count, named scale, or quantifier like "12 overseas suppliers", "weekly", "from scratch in three months"). This is the load-bearing sentence.
+- Sentence 3 (HOW): skills, methods, tools, or context that deliver the achievement. May tie to JD vocabulary if FactBase supports.
+- Sentence 4 (OPTIONAL CLOSE): either a NAMED target ("Targeting a Strategic Supplier Management Associate role at Goldman Sachs…") OR a fact-anchored close (degree class + uni, named credential, named credibility signal). Never generic forward-looking aspiration.
+
+BANNED STRUCTURAL PATTERNS:
+- NO tricolons in sentence 2 — i.e. "built X, designed Y, and resolved Z". Pick the strongest single achievement; do not list three.
+- NO em-dashes anywhere in the Profile (em-dash is a Claude tell). Use commas, full stops, or restructure.
+- NO opening adjective stack — sentence 1 must NOT start with "Dedicated, organised and detail-oriented…" or any 2+ adjective comma-separated opener. Lead with role + context.
+- NO three sentences of identical length. Vary cadence: at least one short (<14 words) and one longer (>20 words) per Profile.
+
+BANNED CLOSES:
+- "Looking to apply / bring / leverage / contribute…"
+- "Seeking to leverage…"
+- "Eager to contribute / apply / bring…"
+- "Excited to apply / join…"
+- "with strong [X] capability"
+- "with a passion for [Y]"
+- "with proven [Z]"
+- Generic environment language: "fast-paced", "fast-moving", "dynamic", "innovative", "forward-thinking", "high-growth" + environment/organisation/company/workplace/team.
+- Trailing add-ons that just list extra credentials with "supported by…" — these read as patched-on rather than a real close.
 
 WORD-LEVEL BANS (always replace with specifics)
 - "multiple" — replace with a number or names: "across 4 overseas vendors", "procurement, finance, operations"

@@ -450,36 +450,55 @@ const PROFILE_FIRST_PERSON_PRONOUN = /\b(?:I|I'm|I've|I'd|I'll|me|my|mine|myself
 // signal third-person ("Produces reports…" / "Holds a degree…"). Any of these
 // at the start of a sentence in the Profile is a violation.
 const PROFILE_THIRD_PERSON_VERBS = [
+  // Original list
   "Produces",
-  "Produced",
   "Holds",
-  "Held",
   "Brings",
-  "Brought",
   "Manages",
-  "Managed",
   "Tracks",
-  "Tracked",
   "Delivers",
-  "Delivered",
   "Demonstrates",
-  "Demonstrated",
   "Possesses",
-  "Possessed",
   "Operates",
-  "Operated",
   "Specialises",
-  "Specialised",
   "Maintains",
-  "Maintained",
   "Combines",
-  "Combined",
   "Carries",
-  "Carried",
   "Owns",
-  "Owned",
   "Has",
-  "Have",
+  // Phase A additions — verbs that snuck through ("Analyses…")
+  "Analyses",
+  "Analyzes",
+  "Investigates",
+  "Runs",
+  "Leads",
+  "Designs",
+  "Builds",
+  "Implements",
+  "Coordinates",
+  "Generates",
+  "Develops",
+  "Creates",
+  "Pulls",
+  "Writes",
+  "Reports",
+  "Reviews",
+  "Presents",
+  "Forecasts",
+  "Negotiates",
+  "Sources",
+  "Reduces",
+  "Improves",
+  "Drives",
+  "Oversees",
+  "Supports",
+  "Handles",
+  "Plans",
+  "Produces",
+  "Audits",
+  "Reconciles",
+  "Synthesises",
+  "Synthesizes",
 ];
 function scanProfileImpliedFirstPerson(cv: TailoredCV): BannedHit[] {
   const hits: BannedHit[] = [];
@@ -504,8 +523,34 @@ function scanProfileImpliedFirstPerson(cv: TailoredCV): BannedHit[] {
 }
 
 // 3. SENTENCE 2 MUST CONTAIN A NUMBER — load-bearing sentence; without quantification
-// the Profile is unfounded.
-const NUMBER_HINT = /[\d£$%]|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|fifty|hundred|thousand|million|billion|first|second|third|weekly|monthly|quarterly|annual|annually|daily|dozens?)\b/i;
+// the Profile is unfounded. Accepts numbers, currencies, percentages, written
+// numbers, frequencies, AND scope-language (revenue growth, supplier counts,
+// before/after deltas, geography signals).
+const NUMBER_HINT = new RegExp(
+  [
+    // Digits, currency, %
+    "[\\d£$%]",
+    // Cardinal & ordinal number-words
+    "\\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|fifty|hundred|thousand|million|billion|first|second|third|fourth|fifth|sixth)\\b",
+    // Frequency
+    "\\b(?:weekly|monthly|quarterly|annually|annual|daily|dozens?|every)\\b",
+    // Scope-multipliers / growth ("2x revenue", "doubled", "tripled")
+    "\\b(?:doubled?|doubling|tripled?|halved?|x\\s*revenue|times|fold)\\b",
+    // Before/after delta language
+    "\\bfrom\\s+\\d|to\\s+\\d|increased\\s+by|reduced\\s+by|cut\\s+by|grew\\s+by",
+    // Scope signals (count + noun)
+    "\\bacross\\s+(?:multiple|several)?\\s*(?:overseas|global|UK|EU|US|EMEA|APAC)\\b",
+    // Period framing
+    "\\b(?:through|during)\\s+(?:a\\s+)?(?:period|window|phase)\\b",
+    // Explicit headcount / volume
+    "\\b(?:no\\.|number)\\s+of\\s+|\\bhigher\\s+volumes?|\\bwider\\s+(?:supplier|client|vendor)",
+    // Growth / scale qualifiers anchored to a noun
+    "\\bsignificantly\\s+higher|significantly\\s+more|materially\\s+(?:more|higher)",
+    // From-scratch / first-of-its-kind (founding scope)
+    "\\bfrom\\s+scratch|\\bfirst\\s+(?:ever\\s+)?\\b",
+  ].join("|"),
+  "i"
+);
 function scanProfileSentence2HasNumber(cv: TailoredCV): BannedHit[] {
   const hits: BannedHit[] = [];
   if (!cv.summary) return hits;
@@ -801,8 +846,8 @@ VOICE — IMPLIED FIRST PERSON (NON-NEGOTIABLE):
 - The right voice is implied first person: state actions and facts directly without subject pronouns. Example: "Sole Supply Chain Analyst at Grain and Frame, running end-to-end procurement…" NOT "Tom is a Supply Chain Analyst…" NOR "I am a Supply Chain Analyst…" NOR "Produces reports for senior stakeholders…".
 
 STRUCTURE — WHO / WHAT / HOW:
-- Sentence 1 (WHO): role + experience anchor + specialism. e.g. "Marketing graduate now running end-to-end supply chain at Grain and Frame as their sole Supply Chain Analyst."
-- Sentence 2 (WHAT): a quantified, specific achievement that proves Sentence 1. **MUST contain a number** (£, %, count, named scale, or quantifier like "12 overseas suppliers", "weekly", "from scratch in three months"). This is the load-bearing sentence.
+- Sentence 1 (WHO): role + experience anchor + specialism. Lead with the ROLE and the WORK, not the employer name. ONLY include the current employer's name in sentence 1 if it is a widely-recognised brand (FTSE 100, Big 4, Magic Circle, FAANG, well-known global firm). If the employer is a small business or unknown brand, omit the employer from sentence 1 — the employer name lives in the Experience section. Example (small employer, omit name): "Sole Supply Chain Analyst running end-to-end procurement and materials planning across an overseas supplier base." Example (brand-name employer, keep name): "Senior Associate at Goldman Sachs covering Strategic Supplier Management."
+- Sentence 2 (WHAT): a quantified, specific achievement that proves Sentence 1. **MUST contain a number, scope, or scale-anchor** (£, %, count, growth multiple like "2x revenue", before/after delta, geography count, frequency, "from scratch", "first-ever"). This is the load-bearing sentence.
 - Sentence 3 (HOW): skills, methods, tools, or context that deliver the achievement. May tie to JD vocabulary if FactBase supports.
 - Sentence 4 (OPTIONAL CLOSE): either a NAMED target ("Targeting a Strategic Supplier Management Associate role at Goldman Sachs…") OR a fact-anchored close (degree class + uni, named credential, named credibility signal). Never generic forward-looking aspiration.
 

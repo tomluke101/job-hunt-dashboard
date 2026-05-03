@@ -113,24 +113,59 @@ export async function tailorCV(input: TailorInput): Promise<TailorResult> {
     ...scanProfile(sanitised),
   ];
   if (flagged.length > 0) {
-    try {
-      const fixed = await rewriteOffendingSections({
-        cv: sanitised,
-        flagged,
-        jdText: input.jdText,
-        factbaseText,
-        connectedProviders: keys,
-      });
-      if (fixed) {
-        return {
-          tailoredCV: fixed,
-          warnings,
-          jdKeywords: fixed.jdKeywords,
-          gaps: fixed.gaps,
-        };
+    let current = sanitised;
+    let lastFlagged = flagged;
+    let succeeded = false;
+    // Up to TWO rewrite passes: if pass 1 still leaves critical issues
+    // (anchor-leak, brand-tier employer, specificity), pass 2 runs with
+    // even-stronger explicit instructions.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const fixed = await rewriteOffendingSections({
+          cv: current,
+          flagged: lastFlagged,
+          jdText: input.jdText,
+          factbaseText,
+          connectedProviders: keys,
+          attempt,
+        });
+        if (!fixed) break;
+        const reflagged = [
+          ...scanBannedPhrases(fixed),
+          ...scanJDEcho(fixed, input.jdText),
+          ...scanBulletVariance(fixed),
+          ...scanProfile(fixed),
+        ];
+        current = fixed;
+        if (reflagged.length === 0) {
+          succeeded = true;
+          break;
+        }
+        lastFlagged = reflagged;
+      } catch (e) {
+        console.error("[tailorCV] critic rewrite failed:", e);
+        break;
       }
-    } catch (e) {
-      console.error("[tailorCV] critic rewrite failed:", e);
+    }
+    if (succeeded) {
+      return {
+        tailoredCV: current,
+        warnings,
+        jdKeywords: current.jdKeywords,
+        gaps: current.gaps,
+      };
+    }
+    if (current !== sanitised) {
+      // Use the last rewrite even if not fully clean — better than the first pass.
+      return {
+        tailoredCV: current,
+        warnings: [
+          ...warnings,
+          `Critic flagged ${lastFlagged.length} issue${lastFlagged.length === 1 ? "" : "s"} that two rewrite passes couldn't fully fix. Click "Tailor CV" again to regenerate.`,
+        ],
+        jdKeywords: current.jdKeywords,
+        gaps: current.gaps,
+      };
     }
     warnings.push(
       `Critic flagged ${flagged.length} AI-tell phrase${flagged.length === 1 ? "" : "s"} that auto-rewrite couldn't fix. Click "Tailor CV" again to regenerate.`
@@ -689,10 +724,10 @@ function scanProfileSentenceVariance(cv: TailoredCV): BannedHit[] {
   return hits;
 }
 
-// 9. SPECIFICITY ANCHOR — Profile MUST contain at least one specific named item:
-// a built system, named brand, named project, named tool, recovered £-amount,
-// named market position, named credential. Pure scope/ownership claims without
-// any specific named thing are forgettable to recruiters.
+// 9. SPECIFICITY ANCHOR — Profile MUST contain at least one specific named item
+// IN THE BODY (S1, S2, or S3) — not just in S4 fact close. A credential in S4
+// alone passes the body-text test but leaves S1-S3 abstract. Tighten by
+// requiring at least one named anchor in the load-bearing first three sentences.
 const SPECIFICITY_HINTS = [
   // Specific tools / systems / platforms
   /\b(?:Airtable|SAP|Oracle|Salesforce|Workday|Tableau|Power\s?BI|Excel|Python|JavaScript|TypeScript|React|Node\.js|AWS|Azure|GCP|HubSpot|Mailchimp|Adobe|Figma|Jira|Asana|Notion|Slack|Microsoft|Google|Apple|Amazon|Meta)\b/i,
@@ -713,17 +748,22 @@ const SPECIFICITY_HINTS = [
 function scanProfileSpecificityAnchor(cv: TailoredCV): BannedHit[] {
   const hits: BannedHit[] = [];
   if (!cv.summary) return hits;
-  let hasSpecificity = false;
+  // Specificity must appear in the BODY (S1-S3), not just S4 fact-close.
+  // A credential alone in S4 (e.g. "First-Class") satisfies a weaker rule but
+  // leaves S1-S3 abstract — recruiters skim past abstract bodies.
+  const sentences = splitSentences(cv.summary);
+  const body = sentences.slice(0, 3).join(" "); // S1-S3 only
+  let hasSpecificityInBody = false;
   for (const re of SPECIFICITY_HINTS) {
-    if (re.test(cv.summary)) {
-      hasSpecificity = true;
+    if (re.test(body)) {
+      hasSpecificityInBody = true;
       break;
     }
   }
-  if (!hasSpecificity) {
+  if (!hasSpecificityInBody) {
     hits.push({
       section: "Profile",
-      phrase: `contains no specific named item (system / brand / £-figure / named project / named credential). A Profile that's all abstract scope/ownership without one specific named thing is forgettable. Add at least one named anchor from the FactBase.`,
+      phrase: `body (S1-S3) contains no specific named item — only abstract scope / ownership / reporting claims. At least one named anchor (built system, named brand, named project, named tool, £-figure) MUST appear in S1, S2, or S3. A credential in S4 alone does not count.`,
     });
   }
   return hits;
@@ -877,15 +917,23 @@ async function rewriteOffendingSections(args: {
   jdText: string;
   factbaseText: string;
   connectedProviders: Partial<Record<string, string>>;
+  attempt?: number;
 }): Promise<TailoredCV | null> {
-  const { cv, flagged, jdText, factbaseText, connectedProviders } = args;
+  const { cv, flagged, jdText, factbaseText, connectedProviders, attempt = 0 } = args;
   const flaggedList = flagged.map((f) => `  - [${f.section}] phrase: "${f.phrase}"`).join("\n");
 
   // Build per-issue-type fix instructions so the model knows EXACTLY how to fix
   // each flagged item, not just that it's flagged.
   const fixGuidance = buildFixGuidance(flagged, cv);
 
-  const fixupPrompt = `Your previous CV output failed the critic. Each flagged issue below comes with the EXACT fix to apply. Apply every fix.
+  // Second attempt gets stronger language because the first rewrite failed.
+  const escalatedHeader = attempt >= 1
+    ? `THIS IS THE SECOND REWRITE ATTEMPT — the previous rewrite STILL failed the critic. Be ruthless. Do not produce another output that contains any of the flagged phrases or patterns. If a word is banned in a sentence, the corrected sentence must not contain that word at all.
+
+`
+    : "";
+
+  const fixupPrompt = `${escalatedHeader}Your previous CV output failed the critic. Each flagged issue below comes with the EXACT fix to apply. Apply every fix.
 
 FLAGGED ISSUES AND FIXES:
 ${fixGuidance}

@@ -8,6 +8,8 @@ import { callAI } from "@/lib/ai-router";
 import type { Provider } from "@/lib/ai-providers";
 import { extractFactBase } from "./extract";
 import { factsOfKind, type FactBase } from "./factbase";
+import { scanProfile, buildFixGuidance } from "./tailor";
+import type { TailoredCV } from "./tailored-cv";
 
 export interface MasterProfileGenerationResult {
   summary?: string;
@@ -50,7 +52,7 @@ ${factbaseText}
 === TASK ===
 Produce the candidate's Master Profile — the strongest, sector-agnostic version of themselves. No specific job description to tailor to. Apply ALL Profile rules. Return ONLY the JSON object: { "summary": string }.`;
 
-  let raw: string;
+  let summary: string | null = null;
   try {
     const result = await callAI({
       task: "cv-tailor",
@@ -58,7 +60,7 @@ Produce the candidate's Master Profile — the strongest, sector-agnostic versio
       systemPrompt,
       prompt: userPrompt,
     });
-    raw = result.text;
+    summary = parseSummaryFromJSON(result.text);
   } catch (e) {
     console.error("[generateMasterProfile] AI failed:", e);
     return {
@@ -67,11 +69,22 @@ Produce the candidate's Master Profile — the strongest, sector-agnostic versio
     };
   }
 
-  // Parse the JSON output and pull out the summary string.
-  const summary = parseSummaryFromJSON(raw);
   if (!summary) {
     return { error: "AI returned non-JSON output.", warnings };
   }
+
+  // Run the same Profile scanners as the JD-tailored flow + verify-after-rewrite
+  // loop. Wrap the Master string in a minimal TailoredCV stub so we can reuse
+  // the existing scan/critic pipeline.
+  summary = await runProfileScannersAndRewrite({
+    summary,
+    factbaseText,
+    factbaseFromFactBase: fb,
+    connectedProviders: opts.connectedProviders,
+    systemPrompt,
+    isMaster: true,
+  });
+
   return { summary, warnings };
 }
 
@@ -128,7 +141,7 @@ ${opts.companyName ? `Target company: ${opts.companyName}\n` : ""}${opts.roleNam
 === TASK ===
 Adapt the Master Profile to this specific JD. Keep the user's voice and structure where possible. Surface JD-relevant emphasis from the FactBase. Apply ALL Profile rules. Return ONLY the JSON object: { "summary": string }.`;
 
-  let raw: string;
+  let tailored: string | null = null;
   try {
     const result = await callAI({
       task: "cv-tailor",
@@ -136,7 +149,7 @@ Adapt the Master Profile to this specific JD. Keep the user's voice and structur
       systemPrompt,
       prompt: userPrompt,
     });
-    raw = result.text;
+    tailored = parseSummaryFromJSON(result.text);
   } catch (e) {
     console.error("[tailorMasterToJD] AI failed:", e);
     return {
@@ -145,11 +158,113 @@ Adapt the Master Profile to this specific JD. Keep the user's voice and structur
     };
   }
 
-  const tailored = parseSummaryFromJSON(raw);
   if (!tailored) {
     return { error: "AI returned non-JSON output.", warnings };
   }
+
+  // Run scanners + rewrite loop on the tailored output too
+  tailored = await runProfileScannersAndRewrite({
+    summary: tailored,
+    factbaseText,
+    factbaseFromFactBase: fb,
+    connectedProviders: opts.connectedProviders,
+    systemPrompt,
+    isMaster: false,
+    jdText: opts.jdText,
+  });
+
   return { tailored, warnings };
+}
+
+// ── Verify-after-rewrite loop for Master / Master-tailored output ────────────
+//
+// Wraps the Profile string in a minimal TailoredCV stub so we can reuse the
+// existing 15-scanner pipeline + critic-rewrite flow.
+
+async function runProfileScannersAndRewrite(args: {
+  summary: string;
+  factbaseText: string;
+  factbaseFromFactBase: FactBase;
+  connectedProviders: Partial<Record<Provider, string>>;
+  systemPrompt: string;
+  isMaster: boolean;
+  jdText?: string;
+}): Promise<string> {
+  const { summary, factbaseText, factbaseFromFactBase, connectedProviders, systemPrompt, isMaster, jdText } = args;
+
+  // Build a minimal TailoredCV stub for the scanners. Scanners only read
+  // .summary and .roles[0].company for the brand-tier check. Everything else
+  // can be empty.
+  const buildStub = (s: string): TailoredCV => {
+    const firstRole = factsOfKind(factbaseFromFactBase, "role")[0];
+    return {
+      contact: { name: "", email: null, phone: null, location: null, linkedin: null },
+      summary: s,
+      skills: [],
+      roles: firstRole
+        ? [
+            {
+              company: firstRole.company,
+              title: firstRole.title,
+              startDate: firstRole.startDate,
+              endDate: firstRole.endDate,
+              isCurrent: firstRole.isCurrent,
+              location: firstRole.location ?? null,
+              bullets: [],
+            },
+          ]
+        : [],
+      education: [],
+      certifications: [],
+      languages: [],
+      interests: [],
+      jdKeywords: [],
+      gaps: [],
+    };
+  };
+
+  let current = summary;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const stub = buildStub(current);
+    const flagged = scanProfile(stub);
+    if (flagged.length === 0) return current;
+
+    const fixGuidance = buildFixGuidance(flagged, stub);
+    const escalated = attempt >= 1
+      ? "THIS IS THE SECOND REWRITE ATTEMPT — the previous rewrite still failed. Be ruthless about applying every fix.\n\n"
+      : "";
+
+    const fixupPrompt = `${escalated}Your previous Profile output failed the critic. Each flagged issue below comes with the EXACT fix to apply. Apply every fix.
+
+FLAGGED ISSUES AND FIXES:
+${fixGuidance}
+
+${jdText ? `JOB DESCRIPTION:\n${jdText.trim()}\n\n` : ""}CANDIDATE FACTBASE (truth contract):
+${factbaseText}
+
+Previous (flawed) Profile:
+${current}
+
+Return ONLY a JSON object: { "summary": string }. The corrected Profile must follow ALL rules.`;
+
+    try {
+      const result = await callAI({
+        task: "cv-tailor",
+        connectedProviders,
+        systemPrompt,
+        prompt: fixupPrompt,
+      });
+      const next = parseSummaryFromJSON(result.text);
+      if (!next) return current; // rewrite failed to parse; keep what we have
+      current = next;
+    } catch (e) {
+      console.error("[runProfileScannersAndRewrite] rewrite failed:", e);
+      return current;
+    }
+  }
+  // After 2 attempts, return whatever we have — better than blocking.
+  void isMaster;
+  return current;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -271,6 +386,8 @@ NO closing aspiration ("seeking to leverage…", "in a dynamic environment…").
 BANNED VOCABULARY: spearhead, leverage, orchestrate, championed, drove, pioneered, synergise, utilise, streamline, robust, seamless, cutting-edge, delve, embark, results-driven, passionate, dynamic, proven, demonstrated, hands-on, end-to-end (as adjective in S3), forward-thinking, fast-paced, fast-moving, innovative-environment, world-class, best-in-class, hit the ground running, value-add, in today's [X] world.
 
 TRUTH CONTRACT: every claim must trace to the FactBase. No inventing metrics, scopes, tools, brands.
+
+IDENTITY ANCHORING (HARD): the Master Profile must lead with the candidate's CURRENT professional identity (most recent role / current employer's sector). NEVER mash up current and previous role titles into one identity claim ("Supply Chain Analyst and Project Coordinator" is BANNED — pick the current role only). NEVER blend sectors from current + previous employers into one statement ("e-commerce and enterprise software" when only the previous job was enterprise software is BANNED — use the current sector only). Previous roles belong in the Experience section of the CV, not the Profile.
 
 The Master Profile (no JD context) leans on the candidate's strongest UNIVERSAL evidence — the dominant scope anchor and the most distinctive named achievement, both of which travel across applications.
 

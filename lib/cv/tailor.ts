@@ -983,7 +983,7 @@ function scanProfileAnchorLeak(cv: TailoredCV): BannedHit[] {
   return hits;
 }
 
-function scanProfile(cv: TailoredCV): BannedHit[] {
+export function scanProfile(cv: TailoredCV): BannedHit[] {
   return [
     ...scanProfileLength(cv),
     ...scanProfileImpliedFirstPerson(cv),
@@ -1008,7 +1008,7 @@ function scanProfile(cv: TailoredCV): BannedHit[] {
 // Map each flagged issue to a specific, actionable fix instruction so the model
 // knows HOW to fix it, not just that it's wrong. Generic "fix the flagged stuff"
 // prompts result in the model regenerating the same shape.
-function buildFixGuidance(flagged: BannedHit[], cv: TailoredCV): string {
+export function buildFixGuidance(flagged: BannedHit[], cv: TailoredCV): string {
   const lines: string[] = [];
   for (const f of flagged) {
     const where = f.section;

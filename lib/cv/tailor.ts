@@ -923,39 +923,38 @@ function scanProfileSubstantialS2Number(cv: TailoredCV): BannedHit[] {
   return hits;
 }
 
-// 15. S3 REPORTING-FILLER — "reporting to directors" / "weekly reports" alone
-// in S3 is filler. Must be PAIRED with a specific named system or concrete
-// scope detail (e.g. "purchase-order through to delivery", "via the supplier
-// scorecard built from scratch").
-function scanProfileS3ReportingFiller(cv: TailoredCV): BannedHit[] {
+// 15. S3 STRENGTH — S3 must contain a named specific item (system/brand/
+// project/tool/outcome/count) — NOT just generic scope-descriptions like
+// "from purchase-order through to delivery" or "end-to-end procurement".
+// Generic scope phrases describe what every candidate in this role does.
+// S3 must surface what makes THIS candidate distinctive: a named built system,
+// a named outcome figure, a named brand collaborator, a named count of entities.
+function scanProfileS3Strength(cv: TailoredCV): BannedHit[] {
   const hits: BannedHit[] = [];
   if (!cv.summary) return hits;
   const sentences = splitSentences(cv.summary);
   if (sentences.length < 3) return hits;
   const s3 = sentences[2];
-  const hasReporting = /\b(?:reporting|reports?\s+(?:to|on|directly))\b/i.test(s3);
-  if (!hasReporting) return hits;
-  // If reporting appears, check for a paired specific anchor in S3.
-  let hasPairedSpecific = false;
+  // Check for at least one NAMED specific item (the strict specificity hints).
+  let hasNamedSpecific = false;
   for (const re of SPECIFICITY_HINTS) {
     if (re.test(s3)) {
-      hasPairedSpecific = true;
+      hasNamedSpecific = true;
       break;
     }
   }
-  // Also accept concrete scope detail patterns ("from X through to Y", "across N suppliers", named function breadth)
-  if (
-    /\bfrom\s+(?:purchase[- ]order|order|onboarding|design|sourcing|input)\s+through\s+to\b/i.test(s3) ||
-    /\bend[- ]to[- ]end\s+(?:procurement|design|delivery|operations)\b/i.test(s3) ||
-    /\bacross\s+\d+\b/i.test(s3) ||
-    /\bfunction\s+from\s+/i.test(s3)
-  ) {
-    hasPairedSpecific = true;
+  // Also accept count + named entity (e.g. "12 overseas suppliers", "3 distribution centres")
+  if (/\b\d+\s+(?:overseas|global|UK|EU|US|EMEA|APAC)?\s*(?:countries|markets|regions|sites|locations|distribution\s+centres|stores|teams|suppliers|vendors|clients|customers|product\s+lines|categories)\b/i.test(s3)) {
+    hasNamedSpecific = true;
   }
-  if (!hasPairedSpecific) {
+  // Also accept named-collaborator patterns ("with the company director", "alongside the [named] team")
+  if (/\b(?:alongside|with)\s+the\s+(?:company\s+director|CEO|CFO|CTO|founder|founding\s+team|VP|head\s+of)/i.test(s3)) {
+    hasNamedSpecific = true;
+  }
+  if (!hasNamedSpecific) {
     hits.push({
       section: "Profile",
-      phrase: `S3 contains a reporting claim ("reporting to directors" / "reports to") without a paired specific anchor. Reporting cadence alone is filler — pair it with a named system, named scope detail, or concrete function breadth (e.g. "owning the function from purchase-order through to delivery", "via the supplier scorecard built from scratch").`,
+      phrase: `S3 contains no NAMED specific item — only generic scope/ownership/reporting language. Generic phrases like "from purchase-order through to delivery" or "owning the function end-to-end" describe what every candidate at this level does. S3 must surface a named built system, named outcome figure, named brand collaborator, or named count of entities — the thing that makes THIS candidate distinctive.`,
     });
   }
   return hits;
@@ -1000,7 +999,7 @@ function scanProfile(cv: TailoredCV): BannedHit[] {
     ...scanProfileOutcomeSignal(cv),
     ...scanProfileScopeAnchorLeak(cv),
     ...scanProfileSubstantialS2Number(cv),
-    ...scanProfileS3ReportingFiller(cv),
+    ...scanProfileS3Strength(cv),
   ];
 }
 

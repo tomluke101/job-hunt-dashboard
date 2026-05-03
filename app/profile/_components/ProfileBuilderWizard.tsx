@@ -9,19 +9,38 @@ import {
   generateMasterProfile,
 } from "@/app/actions/cv-tailoring";
 
-type CareerStage = "working" | "student" | "between" | "returner";
+type CareerStage =
+  | "working"
+  | "self_employed"
+  | "founder"
+  | "student"
+  | "between"
+  | "returner"
+  | "other";
 
 interface WizardAnswers {
   stage: CareerStage | null;
   // Identity (adapts by stage)
   jobTitle?: string;
   companyOrSector?: string;
+  // Self-employed / freelance
+  freelanceDiscipline?: string;
+  freelanceYears?: string;
+  freelanceSector?: string;
+  // Founder
+  businessName?: string;
+  businessDoes?: string;
+  businessFoundedYear?: string;
+  // Student / grad
   degreeSubject?: string;
   university?: string;
   graduationYear?: string;
+  // Between / returner
   lastJobTitle?: string;
   lastJobSector?: string;
   timeOut?: string;
+  // Other (free-text)
+  otherSituation?: string;
   // Achievement
   achievement?: string;
   achievementScale?: string;
@@ -40,10 +59,13 @@ interface Props {
 }
 
 const STAGE_LABELS: Record<CareerStage, string> = {
-  working: "Currently working in a role",
-  student: "Studying or recent graduate",
+  working: "Currently in a job (employed)",
+  self_employed: "Self-employed, freelance, or contractor",
+  founder: "Running my own business / startup",
+  student: "Studying or recent graduate (incl. apprentices, placement years)",
   between: "Between jobs",
-  returner: "Returning after a career break",
+  returner: "Returning after a break (caregiving, illness, sabbatical, etc.)",
+  other: "Something else — describe my situation",
 };
 
 export default function ProfileBuilderWizard({ onClose }: Props) {
@@ -76,11 +98,20 @@ export default function ProfileBuilderWizard({ onClose }: Props) {
         if (answers.stage === "working") {
           return !!(answers.jobTitle?.trim() && answers.companyOrSector?.trim());
         }
+        if (answers.stage === "self_employed") {
+          return !!(answers.freelanceDiscipline?.trim() && answers.freelanceSector?.trim());
+        }
+        if (answers.stage === "founder") {
+          return !!(answers.businessName?.trim() && answers.businessDoes?.trim());
+        }
         if (answers.stage === "student") {
           return !!(answers.degreeSubject?.trim() && answers.university?.trim());
         }
         if (answers.stage === "between" || answers.stage === "returner") {
           return !!(answers.lastJobTitle?.trim() && answers.lastJobSector?.trim());
+        }
+        if (answers.stage === "other") {
+          return !!answers.otherSituation?.trim();
         }
         return false;
       case 3:
@@ -121,19 +152,61 @@ export default function ProfileBuilderWizard({ onClose }: Props) {
         if (answers.anythingElse?.trim()) {
           skillsToAdd.push(answers.anythingElse.trim());
         }
+        if (answers.educationToInclude?.trim()) {
+          skillsToAdd.push(`Education: ${answers.educationToInclude.trim()}`);
+        }
+        if (answers.stage === "other" && answers.otherSituation?.trim()) {
+          skillsToAdd.push(`Current situation: ${answers.otherSituation.trim()}`);
+        }
 
         for (const s of skillsToAdd) {
           await addSkill(s);
         }
 
-        // 2. Save Work History entry for working / between / returner stages.
+        // 2. Save Work History entry — adapts to each stage.
+        const today = new Date().toISOString().slice(0, 7);
         if (answers.stage === "working" && answers.jobTitle && answers.companyOrSector) {
           await addEmployer({
             company_name: answers.companyOrSector.trim(),
             role_title: answers.jobTitle.trim(),
-            start_date: new Date().toISOString().slice(0, 7),
+            start_date: today,
             is_current: true,
             employment_type: "full-time",
+          });
+        } else if (answers.stage === "self_employed" && answers.freelanceDiscipline && answers.freelanceSector) {
+          await addEmployer({
+            company_name: `Self-employed (${answers.freelanceSector.trim()})`,
+            role_title: answers.freelanceDiscipline.trim(),
+            start_date: today,
+            is_current: true,
+            employment_type: "freelance",
+            summary: answers.freelanceYears ? `${answers.freelanceYears.trim()} of self-employed work` : null,
+          });
+        } else if (answers.stage === "founder" && answers.businessName && answers.businessDoes) {
+          await addEmployer({
+            company_name: answers.businessName.trim(),
+            role_title: "Founder",
+            start_date: answers.businessFoundedYear?.match(/\d{4}/)?.[0]
+              ? `${answers.businessFoundedYear.match(/\d{4}/)![0]}-01`
+              : today,
+            is_current: true,
+            employment_type: "founder",
+            summary: answers.businessDoes.trim(),
+          });
+        } else if (
+          (answers.stage === "between" || answers.stage === "returner") &&
+          answers.lastJobTitle &&
+          answers.lastJobSector
+        ) {
+          await addEmployer({
+            company_name: answers.lastJobSector.trim(),
+            role_title: answers.lastJobTitle.trim(),
+            start_date: today,
+            is_current: false,
+            employment_type: "full-time",
+            summary: answers.stage === "returner" && answers.timeOut
+              ? `Last role before a career break of ${answers.timeOut.trim()}`
+              : "Most recent role",
           });
         }
 
@@ -314,67 +387,156 @@ function Step2Identity({
       </div>
     );
   }
+  if (answers.stage === "self_employed") {
+    return (
+      <div className="space-y-4">
+        <div>
+          <h3 className="font-semibold text-slate-900 text-base">Tell me about your work</h3>
+          <p className="text-xs text-slate-500 mt-1">
+            What you do, who you do it for, how long you&apos;ve been doing it.
+          </p>
+        </div>
+        <Field
+          label="Discipline / what kind of work?"
+          placeholder="e.g. Brand designer · Tax consultant · Plumbing contractor · Editorial writer"
+          value={answers.freelanceDiscipline ?? ""}
+          onChange={(v) => update("freelanceDiscipline", v)}
+        />
+        <Field
+          label="Sector / typical clients"
+          placeholder="e.g. Tech startups · UK SMEs · Construction · Charities and NGOs"
+          value={answers.freelanceSector ?? ""}
+          onChange={(v) => update("freelanceSector", v)}
+        />
+        <Field
+          label="How long have you been doing this?"
+          placeholder="e.g. 3 years · since 2022 · ~6 months"
+          value={answers.freelanceYears ?? ""}
+          onChange={(v) => update("freelanceYears", v)}
+        />
+      </div>
+    );
+  }
+  if (answers.stage === "founder") {
+    return (
+      <div className="space-y-4">
+        <div>
+          <h3 className="font-semibold text-slate-900 text-base">Tell me about your business</h3>
+          <p className="text-xs text-slate-500 mt-1">
+            What it does, when you started, where you are now.
+          </p>
+        </div>
+        <Field
+          label="Business name (or your role title)"
+          placeholder="e.g. Founder of [Business] · Co-founder & CTO · Owner-Director"
+          value={answers.businessName ?? ""}
+          onChange={(v) => update("businessName", v)}
+        />
+        <Field
+          label="What does the business do?"
+          placeholder="e.g. D2C skincare brand · B2B SaaS for accountants · Bricks & mortar coffee shop"
+          value={answers.businessDoes ?? ""}
+          onChange={(v) => update("businessDoes", v)}
+        />
+        <Field
+          label="When did you start it?"
+          placeholder="e.g. 2023 · 18 months ago"
+          value={answers.businessFoundedYear ?? ""}
+          onChange={(v) => update("businessFoundedYear", v)}
+        />
+      </div>
+    );
+  }
   if (answers.stage === "student") {
     return (
       <div className="space-y-4">
         <div>
           <h3 className="font-semibold text-slate-900 text-base">Tell me about your studies</h3>
           <p className="text-xs text-slate-500 mt-1">
-            Your degree subject, university, and when you graduate(d).
+            Your degree, course, or apprenticeship — and the institution.
           </p>
         </div>
         <Field
-          label="Degree subject"
-          placeholder="e.g. Economics · Computer Science · Business with Marketing"
+          label="Course / degree subject"
+          placeholder="e.g. Economics BA · Software Engineering MEng · Level 3 Engineering Apprenticeship"
           value={answers.degreeSubject ?? ""}
           onChange={(v) => update("degreeSubject", v)}
         />
         <Field
-          label="University"
-          placeholder="e.g. University of Bristol · Imperial College London · Birmingham City University"
+          label="Institution / employer (for apprenticeships)"
+          placeholder="e.g. University of Bristol · Imperial College London · Rolls-Royce apprenticeship"
           value={answers.university ?? ""}
           onChange={(v) => update("university", v)}
         />
         <Field
-          label="Year of graduation"
-          placeholder="e.g. 2025"
+          label="Year you finish (or finished)"
+          placeholder="e.g. 2025 · ongoing"
           value={answers.graduationYear ?? ""}
           onChange={(v) => update("graduationYear", v)}
         />
       </div>
     );
   }
-  // between / returner
+  if (answers.stage === "between" || answers.stage === "returner") {
+    return (
+      <div className="space-y-4">
+        <div>
+          <h3 className="font-semibold text-slate-900 text-base">Tell me about your most recent role</h3>
+          <p className="text-xs text-slate-500 mt-1">
+            {answers.stage === "returner"
+              ? "Last job you held before the break."
+              : "The most recent job you held."}
+          </p>
+        </div>
+        <Field
+          label="Job title"
+          placeholder="e.g. Senior Auditor · Operations Manager · Designer"
+          value={answers.lastJobTitle ?? ""}
+          onChange={(v) => update("lastJobTitle", v)}
+        />
+        <Field
+          label="Sector / what did the business do?"
+          placeholder="e.g. Big 4 audit · Logistics · D2C consumer brand"
+          value={answers.lastJobSector ?? ""}
+          onChange={(v) => update("lastJobSector", v)}
+        />
+        {answers.stage === "returner" && (
+          <Field
+            label="How long has it been since you last worked? (Optional — skip if you'd rather not say.)"
+            placeholder="e.g. 18 months · 2 years · a few years"
+            value={answers.timeOut ?? ""}
+            onChange={(v) => update("timeOut", v)}
+          />
+        )}
+      </div>
+    );
+  }
+  // other — free-text
   return (
     <div className="space-y-4">
       <div>
-        <h3 className="font-semibold text-slate-900 text-base">Tell me about your most recent role</h3>
+        <h3 className="font-semibold text-slate-900 text-base">Tell me about your situation</h3>
         <p className="text-xs text-slate-500 mt-1">
-          {answers.stage === "returner"
-            ? "Last job you held before the break."
-            : "The most recent job you held."}
+          Describe where you are now in a couple of sentences. We&apos;ll adapt everything from your answer.
         </p>
       </div>
-      <Field
-        label="Job title"
-        placeholder="e.g. Senior Auditor · Operations Manager · Designer"
-        value={answers.lastJobTitle ?? ""}
-        onChange={(v) => update("lastJobTitle", v)}
+      <ExamplePanel
+        examples={[
+          "Currently doing a 12-month industrial placement at Rolls-Royce as part of my engineering degree",
+          "Running a part-time consulting practice while completing an MBA",
+          "Recently left the military after 8 years, looking to move into operations",
+          "Volunteer board member at a charity while figuring out my next paid step",
+          "Caregiver for an elderly parent for the last 2 years; doing some tutoring on the side",
+          "Working two part-time roles — one in retail, one as a personal trainer",
+        ]}
       />
-      <Field
-        label="Sector / what did the business do?"
-        placeholder="e.g. Big 4 audit · Logistics · D2C consumer brand"
-        value={answers.lastJobSector ?? ""}
-        onChange={(v) => update("lastJobSector", v)}
+      <textarea
+        value={answers.otherSituation ?? ""}
+        onChange={(e) => update("otherSituation", e.target.value)}
+        placeholder="Describe your current situation in your own words..."
+        rows={4}
+        className="w-full text-sm border border-slate-200 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 resize-none leading-relaxed"
       />
-      {answers.stage === "returner" && (
-        <Field
-          label="How long has it been since you last worked?"
-          placeholder="e.g. 18 months · 2 years"
-          value={answers.timeOut ?? ""}
-          onChange={(v) => update("timeOut", v)}
-        />
-      )}
     </div>
   );
 }
@@ -392,22 +554,39 @@ function Step3Achievement({
     <div className="space-y-4">
       <div>
         <h3 className="font-semibold text-slate-900 text-base">
-          Tell me about something you built, fixed, designed, or improved
+          Tell me about something significant — built, fixed, designed, won, or learned
         </h3>
         <p className="text-xs text-slate-500 mt-1">
-          One specific thing — the more concrete the better. Don&apos;t be modest.
+          One specific thing. Could be at work, in your studies, in a side project, in voluntary work,
+          or while running your own business. Don&apos;t be modest — anything counts.
         </p>
       </div>
       <ExamplePanel
         examples={[
+          // Working
           "Built a supplier tracker that recovered £40k in refunds on damaged stock",
           "Shipped a checkout redesign that lifted conversion by 14%",
-          "Switched courier provider after analysing performance data, cut delivery costs",
-          "Set up an automated reporting pipeline that replaced 6 hours of manual work",
-          "Designed and ran a new student-induction programme adopted across 4 schools",
-          "Spotted a billing error and recovered £20k in overcharges",
-          "Negotiated supplier MOQ reductions across 4 vendors, freeing £40k of working capital",
+          // Self-employed
+          "Took a freelance design business from 0 to 12 retainer clients in 18 months",
+          "Negotiated my way onto a £200k consulting framework as a sole-trader competing against agencies",
+          // Founder
+          "Bootstrapped my D2C skincare business to £400k revenue in year 2",
+          "Hired my first 3 employees and set up the operating cadence as the technical co-founder",
+          // Student
+          "Led a 6-person student team to win a £10k national entrepreneurship competition",
+          "Final-year project on supply-chain optimisation adopted by my placement employer",
+          // Apprentice / placement
+          "On placement at PwC, contributed to FTSE-250 audit engagements during reporting season",
+          "Led the apprentice cohort&apos;s charity drive, raising £4k across the year",
+          // Between jobs
+          "In my last role, switched courier providers after analysing performance, cut costs 18%",
+          // Returner
+          "While caring for my parent, set up and ran a small online tutoring practice",
+          "During my career break, completed a Google Data Analytics certification",
+          // General
+          "Set up an automated reporting pipeline that replaced 6 hours of manual work each week",
           "Trained a new team of 5 hires, shortening onboarding from 3 months to 4 weeks",
+          "Volunteered as STEM mentor for 2 years; 4 of my mentees got into Russell Group universities",
         ]}
       />
       <textarea

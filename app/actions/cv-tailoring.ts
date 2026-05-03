@@ -148,6 +148,89 @@ export async function tailorMasterProfile(input: {
   });
 }
 
+// ── Profile Builder prefill — wizard reads this to populate fields/suggestions ──
+export interface ProfileBuilderPrefill {
+  currentJobTitle: string | null;
+  currentCompany: string | null;
+  currentSector: string | null;
+  recentEmployers: Array<{ company: string; title: string; isCurrent: boolean }>;
+  existingSkills: Array<{ id: string; text: string }>;
+  educationSummary: string | null;
+  distinctiveCandidates: string[]; // Skills containing sole/founding/only language
+  fullName: string | null;
+  headline: string | null;
+}
+
+export async function getProfileBuilderPrefill(): Promise<ProfileBuilderPrefill> {
+  const empty: ProfileBuilderPrefill = {
+    currentJobTitle: null,
+    currentCompany: null,
+    currentSector: null,
+    recentEmployers: [],
+    existingSkills: [],
+    educationSummary: null,
+    distinctiveCandidates: [],
+    fullName: null,
+    headline: null,
+  };
+
+  try {
+    const { userId } = await auth();
+    if (!userId) return empty;
+
+    const supabase = await createServerSupabaseClient();
+    const [profileRes, employersRes, skillsRes] = await Promise.all([
+      supabase.from("user_profile").select("full_name, headline").eq("user_id", userId).maybeSingle(),
+      supabase
+        .from("user_employers")
+        .select("company_name, role_title, is_current, end_date, start_date")
+        .eq("user_id", userId)
+        .order("is_current", { ascending: false })
+        .order("end_date", { ascending: false, nullsFirst: true })
+        .order("start_date", { ascending: false })
+        .limit(5),
+      supabase
+        .from("user_skills")
+        .select("id, raw_text, polished_text")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(15),
+    ]);
+
+    const employers = employersRes.data ?? [];
+    const skills = skillsRes.data ?? [];
+    const profile = profileRes.data ?? null;
+
+    const currentEmp = employers.find((e) => e.is_current) ?? null;
+    const distinctiveRegex = /\b(?:sole|only|founding|first[- ]hire|first[- ]ever|single[- ]handed)\b/i;
+
+    return {
+      currentJobTitle: currentEmp?.role_title ?? null,
+      currentCompany: currentEmp?.company_name ?? null,
+      currentSector: null, // user can fill if not derivable
+      recentEmployers: employers.map((e) => ({
+        company: e.company_name,
+        title: e.role_title,
+        isCurrent: !!e.is_current,
+      })),
+      existingSkills: skills.map((s) => ({
+        id: s.id,
+        text: s.polished_text || s.raw_text,
+      })),
+      educationSummary: null,
+      distinctiveCandidates: skills
+        .map((s) => s.polished_text || s.raw_text)
+        .filter((t) => distinctiveRegex.test(t))
+        .slice(0, 3),
+      fullName: profile?.full_name ?? null,
+      headline: profile?.headline ?? null,
+    };
+  } catch (e) {
+    console.error("[getProfileBuilderPrefill] error:", e);
+    return empty;
+  }
+}
+
 // ── Saved tailored CVs (linked to applications) ──────────────────────────────
 
 export interface SavedTailoredCV {

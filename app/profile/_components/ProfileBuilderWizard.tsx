@@ -1,12 +1,14 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { X, ChevronLeft, ChevronRight, Loader2, Sparkles, Lightbulb } from "lucide-react";
 import { addSkill, addEmployer } from "@/app/actions/profile";
 import {
   saveMasterProfile,
   generateMasterProfile,
+  getProfileBuilderPrefill,
+  type ProfileBuilderPrefill,
 } from "@/app/actions/cv-tailoring";
 
 type CareerStage =
@@ -74,8 +76,29 @@ export default function ProfileBuilderWizard({ onClose }: Props) {
   const [answers, setAnswers] = useState<WizardAnswers>({ stage: null });
   const [isGenerating, startGenerate] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const [prefill, setPrefill] = useState<ProfileBuilderPrefill | null>(null);
 
   const totalSteps = 6;
+
+  // Pull existing data on mount so we can pre-fill fields and surface suggestions
+  useEffect(() => {
+    getProfileBuilderPrefill().then(setPrefill).catch(() => {
+      // non-fatal
+    });
+  }, []);
+
+  // When the user picks "currently in a job" and we have existing employer data,
+  // pre-fill the title + company fields automatically.
+  useEffect(() => {
+    if (!prefill) return;
+    if (answers.stage === "working") {
+      setAnswers((a) => ({
+        ...a,
+        jobTitle: a.jobTitle ?? prefill.currentJobTitle ?? "",
+        companyOrSector: a.companyOrSector ?? prefill.currentCompany ?? "",
+      }));
+    }
+  }, [answers.stage, prefill]);
 
   function update<K extends keyof WizardAnswers>(key: K, value: WizardAnswers[K]) {
     setAnswers((a) => ({ ...a, [key]: value }));
@@ -96,7 +119,8 @@ export default function ProfileBuilderWizard({ onClose }: Props) {
         return answers.stage !== null;
       case 2:
         if (answers.stage === "working") {
-          return !!(answers.jobTitle?.trim() && answers.companyOrSector?.trim());
+          // Only job title strictly required. Company/sector is helpful but optional.
+          return !!answers.jobTitle?.trim();
         }
         if (answers.stage === "self_employed") {
           return !!(answers.freelanceDiscipline?.trim() && answers.freelanceSector?.trim());
@@ -259,9 +283,9 @@ export default function ProfileBuilderWizard({ onClose }: Props) {
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-4">
           {step === 1 && <Step1Stage answers={answers} update={update} />}
-          {step === 2 && <Step2Identity answers={answers} update={update} />}
-          {step === 3 && <Step3Achievement answers={answers} update={update} />}
-          {step === 4 && <Step4Distinctive answers={answers} update={update} />}
+          {step === 2 && <Step2Identity answers={answers} update={update} prefill={prefill} />}
+          {step === 3 && <Step3Achievement answers={answers} update={update} prefill={prefill} />}
+          {step === 4 && <Step4Distinctive answers={answers} update={update} prefill={prefill} />}
           {step === 5 && <Step5Education answers={answers} update={update} />}
           {step === 6 && <Step6Anything answers={answers} update={update} />}
         </div>
@@ -359,28 +383,33 @@ function Step1Stage({
 function Step2Identity({
   answers,
   update,
+  prefill,
 }: {
   answers: WizardAnswers;
   update: <K extends keyof WizardAnswers>(k: K, v: WizardAnswers[K]) => void;
+  prefill: ProfileBuilderPrefill | null;
 }) {
   if (answers.stage === "working") {
+    const hasPrefill = !!(prefill?.currentJobTitle || prefill?.currentCompany);
     return (
       <div className="space-y-4">
         <div>
           <h3 className="font-semibold text-slate-900 text-base">Tell me about your current role</h3>
           <p className="text-xs text-slate-500 mt-1">
-            Two short answers — your job title and what the business does.
+            {hasPrefill
+              ? "Pre-filled from your saved Work History — edit if anything's wrong."
+              : "Job title is required. Company/sector is helpful but optional."}
           </p>
         </div>
         <Field
-          label="Job title"
+          label="Job title *"
           placeholder="e.g. Supply Chain Analyst, Software Engineer, Marketing Manager"
           value={answers.jobTitle ?? ""}
           onChange={(v) => update("jobTitle", v)}
         />
         <Field
-          label="Company / what does the business do?"
-          placeholder="e.g. UK consumer goods business · B2B SaaS startup · Top-3 UK supermarket"
+          label="Company / what does the business do? (optional)"
+          placeholder="e.g. UK consumer goods business · B2B SaaS startup · Skip if you'd rather not say"
           value={answers.companyOrSector ?? ""}
           onChange={(v) => update("companyOrSector", v)}
         />
@@ -546,10 +575,18 @@ function Step2Identity({
 function Step3Achievement({
   answers,
   update,
+  prefill,
 }: {
   answers: WizardAnswers;
   update: <K extends keyof WizardAnswers>(k: K, v: WizardAnswers[K]) => void;
+  prefill: ProfileBuilderPrefill | null;
 }) {
+  const existingSkills = prefill?.existingSkills ?? [];
+  const hasExisting = existingSkills.length > 0;
+
+  // Sector-relevant fallback examples — filtered by detected role/sector keywords
+  const fallbackExamples = pickRelevantExamples(answers);
+
   return (
     <div className="space-y-4">
       <div>
@@ -557,37 +594,37 @@ function Step3Achievement({
           Tell me about something significant — built, fixed, designed, won, or learned
         </h3>
         <p className="text-xs text-slate-500 mt-1">
-          One specific thing. Could be at work, in your studies, in a side project, in voluntary work,
-          or while running your own business. Don&apos;t be modest — anything counts.
+          One specific thing. Don&apos;t be modest — anything counts.
         </p>
       </div>
+
+      {hasExisting && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3">
+          <div className="text-xs font-semibold text-blue-900 mb-2 inline-flex items-center gap-1">
+            <Lightbulb size={11} /> Your saved achievements — click any to use as starting point
+          </div>
+          <div className="space-y-1">
+            {existingSkills.slice(0, 6).map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => update("achievement", s.text)}
+                className={`block w-full text-left text-xs px-3 py-1.5 rounded-md border transition-colors ${
+                  answers.achievement === s.text
+                    ? "border-blue-400 bg-white text-blue-900"
+                    : "border-blue-100 bg-white/70 text-slate-700 hover:bg-white hover:border-blue-200"
+                }`}
+              >
+                {s.text}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <ExamplePanel
-        examples={[
-          // Working
-          "Built a supplier tracker that recovered £40k in refunds on damaged stock",
-          "Shipped a checkout redesign that lifted conversion by 14%",
-          // Self-employed
-          "Took a freelance design business from 0 to 12 retainer clients in 18 months",
-          "Negotiated my way onto a £200k consulting framework as a sole-trader competing against agencies",
-          // Founder
-          "Bootstrapped my D2C skincare business to £400k revenue in year 2",
-          "Hired my first 3 employees and set up the operating cadence as the technical co-founder",
-          // Student
-          "Led a 6-person student team to win a £10k national entrepreneurship competition",
-          "Final-year project on supply-chain optimisation adopted by my placement employer",
-          // Apprentice / placement
-          "On placement at PwC, contributed to FTSE-250 audit engagements during reporting season",
-          "Led the apprentice cohort&apos;s charity drive, raising £4k across the year",
-          // Between jobs
-          "In my last role, switched courier providers after analysing performance, cut costs 18%",
-          // Returner
-          "While caring for my parent, set up and ran a small online tutoring practice",
-          "During my career break, completed a Google Data Analytics certification",
-          // General
-          "Set up an automated reporting pipeline that replaced 6 hours of manual work each week",
-          "Trained a new team of 5 hires, shortening onboarding from 3 months to 4 weeks",
-          "Volunteered as STEM mentor for 2 years; 4 of my mentees got into Russell Group universities",
-        ]}
+        title={hasExisting ? "Other ideas (in case nothing above fits)" : "Examples for inspiration"}
+        examples={fallbackExamples}
       />
       <textarea
         value={answers.achievement ?? ""}
@@ -617,10 +654,14 @@ function Step3Achievement({
 function Step4Distinctive({
   answers,
   update,
+  prefill,
 }: {
   answers: WizardAnswers;
   update: <K extends keyof WizardAnswers>(k: K, v: WizardAnswers[K]) => void;
+  prefill: ProfileBuilderPrefill | null;
 }) {
+  const candidates = prefill?.distinctiveCandidates ?? [];
+
   return (
     <div className="space-y-4">
       <div>
@@ -631,16 +672,42 @@ function Step4Distinctive({
           Something another candidate doing your role probably wouldn&apos;t have. Skip if nothing comes to mind.
         </p>
       </div>
+
+      {candidates.length > 0 && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3">
+          <div className="text-xs font-semibold text-blue-900 mb-2 inline-flex items-center gap-1">
+            <Lightbulb size={11} /> From your saved Skills — looks like one of these might apply:
+          </div>
+          <div className="space-y-1">
+            {candidates.map((c, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => update("distinctive", c)}
+                className={`block w-full text-left text-xs px-3 py-1.5 rounded-md border transition-colors ${
+                  answers.distinctive === c
+                    ? "border-blue-400 bg-white text-blue-900"
+                    : "border-blue-100 bg-white/70 text-slate-700 hover:bg-white hover:border-blue-200"
+                }`}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <ExamplePanel
+        title={candidates.length > 0 ? "Other angles to consider" : "Examples"}
         examples={[
-          "I&apos;m the only person doing this role at the company",
+          "I'm the only person doing this role at the company",
           "I built the function from scratch when there was nothing",
           "I report directly to the CEO / CFO",
-          "I&apos;m part of a 3-person founding team",
-          "I&apos;m the most senior X in my office",
+          "I'm part of a 3-person founding team",
+          "I'm the most senior X in my office",
           "I work across both [function A] and [function B]",
-          "I&apos;ve been promoted twice in 18 months",
-          "I&apos;m the only graduate in a team of 10 senior people",
+          "I've been promoted twice in 18 months",
+          "I'm the only graduate in a team of 10 senior people",
         ]}
       />
       <textarea
@@ -773,7 +840,7 @@ function Field({
   );
 }
 
-function ExamplePanel({ examples }: { examples: string[] }) {
+function ExamplePanel({ examples, title }: { examples: string[]; title?: string }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="text-xs">
@@ -781,15 +848,81 @@ function ExamplePanel({ examples }: { examples: string[] }) {
         onClick={() => setOpen((v) => !v)}
         className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium"
       >
-        <Lightbulb size={11} /> {open ? "Hide examples" : "Show examples"}
+        <Lightbulb size={11} /> {open ? `Hide ${title ?? "examples"}` : title ?? "Show examples"}
       </button>
       {open && (
         <ul className="mt-2 space-y-1 list-disc pl-5 text-slate-600">
           {examples.map((e, i) => (
-            <li key={i} dangerouslySetInnerHTML={{ __html: e }} />
+            <li key={i}>{e}</li>
           ))}
         </ul>
       )}
     </div>
   );
+}
+
+// Filter the example pool to ones relevant to the user's stated role/sector,
+// so they see 4-5 close matches rather than 16 strangers' achievements.
+function pickRelevantExamples(answers: WizardAnswers): string[] {
+  const role = (answers.jobTitle ?? answers.lastJobTitle ?? "").toLowerCase();
+  const company = (
+    answers.companyOrSector ??
+    answers.lastJobSector ??
+    answers.freelanceSector ??
+    answers.businessDoes ??
+    ""
+  ).toLowerCase();
+  const blob = `${role} ${company}`;
+
+  // Pool keyed by sector/role tag
+  const pool: Array<{ tags: string[]; example: string }> = [
+    // Supply chain / procurement / operations
+    { tags: ["supply", "procurement", "ops", "logistics", "operations", "buyer", "warehouse"], example: "Built a supplier scorecard from scratch that recovered £40k in refunds on damaged stock" },
+    { tags: ["supply", "procurement", "ops", "logistics"], example: "Switched courier provider after analysing performance data, cut delivery costs 18%" },
+    { tags: ["procurement", "buyer", "category"], example: "Negotiated supplier MOQ reductions across 4 vendors, freeing £40k of working capital" },
+    // Finance / banking
+    { tags: ["finance", "audit", "banking", "investment", "accounting"], example: "Rebuilt the month-end reconciliation pipeline, cutting close cycle from 9 to 4 days" },
+    { tags: ["finance", "audit", "investment"], example: "Modelled a £1.2bn carve-out used in the IC paper; deal closed +12% to bid" },
+    // Tech / engineering
+    { tags: ["engineer", "developer", "swe", "software", "devops", "data"], example: "Shipped the user-facing checkout for a 1.4M-user fintech, sub-200ms at 3x peak" },
+    { tags: ["engineer", "developer", "data"], example: "Migrated the data pipeline to Snowflake, cutting daily run from 4h to 22min" },
+    // Marketing / brand
+    { tags: ["marketing", "brand", "content", "comms", "social"], example: "Ran the 2024 flagship campaign across UK and Ireland, lifting brand-aided recall 18 points" },
+    { tags: ["marketing", "growth", "performance"], example: "Drove paid-acquisition CAC down 32% by restructuring the keyword strategy" },
+    // Consulting / strategy
+    { tags: ["consult", "strategy", "advisory"], example: "Led a £1.8m diligence workstream for a PE buy-side, deal closed to plan" },
+    // Sales
+    { tags: ["sales", "bd", "account", "client"], example: "Closed £450k of net-new ARR in my first 12 months, 140% of quota" },
+    // HR / people
+    { tags: ["hr", "people", "talent", "recruit"], example: "Rolled out a new performance-review framework to 240 employees in 8 weeks" },
+    // Healthcare / clinical
+    { tags: ["nurse", "clinical", "doctor", "health", "care", "nhs"], example: "Designed a triage protocol that cut average waiting time on shift from 90 to 45 minutes" },
+    // Education / teaching
+    { tags: ["teach", "education", "tutor", "lecturer", "academic"], example: "Designed a new key-stage curriculum module adopted across 4 partner schools" },
+    // Retail / hospitality / customer service
+    { tags: ["retail", "store", "hospitality", "customer", "service"], example: "Rebalanced the rota at peak, lifting Saturday revenue 18% across 12 weeks" },
+    // Trades / construction
+    { tags: ["construction", "site", "project manager", "trade", "engineer"], example: "Brought a £1.2m fit-out in 6% under budget by switching one supplier mid-project" },
+    // Founder / self-employed
+    { tags: ["founder", "owner", "self-employed", "freelance", "director"], example: "Bootstrapped my D2C business to £400k revenue in year 2 with no outside funding" },
+    // Creative / design
+    { tags: ["design", "creative", "ux", "ui", "art"], example: "Redesigned the onboarding flow, lifting D7 retention from 22% to 38%" },
+    // Generic strong fallbacks
+    { tags: ["*"], example: "Set up an automated reporting pipeline that replaced 6 hours of manual work each week" },
+    { tags: ["*"], example: "Spotted a recurring billing error and recovered £20k in overcharges" },
+    { tags: ["*"], example: "Trained a new team of 5, shortening onboarding from 3 months to 4 weeks" },
+  ];
+
+  const matched = pool.filter((p) => p.tags.some((t) => t === "*" || blob.includes(t))).map((p) => p.example);
+  // Dedupe + cap to 5
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const e of matched) {
+    if (!seen.has(e)) {
+      seen.add(e);
+      out.push(e);
+      if (out.length >= 5) break;
+    }
+  }
+  return out.length > 0 ? out : pool.filter((p) => p.tags.includes("*")).map((p) => p.example).slice(0, 4);
 }

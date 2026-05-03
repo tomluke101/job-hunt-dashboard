@@ -861,6 +861,106 @@ function scanProfileOutcomeSignal(cv: TailoredCV): BannedHit[] {
   return hits;
 }
 
+// 13. SCOPE-ANCHOR-LEAK — growth multiples, currency-amounts, percentages,
+// count+noun signals must appear in S2 only, NEVER in S1. S1 is for role +
+// work scope; the scale signal is the centrepiece of S2.
+const SCOPE_ANCHOR_LEAK_PATTERNS = [
+  /\b\d+x\s+(?:revenue|growth|scale|users|throughput)\b/i,
+  /\b(?:doubled?|tripled?|halved?|quadrupled?)\b/i,
+  /\b(?:£|\$|€)\s?\d/i,
+  /\b\d+(?:\.\d+)?\s?(?:million|billion|m|bn|k|%)\b/i,
+  /\bduring\s+(?:a\s+)?period\s+of\s+\d/i,
+  /\bduring\s+(?:a\s+)?period\s+of\s+\d+x\b/i,
+  /\bthrough\s+(?:a\s+)?period\s+of\s+\d+x\b/i,
+];
+function scanProfileScopeAnchorLeak(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  const sentences = splitSentences(cv.summary);
+  if (sentences.length === 0) return hits;
+  const s1 = sentences[0];
+  for (const re of SCOPE_ANCHOR_LEAK_PATTERNS) {
+    if (re.test(s1)) {
+      hits.push({
+        section: "Profile",
+        phrase: `S1 contains a scope anchor (growth multiple / £-figure / %-amount / "during a period of Nx ..."). The scope anchor must live in S2 only — remove it from S1 and lead S1 with role + work scope only.`,
+      });
+      break;
+    }
+  }
+  return hits;
+}
+
+// 14. STRONG-S2-NUMBER — frequency adverbs alone ("weekly", "daily") are NOT
+// sufficient as the S2 scope anchor. S2 must contain a substantial number/scale
+// signal: digit+unit, currency, growth multiple, count of named entities, or
+// before/after delta.
+const SUBSTANTIAL_S2_NUMBER = [
+  /\b\d+x\b/i,
+  /\b(?:£|\$|€)\s?\d/,
+  /\b\d+(?:\.\d+)?\s?(?:million|billion|m|bn|k|%)\b/i,
+  /\b(?:doubled?|tripled?|halved?|quadrupled?)\b/i,
+  /\bfrom\s+\d.*\bto\s+\d/i,
+  /\bacross\s+\d+\s+(?:countries|markets|regions|sites|locations|distribution\s+centres|stores|teams|suppliers|vendors|clients|customers|product\s+lines|categories)\b/i,
+  /\b(?:cut|saved|recovered|reduced|grew|increased|raised)\s+(?:by|from|to|on)?\s*(?:£|\$|€)?\s?\d/i,
+  /\b(?:revenue|spend|book|portfolio|category)\s+(?:growth|of)\b/i,
+  /\b(?:scaled|grew|expanded)\s+(?:to|through|by)\s+\d/i,
+  /\b\d+\s+(?:overseas|global|UK|EU|US|EMEA|APAC)?\s*(?:countries|markets|sites|teams|suppliers|vendors|clients|customers|product\s+lines)\b/i,
+];
+function scanProfileSubstantialS2Number(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  const sentences = splitSentences(cv.summary);
+  if (sentences.length < 2) return hits;
+  const s2 = sentences[1];
+  for (const re of SUBSTANTIAL_S2_NUMBER) {
+    if (re.test(s2)) return hits; // pass — has a substantial scale signal
+  }
+  hits.push({
+    section: "Profile",
+    phrase: `S2 has no substantial scope anchor (only frequency adverbs like "weekly" don't count). S2 must contain a real scale signal: growth multiple ("Nx"), £/$/€-figure, %-amount, named count of entities ("12 overseas suppliers"), or before/after delta.`,
+  });
+  return hits;
+}
+
+// 15. S3 REPORTING-FILLER — "reporting to directors" / "weekly reports" alone
+// in S3 is filler. Must be PAIRED with a specific named system or concrete
+// scope detail (e.g. "purchase-order through to delivery", "via the supplier
+// scorecard built from scratch").
+function scanProfileS3ReportingFiller(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  const sentences = splitSentences(cv.summary);
+  if (sentences.length < 3) return hits;
+  const s3 = sentences[2];
+  const hasReporting = /\b(?:reporting|reports?\s+(?:to|on|directly))\b/i.test(s3);
+  if (!hasReporting) return hits;
+  // If reporting appears, check for a paired specific anchor in S3.
+  let hasPairedSpecific = false;
+  for (const re of SPECIFICITY_HINTS) {
+    if (re.test(s3)) {
+      hasPairedSpecific = true;
+      break;
+    }
+  }
+  // Also accept concrete scope detail patterns ("from X through to Y", "across N suppliers", named function breadth)
+  if (
+    /\bfrom\s+(?:purchase[- ]order|order|onboarding|design|sourcing|input)\s+through\s+to\b/i.test(s3) ||
+    /\bend[- ]to[- ]end\s+(?:procurement|design|delivery|operations)\b/i.test(s3) ||
+    /\bacross\s+\d+\b/i.test(s3) ||
+    /\bfunction\s+from\s+/i.test(s3)
+  ) {
+    hasPairedSpecific = true;
+  }
+  if (!hasPairedSpecific) {
+    hits.push({
+      section: "Profile",
+      phrase: `S3 contains a reporting claim ("reporting to directors" / "reports to") without a paired specific anchor. Reporting cadence alone is filler — pair it with a named system, named scope detail, or concrete function breadth (e.g. "owning the function from purchase-order through to delivery", "via the supplier scorecard built from scratch").`,
+    });
+  }
+  return hits;
+}
+
 // 11. ANCHOR-LEAK — sole/ownership claim words must appear in S3 only, not S1
 // or S2. Deterministic enforcement.
 const SOLE_OWNERSHIP_KEYWORDS = /\b(?:sole|only\s+(?:person|analyst|hire|owner|engineer|manager|specialist)|single[- ]handed|founding|first\s+hire|first[- ]ever)\b/i;
@@ -898,6 +998,9 @@ function scanProfile(cv: TailoredCV): BannedHit[] {
     ...scanProfileBrandTierEmployer(cv),
     ...scanProfileAnchorLeak(cv),
     ...scanProfileOutcomeSignal(cv),
+    ...scanProfileScopeAnchorLeak(cv),
+    ...scanProfileSubstantialS2Number(cv),
+    ...scanProfileS3ReportingFiller(cv),
   ];
 }
 
@@ -944,6 +1047,12 @@ function buildFixGuidance(flagged: BannedHit[], cv: TailoredCV): string {
       fix = "Remove the word 'sole' / 'only [role]' / 'founding' / 'first hire' from this sentence. The ownership claim moves to S3 only. Restructure the sentence around the work scope or scope anchor instead.";
     } else if (/no outcome signal/i.test(what)) {
       fix = "Add an outcome anchor in S2 or S3. From the FactBase pull a £-amount, %-improvement, count, before/after delta, or named outcome verb (recovered/saved/switched/cut/scaled/closed/shipped). Pair it with the existing capability claim so the sentence reads as 'did X, achieving outcome Y'.";
+    } else if (/scope anchor.*S2 only|S1 contains a scope anchor/i.test(what)) {
+      fix = "Remove ALL scope-anchor language from S1 — no '2x revenue', no '£X', no 'doubled', no 'during a period of...growth'. Move the scope anchor to S2 as the centrepiece. S1 must lead with role + work scope only.";
+    } else if (/no substantial scope anchor/i.test(what)) {
+      fix = "Replace the frequency word in S2 with a real scale signal from the FactBase: growth multiple (e.g. '2x revenue'), £/$/€-figure, %, named count ('12 overseas suppliers'), or before/after delta. S2 must combine this scope anchor with a specific named action.";
+    } else if (/reporting claim.*without a paired specific/i.test(what)) {
+      fix = "Pair the reporting claim with a specific anchor: a named system ('via the supplier scorecard built from scratch'), a named scope detail ('owning the function from purchase-order through to delivery'), or a named count ('across 12 overseas suppliers'). Reporting cadence alone is filler.";
     } else if (/uniform length/i.test(what) || /bullets are uniform/i.test(what)) {
       fix = "Vary bullet length: at least one short bullet (10-13 words), one medium (15-20), and one longer (22-28).";
     } else {

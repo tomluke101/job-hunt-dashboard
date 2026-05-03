@@ -1,6 +1,9 @@
+import { auth } from "@clerk/nextjs/server";
+import { createServerSupabaseClient } from "@/lib/supabase-server";
 import { callAI } from "@/lib/ai-router";
 import { getApiKeyValues } from "@/app/actions/api-keys";
 import { extractFactBase } from "./extract";
+import { tailorMasterToJD } from "./master-profile";
 import {
   AchievementFact,
   CertificationFact,
@@ -16,6 +19,24 @@ import {
   SummaryFact,
 } from "./factbase";
 import { TailoredCV, TailoredContact } from "./tailored-cv";
+
+// Load the user's saved Master Profile, if any.
+async function loadMasterProfile(): Promise<{ summary: string } | null> {
+  try {
+    const { userId } = await auth();
+    if (!userId) return null;
+    const supabase = await createServerSupabaseClient();
+    const { data } = await supabase
+      .from("user_master_profile")
+      .select("summary")
+      .eq("user_id", userId)
+      .maybeSingle();
+    return data && data.summary ? { summary: data.summary } : null;
+  } catch (e) {
+    console.error("[loadMasterProfile] error:", e);
+    return null;
+  }
+}
 
 export interface TailorInput {
   jdText: string;
@@ -69,12 +90,38 @@ export async function tailorCV(input: TailorInput): Promise<TailorResult> {
 
   const factbaseText = serialiseFactBase(fb);
 
+  // Master-aware path: if user has a saved Master Profile, tailor it to the JD
+  // and inject it as the Profile section. The AI then only generates the rest
+  // of the CV (Experience, Skills, Education) and is forbidden from rewriting
+  // the Profile.
+  let preTailoredProfile: string | null = null;
+  try {
+    const master = await loadMasterProfile();
+    if (master && master.summary?.trim()) {
+      const masterTailor = await tailorMasterToJD({
+        master: master.summary,
+        jdText: input.jdText,
+        cvId: input.cvId,
+        companyName: input.companyName,
+        roleName: input.roleName,
+        connectedProviders: keys,
+      });
+      if (masterTailor.tailored) {
+        preTailoredProfile = masterTailor.tailored;
+      }
+      if (masterTailor.warnings) warnings.push(...masterTailor.warnings);
+    }
+  } catch (e) {
+    console.error("[tailorCV] master tailor failed (continuing without):", e);
+  }
+
   const systemPrompt = buildSystemPrompt();
   const userPrompt = buildUserPrompt({
     factbaseText,
     jdText: input.jdText,
     companyName: input.companyName,
     roleName: input.roleName,
+    preTailoredProfile: preTailoredProfile ?? undefined,
   });
 
   let raw: string;
@@ -100,6 +147,12 @@ export async function tailorCV(input: TailorInput): Promise<TailorResult> {
       error: "The AI returned an output we couldn't parse. Try again.",
       warnings,
     };
+  }
+
+  // If we have a pre-tailored Profile, force it back in (in case the AI
+  // ignored the instruction and rewrote it anyway).
+  if (preTailoredProfile && parsed) {
+    parsed.summary = preTailoredProfile;
   }
 
   const sanitised = sanitiseTailoredCV(parsed, fb);
@@ -1514,22 +1567,35 @@ function buildUserPrompt(args: {
   jdText: string;
   companyName?: string;
   roleName?: string;
+  preTailoredProfile?: string;
 }): string {
-  const { factbaseText, jdText, companyName, roleName } = args;
+  const { factbaseText, jdText, companyName, roleName, preTailoredProfile } = args;
   const targetLine = [companyName && `Target company: ${companyName}`, roleName && `Target role: ${roleName}`]
     .filter(Boolean)
     .join("\n");
+
+  const profileSection = preTailoredProfile
+    ? `=== PRE-TAILORED PROFILE (MUST USE VERBATIM) ===
+The user's Master Profile has already been tailored to this JD by a separate process. Use the following text VERBATIM as the "summary" field of your output. DO NOT rewrite, edit, summarise, or alter this text in any way:
+
+${preTailoredProfile}
+
+`
+    : "";
+
   return `${targetLine ? targetLine + "\n\n" : ""}=== JOB DESCRIPTION ===
 ${jdText.trim()}
 
 === CANDIDATE FACTBASE ===
 ${factbaseText}
 
-=== TASK ===
+${profileSection}=== TASK ===
 Produce a UK-conventional, ATS-safe, JD-tailored CV using ONLY the FactBase above.
 - Pick the bullets and skills with the highest JD relevance.
 - Rewrite each chosen bullet using the XYZ formula where possible, but stay strictly within what the FactBase supports.
-- Build a 3–4 line summary that anchors on the candidate's most JD-relevant existing experience.
+${preTailoredProfile
+  ? "- The Profile (\"summary\" field) is PRE-DETERMINED above. Copy it verbatim into the output. Do not modify it."
+  : "- Build a 3–4 line summary that anchors on the candidate's most JD-relevant existing experience."}
 - Surface JD keywords naturally where evidence exists.
 - List gaps honestly.
 

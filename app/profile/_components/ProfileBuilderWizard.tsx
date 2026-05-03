@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition, useEffect } from "react";
+import { useState, useEffect, useTransition } from "react";
 import { X, ChevronLeft, ChevronRight, Loader2, Sparkles, Lightbulb, Search } from "lucide-react";
 import {
   getProfileBuilderPrefill,
@@ -77,7 +77,10 @@ const STAGE_LABELS: Record<CareerStage, string> = {
 export default function ProfileBuilderWizard({ onClose, onSubmit }: Props) {
   const [step, setStep] = useState(1);
   const [answers, setAnswers] = useState<WizardAnswers>({ stage: null });
-  const [isGenerating, startGenerate] = useTransition();
+  // Plain boolean instead of useTransition — useTransition's auto-batching
+  // around an awaited Promise was apparently dropping the parent's setDraft
+  // updates in earlier wizard versions. A regular bool has no magic.
+  const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [prefill, setPrefill] = useState<ProfileBuilderPrefill | null>(null);
 
@@ -160,19 +163,20 @@ export default function ProfileBuilderWizard({ onClose, onSubmit }: Props) {
   // truth-grounded context.
   async function handleFinish() {
     setError(null);
-    startGenerate(async () => {
-      try {
-        const result = await onSubmit(answers);
-        if (!result.ok) {
-          setError(result.error ?? "Failed to build Profile.");
-          return;
-        }
-        onClose();
-      } catch (e) {
-        console.error("[ProfileBuilderWizard] submit failed:", e);
-        setError(e instanceof Error ? e.message : "Failed to build Profile.");
+    setIsGenerating(true);
+    try {
+      const result = await onSubmit(answers);
+      if (!result.ok) {
+        setError(result.error ?? "Failed to build Profile.");
+        return;
       }
-    });
+      onClose();
+    } catch (e) {
+      console.error("[ProfileBuilderWizard] submit failed:", e);
+      setError(e instanceof Error ? e.message : "Failed to build Profile.");
+    } finally {
+      setIsGenerating(false);
+    }
   }
 
   return (

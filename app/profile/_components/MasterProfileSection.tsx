@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Sparkles, Save, RefreshCw, Loader2, Check, AlertCircle, Wand2 } from "lucide-react";
 import {
   saveMasterProfile,
   generateMasterProfile,
+  getMasterProfile,
   type MasterProfile,
 } from "@/app/actions/cv-tailoring";
 import ProfileBuilderWizard, { type WizardAnswers } from "./ProfileBuilderWizard";
@@ -66,14 +67,21 @@ export default function MasterProfileSection({ initial }: Props) {
         if (result.summary) {
           // Persist immediately so a refresh won't lose it.
           await saveMasterProfile({ summary: result.summary, source: "generated" });
-          setDraft(result.summary);
-          setMaster({
-            user_id: master?.user_id ?? "",
-            summary: result.summary,
-            source: "generated",
-            factbase_hash: master?.factbase_hash ?? null,
-            updated_at: new Date().toISOString(),
-          });
+          // Re-fetch from server — canonical source.
+          const fresh = await getMasterProfile();
+          if (fresh?.summary) {
+            setDraft(fresh.summary);
+            setMaster(fresh);
+          } else {
+            setDraft(result.summary);
+            setMaster({
+              user_id: master?.user_id ?? "",
+              summary: result.summary,
+              source: "generated",
+              factbase_hash: master?.factbase_hash ?? null,
+              updated_at: new Date().toISOString(),
+            });
+          }
           if (result.warnings) setWarnings(result.warnings);
           router.refresh(); // best-effort sync of other parts of the page
         }
@@ -119,9 +127,6 @@ export default function MasterProfileSection({ initial }: Props) {
     setWarnings([]);
     setSavedId(false);
     const stageTimers = startStageCycle();
-    // We don't use useTransition here — the wizard is awaiting this Promise
-    // and needs the actual result. setIsGenerating is implicitly true via
-    // the stage label being non-null; the textarea overlay uses generationStage.
     try {
       const result = await generateMasterProfile({ wizardContext: answers });
       if (result.error) {
@@ -133,14 +138,25 @@ export default function MasterProfileSection({ initial }: Props) {
         return { ok: false, error: "Generation returned no Profile." };
       }
       await saveMasterProfile({ summary: result.summary, source: "generated" });
-      setDraft(result.summary);
-      setMaster({
-        user_id: master?.user_id ?? "",
-        summary: result.summary,
-        source: "generated",
-        factbase_hash: master?.factbase_hash ?? null,
-        updated_at: new Date().toISOString(),
-      });
+
+      // Re-fetch from server — server is the canonical source. This eliminates
+      // any timing/batching uncertainty about whether setDraft "took".
+      const fresh = await getMasterProfile();
+      if (fresh?.summary) {
+        setDraft(fresh.summary);
+        setMaster(fresh);
+      } else {
+        // fallback (extreme edge): use what we generated
+        setDraft(result.summary);
+        setMaster({
+          user_id: master?.user_id ?? "",
+          summary: result.summary,
+          source: "generated",
+          factbase_hash: master?.factbase_hash ?? null,
+          updated_at: new Date().toISOString(),
+        });
+      }
+
       if (result.warnings) setWarnings(result.warnings);
       setSavedId(true);
       setTimeout(() => setSavedId(false), 2500);
@@ -151,6 +167,34 @@ export default function MasterProfileSection({ initial }: Props) {
       setGenerationStage(null);
     }
   }
+
+  // Belt-and-braces backup: when the wizard closes, ensure we have the latest
+  // server-side master in local state. Even if the in-flight handleWizardSubmit
+  // somehow failed to set draft, this catches it.
+  const prevWizardOpen = useRef(false);
+  useEffect(() => {
+    if (prevWizardOpen.current && !wizardOpen) {
+      // Wizard just closed. Re-fetch from server.
+      (async () => {
+        try {
+          const fresh = await getMasterProfile();
+          if (fresh?.summary) {
+            setMaster(fresh);
+            // Only overwrite draft if it's empty or matches the previous
+            // saved value (i.e. user hasn't manually edited it post-wizard).
+            setDraft((current) => {
+              if (!current.trim()) return fresh.summary;
+              if (current === master?.summary) return fresh.summary;
+              return current;
+            });
+          }
+        } catch (e) {
+          console.error("[MasterProfileSection] post-wizard refetch failed:", e);
+        }
+      })();
+    }
+    prevWizardOpen.current = wizardOpen;
+  }, [wizardOpen, master?.summary]);
 
   return (
     <div className="space-y-3">

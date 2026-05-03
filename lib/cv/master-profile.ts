@@ -101,11 +101,13 @@ function tokensFromDescriptor(text: string): string[] {
 }
 
 function extractSectorDescriptors(s1: string): string[] {
-  // Match "at a/an/the ... NOUN" where NOUN is one of the sector descriptor nouns.
-  // Capture up to ~6 words preceding the noun.
+  // Match "at|for|with|within|inside|in|of a/an/the [adj]* NOUN" where NOUN is
+  // one of the sector descriptor nouns. Capture up to ~6 words preceding the
+  // noun. The preposition list is broad because AI substitutes "for" / "within"
+  // when "at" is banned to dodge a previous flag.
   const out: string[] = [];
   const re = new RegExp(
-    `\\bat\\s+(?:an?|the)\\s+([\\w\\- ]{2,80}?)\\b(${SECTOR_DESCRIPTOR_NOUNS.join("|")})\\b`,
+    `\\b(?:at|for|with|within|inside|in|of)\\s+(?:an?|the)\\s+([\\w\\- ]{2,80}?)\\b(${SECTOR_DESCRIPTOR_NOUNS.join("|")})\\b`,
     "gi"
   );
   let m: RegExpExecArray | null;

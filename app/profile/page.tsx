@@ -1,4 +1,4 @@
-import { User, FileText, Sparkles, Pencil, Settings2, Briefcase } from "lucide-react";
+import { User, FileText, Sparkles, Pencil, Settings2, Briefcase, Star } from "lucide-react";
 import PageHeader from "@/app/_components/PageHeader";
 import ProfileCompletion from "./_components/ProfileCompletion";
 import ConstantsForm from "./_components/ConstantsForm";
@@ -7,9 +7,11 @@ import WorkHistoryManager from "./_components/WorkHistoryManager";
 import SkillsManager from "./_components/SkillsManager";
 import WritingExamples from "./_components/WritingExamples";
 import CoverLetterPrefsForm from "./_components/CoverLetterPrefsForm";
+import MasterProfileSection from "./_components/MasterProfileSection";
 import {
   getProfile, getCVs, getSkills, getWritingExamples, getProfileCompleteness, getCoverLetterPrefs, getEmployers,
 } from "@/app/actions/profile";
+import { getMasterProfile } from "@/app/actions/cv-tailoring";
 
 function Section({ icon: Icon, title, description, children }: {
   icon: React.ElementType;
@@ -36,7 +38,7 @@ function Section({ icon: Icon, title, description, children }: {
 }
 
 export default async function ProfilePage() {
-  const [profile, cvs, skills, writingExamples, completeness, clPrefs, employers] = await Promise.all([
+  const [profile, cvs, skills, writingExamples, completeness, clPrefs, employers, masterProfile] = await Promise.all([
     getProfile(),
     getCVs(),
     getSkills(),
@@ -44,6 +46,7 @@ export default async function ProfilePage() {
     getProfileCompleteness(),
     getCoverLetterPrefs(),
     getEmployers(),
+    getMasterProfile(),
   ]);
 
   return (
@@ -86,6 +89,14 @@ export default async function ProfilePage() {
           description="Achievements and experiences beyond your CV — tag each to the right role above so the AI places them correctly"
         >
           <SkillsManager initial={skills} employers={employers} />
+        </Section>
+
+        <Section
+          icon={Star}
+          title="Master Profile"
+          description="Your canonical Profile section — generated once with AI help, edited freely, used as the base for every CV (tailored per role)"
+        >
+          <MasterProfileSection initial={masterProfile} />
         </Section>
 
         <Section

@@ -11,6 +11,11 @@ import {
   RefineInput,
   TailorResult,
 } from "@/lib/cv/tailor";
+import {
+  generateMasterProfileFromFactBase,
+  tailorMasterToJD,
+} from "@/lib/cv/master-profile";
+import { getApiKeyValues } from "@/app/actions/api-keys";
 import type { TailoredCV } from "@/lib/cv/tailored-cv";
 
 export async function getFactBase(
@@ -25,6 +30,122 @@ export async function tailorCV(input: TailorInput): Promise<TailorResult> {
 
 export async function refineTailoredCV(input: RefineInput): Promise<TailorResult> {
   return refineTailoredCVImpl(input);
+}
+
+// ── Master Profile ───────────────────────────────────────────────────────────
+//
+// The user's canonical Profile. Generated once with system help, edited freely,
+// saved permanently. Every CV generation tailors this to the specific JD.
+
+export interface MasterProfile {
+  user_id: string;
+  summary: string;
+  source: "manual" | "generated" | "edited";
+  factbase_hash: string | null;
+  updated_at: string;
+}
+
+export async function getMasterProfile(): Promise<MasterProfile | null> {
+  const { userId } = await auth();
+  if (!userId) return null;
+
+  const supabase = await createServerSupabaseClient();
+  const { data, error } = await supabase
+    .from("user_master_profile")
+    .select("*")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[getMasterProfile] error:", error);
+    return null;
+  }
+  return data as MasterProfile | null;
+}
+
+export async function saveMasterProfile(input: {
+  summary: string;
+  source?: "manual" | "generated" | "edited";
+}): Promise<{ error?: string }> {
+  try {
+    const { userId } = await auth();
+    if (!userId) return { error: "Not signed in" };
+    if (!input.summary || !input.summary.trim()) return { error: "Profile is empty" };
+
+    const supabase = await createServerSupabaseClient();
+    const { error } = await supabase
+      .from("user_master_profile")
+      .upsert(
+        {
+          user_id: userId,
+          summary: input.summary.trim(),
+          source: input.source ?? "manual",
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" }
+      );
+    if (error) {
+      console.error("[saveMasterProfile] supabase error:", error);
+      return { error: error.message };
+    }
+    revalidatePath("/profile");
+    revalidatePath("/cv");
+    return {};
+  } catch (e) {
+    console.error("[saveMasterProfile] unexpected:", e);
+    return { error: e instanceof Error ? e.message : "Failed to save." };
+  }
+}
+
+export async function deleteMasterProfile(): Promise<{ error?: string }> {
+  const { userId } = await auth();
+  if (!userId) return { error: "Not signed in" };
+  const supabase = await createServerSupabaseClient();
+  const { error } = await supabase
+    .from("user_master_profile")
+    .delete()
+    .eq("user_id", userId);
+  if (error) {
+    console.error("[deleteMasterProfile] error:", error);
+    return { error: error.message };
+  }
+  revalidatePath("/profile");
+  revalidatePath("/cv");
+  return {};
+}
+
+export async function generateMasterProfile(input: {
+  cvId?: string;
+}): Promise<{ summary?: string; warnings: string[]; error?: string }> {
+  const keys = await getApiKeyValues();
+  if (Object.keys(keys).length === 0) {
+    return { warnings: [], error: "No AI provider connected. Add an API key in Settings." };
+  }
+  return generateMasterProfileFromFactBase({
+    cvId: input.cvId,
+    connectedProviders: keys,
+  });
+}
+
+export async function tailorMasterProfile(input: {
+  master: string;
+  jdText: string;
+  cvId?: string;
+  companyName?: string;
+  roleName?: string;
+}): Promise<{ tailored?: string; warnings: string[]; error?: string }> {
+  const keys = await getApiKeyValues();
+  if (Object.keys(keys).length === 0) {
+    return { warnings: [], error: "No AI provider connected. Add an API key in Settings." };
+  }
+  return tailorMasterToJD({
+    master: input.master,
+    jdText: input.jdText,
+    cvId: input.cvId,
+    companyName: input.companyName,
+    roleName: input.roleName,
+    connectedProviders: keys,
+  });
 }
 
 // ── Saved tailored CVs (linked to applications) ──────────────────────────────

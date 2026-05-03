@@ -215,7 +215,16 @@ export default function MasterProfileSection({ initial }: Props) {
         </div>
       )}
 
-      {wizardOpen && <ProfileBuilderWizard onClose={() => setWizardOpen(false)} />}
+      {wizardOpen && (
+        <ProfileBuilderWizard
+          onClose={() => setWizardOpen(false)}
+          onComplete={(summary) => {
+            setDraft(summary);
+            setSavedId(true);
+            setTimeout(() => setSavedId(false), 2500);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -66,6 +66,11 @@ const SECTOR_DESCRIPTOR_NOUNS = [
   "society",
 ];
 
+// ONLY grammatical particles + obvious filler. Descriptive qualifiers
+// ("independent", "boutique", "leading", "growing", "established", "private",
+// "small", "European", etc.) are NOT stopwords — they are claims about the
+// employer and must be grounded in the FactBase like everything else. AI loves
+// to sneak these in as inventions.
 const SECTOR_STOPWORDS = new Set([
   "a",
   "an",
@@ -85,28 +90,6 @@ const SECTOR_STOPWORDS = new Set([
   "from",
   "this",
   "that",
-  "uk",
-  "us",
-  "eu",
-  "european",
-  "british",
-  "global",
-  "international",
-  "national",
-  "local",
-  "small",
-  "medium",
-  "large",
-  "leading",
-  "growing",
-  "established",
-  "emerging",
-  "boutique",
-  "independent",
-  "private",
-  "public",
-  "limited",
-  "ltd",
 ]);
 
 function tokensFromDescriptor(text: string): string[] {
@@ -545,6 +528,23 @@ NO SECTOR INVENTION (HARDEST RULE — TRUTH CONTRACT):
 - Same rule applies to company size, geography, funding stage, ownership structure: if the FactBase doesn't say it, you don't say it.
 
 The Master Profile (no JD context) leans on the candidate's strongest UNIVERSAL evidence — the dominant scope anchor and the most distinctive named achievement, both of which travel across applications.
+
+PROHIBITED STRUCTURES (you have produced these before — never again):
+- "during a period of Nx revenue growth" / "through a period of 2x growth" — wedges the anchor as a subordinate clause. Lead S2 with the anchor as the SUBJECT: "Scaled the supply chain through 2x revenue growth, switching logistics partners after analysing courier performance data."
+- Three actions jammed into S2 ("Scaled X and switched Y, cutting Z") — pick ONE strong action and move others to S3.
+- "Awarded a First-Class … from …" — passive CV-speak. Lead with the degree itself: "First-Class Business with Marketing BA from Birmingham City University, top of the cohort."
+- "specialising in" / "focusing on" / "dedicated to" as S1 connective tissue — fluff. State scope plainly.
+- Adjectives describing the employer that aren't in the FactBase: "independent", "boutique", "leading", "fast-growing", "established", "private". If the FactBase doesn't say it, you don't say it.
+
+CONCRETE BAD-OUTPUT EXAMPLE (this shape is FORBIDDEN — never produce anything like it):
+"Senior auditor at an independent advisory firm, specialising in assurance and reporting across a portfolio of mid-market clients. Owned audit files and drafted partner-review packs during a period of 30% portfolio growth, cutting review cycles through workpaper standardisation. Built a bespoke variance dashboard from scratch, replacing manual reconciliations and recovering missed adjustments via an automated tickmark tracker. Awarded a First-Class BSc Accounting from a Russell Group university, finishing top of the cohort."
+
+Why that example is bad: (1) "independent advisory firm" is invented if the FactBase doesn't say "independent". (2) "specialising in" is fluff. (3) "during a period of 30% portfolio growth" is a structural hedge — anchor wedged into a subordinate clause. (4) S2 jams three actions ("Owned X and drafted Y, cutting Z"). (5) S3 jams two unrelated outcomes ("replacing X and recovering Y via Z"). (6) S4 opens with passive "Awarded a".
+
+CORRECTED SHAPE (the kind of structure to aim for, not the words to copy):
+"Senior auditor at [employer], owning assurance and reporting across the firm's mid-market portfolio. Scaled the audit function through 30% portfolio growth, drafting the standardised workpaper template that cut review cycles. Sole reviewer of partner-pack quality, having built the bespoke variance dashboard now used to surface missed adjustments before sign-off. First-Class BSc Accounting from a Russell Group university, top of the cohort."
+
+(That's 4 sentences, ~70 words, scope anchor in S2 only, sole/ownership in S3 only, named built system in S3, fact close in S4. Adapt the SHAPE; do not copy the words. Use the candidate's actual data.)
 
 Return ONLY the JSON object.`;
 }

@@ -61,6 +61,10 @@ interface WizardAnswers {
 
 interface Props {
   onClose: () => void;
+  // Called with the generated Master Profile summary after the wizard finishes.
+  // Lets the parent set the textarea state directly, avoiding the router.refresh()
+  // race that left the textarea empty when the wizard closed.
+  onComplete?: (summary: string) => void;
 }
 
 const STAGE_LABELS: Record<CareerStage, string> = {
@@ -73,7 +77,7 @@ const STAGE_LABELS: Record<CareerStage, string> = {
   other: "Something else — describe my situation",
 };
 
-export default function ProfileBuilderWizard({ onClose }: Props) {
+export default function ProfileBuilderWizard({ onClose, onComplete }: Props) {
   const router = useRouter();
   const [step, setStep] = useState(1);
   const [answers, setAnswers] = useState<WizardAnswers>({ stage: null });
@@ -161,29 +165,62 @@ export default function ProfileBuilderWizard({ onClose }: Props) {
       try {
         // 1. Save wizard answers as Skills + Work History entries so the
         //    FactBase reflects them.
+        // De-dupe against existing prefill skills — if the user picked an
+        //  EXISTING saved achievement as their primary in Step 3, we don't
+        //  want to re-add it (creates duplicates in the Skills section).
+        const existingSkillTexts = new Set(
+          (prefill?.existingSkills ?? []).map((s) => s.text.trim().toLowerCase())
+        );
         const skillsToAdd: string[] = [];
+        const seenInWizard = new Set<string>();
+        const enqueueSkill = (raw: string) => {
+          const cleaned = raw.trim();
+          if (!cleaned) return;
+          const key = cleaned.toLowerCase();
+          if (existingSkillTexts.has(key)) return; // already in user's Skills
+          if (seenInWizard.has(key)) return;        // dedupe within this wizard run
+          seenInWizard.add(key);
+          skillsToAdd.push(cleaned);
+        };
 
         if (answers.achievement?.trim()) {
-          let composed = answers.achievement.trim();
-          if (answers.achievementScale?.trim()) {
-            composed += ` (scale: ${answers.achievementScale.trim()})`;
+          // Only ADD a new skill if either (a) the achievement is freshly typed
+          // (not a verbatim selection of an existing skill) OR (b) the user
+          // added meaningful scale/outcome metadata that the existing skill
+          // didn't already capture.
+          const baseAchievement = answers.achievement.trim();
+          const isExistingPick = existingSkillTexts.has(baseAchievement.toLowerCase());
+          const hasExtraScale = !!answers.achievementScale?.trim();
+          const hasExtraOutcome = !!answers.achievementOutcome?.trim();
+
+          if (!isExistingPick) {
+            // Freshly typed — save the composed version with its scale/outcome.
+            let composed = baseAchievement;
+            if (hasExtraScale) composed += ` (scale: ${answers.achievementScale!.trim()})`;
+            if (hasExtraOutcome) composed += ` — outcome: ${answers.achievementOutcome!.trim()}`;
+            enqueueSkill(composed);
+          } else if (hasExtraScale || hasExtraOutcome) {
+            // Existing skill selected, but user added scale/outcome.
+            // Save the metadata as a separate, scoped Skills row tied to that
+            // achievement so we don't lose it but also don't duplicate.
+            const meta: string[] = [];
+            if (hasExtraScale) meta.push(`scale ${answers.achievementScale!.trim()}`);
+            if (hasExtraOutcome) meta.push(`outcome ${answers.achievementOutcome!.trim()}`);
+            enqueueSkill(`Context for "${baseAchievement.slice(0, 80)}${baseAchievement.length > 80 ? "…" : ""}": ${meta.join("; ")}`);
           }
-          if (answers.achievementOutcome?.trim()) {
-            composed += ` — outcome: ${answers.achievementOutcome.trim()}`;
-          }
-          skillsToAdd.push(composed);
+          // else: existing skill picked with no new metadata → don't re-add.
         }
         if (answers.distinctive?.trim()) {
-          skillsToAdd.push(`Distinctive context: ${answers.distinctive.trim()}`);
+          enqueueSkill(`Distinctive context: ${answers.distinctive.trim()}`);
         }
         if (answers.anythingElse?.trim()) {
-          skillsToAdd.push(answers.anythingElse.trim());
+          enqueueSkill(answers.anythingElse.trim());
         }
         if (answers.educationToInclude?.trim()) {
-          skillsToAdd.push(`Education: ${answers.educationToInclude.trim()}`);
+          enqueueSkill(`Education: ${answers.educationToInclude.trim()}`);
         }
         if (answers.stage === "other" && answers.otherSituation?.trim()) {
-          skillsToAdd.push(`Current situation: ${answers.otherSituation.trim()}`);
+          enqueueSkill(`Current situation: ${answers.otherSituation.trim()}`);
         }
 
         for (const s of skillsToAdd) {
@@ -248,6 +285,10 @@ export default function ProfileBuilderWizard({ onClose }: Props) {
             summary: result.summary,
             source: "generated",
           });
+          // Hand the fresh summary to the parent FIRST so the textarea
+          // populates immediately. router.refresh() updates the saved-time
+          // metadata async — it's no longer load-bearing for the textarea.
+          onComplete?.(result.summary);
         }
 
         router.refresh();

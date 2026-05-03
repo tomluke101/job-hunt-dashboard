@@ -1036,6 +1036,117 @@ function scanProfileAnchorLeak(cv: TailoredCV): BannedHit[] {
   return hits;
 }
 
+// 16. STRUCTURAL HEDGE — "during a period of …" wedges the scope anchor into
+// a subordinate clause instead of leading S2 with it. Reads as AI fluff. Same
+// for "through a period of", "in a period of", "amid a period of". The anchor
+// should be the SUBJECT of the verb, not a temporal qualifier on a different verb.
+const STRUCTURAL_HEDGE_PATTERNS = [
+  /\b(?:during|through|in|amid|across|over)\s+(?:a\s+)?period\s+of\b/i,
+];
+function scanProfileStructuralHedge(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  for (const re of STRUCTURAL_HEDGE_PATTERNS) {
+    const m = cv.summary.match(re);
+    if (m) {
+      hits.push({
+        section: "Profile",
+        phrase: `Profile contains a structural hedge ("${m[0]}"). This wedges the scope anchor into a subordinate clause instead of leading S2 with it. Lead S2 with the anchor as the subject — "Scaled the function through 2x revenue growth" not "Switched logistics partners during a period of 2x revenue growth".`,
+      });
+      break;
+    }
+  }
+  return hits;
+}
+
+// 17. MULTI-ACTION JAM — S2 should pair ONE scope anchor with ONE specific
+// named action. Jamming three actions ("Scaled X and switched Y, cutting Z")
+// muddles the message. Count past-tense action verbs in S2; if more than 2,
+// flag.
+const PAST_TENSE_ACTION_VERBS = [
+  "built",
+  "designed",
+  "launched",
+  "delivered",
+  "shipped",
+  "scaled",
+  "switched",
+  "cut",
+  "saved",
+  "recovered",
+  "negotiated",
+  "rebuilt",
+  "rolled",
+  "led",
+  "ran",
+  "owned",
+  "absorbed",
+  "consolidated",
+  "halved",
+  "doubled",
+  "tripled",
+  "modelled",
+  "rebalanced",
+  "drove",
+  "spun",
+  "transformed",
+  "automated",
+  "streamlined",
+  "drafted",
+  "closed",
+  "won",
+];
+function scanProfileMultiActionJam(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  const sentences = splitSentences(cv.summary);
+  if (sentences.length < 2) return hits;
+  const s2 = sentences[1].toLowerCase();
+  let actionCount = 0;
+  const seen = new Set<string>();
+  for (const v of PAST_TENSE_ACTION_VERBS) {
+    const re = new RegExp(`\\b${v}\\b`, "g");
+    if (re.test(s2) && !seen.has(v)) {
+      seen.add(v);
+      actionCount += 1;
+    }
+  }
+  // Also count gerund-form actions (cutting, building, recovering) as half-points.
+  const gerundCount = (s2.match(/\b(?:cutting|building|switching|scaling|recovering|saving|delivering|shipping|launching|negotiating|driving|rolling|consolidating|automating|streamlining)\b/g) ?? []).length;
+  const total = actionCount + gerundCount;
+  if (total > 2) {
+    hits.push({
+      section: "Profile",
+      phrase: `S2 contains ${total} action verbs jammed into one sentence — muddles the message. S2 must pair ONE scope anchor with ONE specific named action. Pick the strongest action and drop the others (move them to S3 or to bullets).`,
+    });
+  }
+  return hits;
+}
+
+// 18. PASSIVE-AWARDED CLOSE — "Awarded a [degree] from [uni]" reads as passive
+// CV-speak. Strong fact closes lead with the degree itself: "First-Class BSc
+// Economics from LSE". Same for "Holds a..." which is third-person verb.
+function scanProfileAwardedClose(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  const sentences = splitSentences(cv.summary);
+  if (sentences.length === 0) return hits;
+  const last = sentences[sentences.length - 1];
+  if (/^awarded\s+a/i.test(last)) {
+    hits.push({
+      section: "Profile",
+      phrase: `Final sentence opens with "Awarded a ..." — passive CV-speak. Lead with the degree itself: "First-Class BSc Economics from LSE, top of the cohort" not "Awarded a First-Class BSc Economics...".`,
+    });
+  }
+  if (/^holds\s+a/i.test(last)) {
+    hits.push({
+      section: "Profile",
+      phrase: `Final sentence opens with "Holds a ..." — third-person verb (banned). Lead with the degree itself: "First-Class BSc Economics from LSE".`,
+    });
+  }
+  return hits;
+}
+
 export function scanProfile(cv: TailoredCV): BannedHit[] {
   return [
     ...scanProfileLength(cv),
@@ -1053,6 +1164,9 @@ export function scanProfile(cv: TailoredCV): BannedHit[] {
     ...scanProfileScopeAnchorLeak(cv),
     ...scanProfileSubstantialS2Number(cv),
     ...scanProfileS3Strength(cv),
+    ...scanProfileStructuralHedge(cv),
+    ...scanProfileMultiActionJam(cv),
+    ...scanProfileAwardedClose(cv),
   ];
 }
 
@@ -1109,6 +1223,12 @@ export function buildFixGuidance(flagged: BannedHit[], cv: TailoredCV): string {
       fix = "Vary bullet length: at least one short bullet (10-13 words), one medium (15-20), and one longer (22-28).";
     } else if (/invented sector descriptor/i.test(what)) {
       fix = "DELETE the sector descriptor from S1 entirely. Do NOT replace it with another descriptor. S1 must lead with role + work scope only — e.g. 'Supply Chain Analyst working across procurement and supplier performance to keep operations running efficiently.' If you absolutely cannot avoid mentioning the employer's nature, use ONLY language that already appears verbatim in the FactBase.";
+    } else if (/structural hedge/i.test(what)) {
+      fix = "Rewrite the sentence so the scope anchor IS the subject of the verb, not a temporal qualifier. NOT: 'Switched logistics partners during a period of 2x revenue growth'. YES: 'Scaled the supply chain through 2x revenue growth, switching logistics partners after analysing courier performance data'. The anchor leads, the action follows.";
+    } else if (/jammed into one sentence|action verbs jammed/i.test(what)) {
+      fix = "Rewrite S2 to pair ONE scope anchor with ONE specific named action. Pick the strongest action verb and drop the others. If you have a second high-value action, move it to S3 — don't stuff it into S2. Reads cleaner with one strong claim than three muddled ones.";
+    } else if (/passive CV-speak|Awarded a|Holds a/i.test(what)) {
+      fix = "Rewrite the close to LEAD with the degree itself — 'First-Class BSc Economics from LSE, top of the cohort' — not 'Awarded a...' or 'Holds a...'. The qualification is the subject; no introducer verb needed.";
     } else {
       fix = "Rewrite to follow the system prompt rules.";
     }

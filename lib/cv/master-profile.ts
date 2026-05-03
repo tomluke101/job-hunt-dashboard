@@ -8,8 +8,153 @@ import { callAI } from "@/lib/ai-router";
 import type { Provider } from "@/lib/ai-providers";
 import { extractFactBase } from "./extract";
 import { factsOfKind, type FactBase } from "./factbase";
-import { scanProfile, buildFixGuidance } from "./tailor";
+import { scanProfile, buildFixGuidance, type BannedHit } from "./tailor";
 import type { TailoredCV } from "./tailored-cv";
+
+// ── Sector-invention scanner (Master-only, FactBase-aware) ────────────────────
+//
+// AI tends to invent grounding details for Sentence 1 ("at an independent e-commerce
+// retailer", "at a fast-growing consumer brand") when the FactBase doesn't actually
+// say what sector the candidate works in. This is a TRUTH CONTRACT violation.
+// The scanner extracts the descriptor that follows "at a/an/the ..." in S1 and
+// verifies every meaningful token appears somewhere in the FactBase text.
+
+const SECTOR_DESCRIPTOR_NOUNS = [
+  "retailer",
+  "wholesaler",
+  "distributor",
+  "manufacturer",
+  "consultancy",
+  "consultant",
+  "business",
+  "company",
+  "firm",
+  "brand",
+  "startup",
+  "scaleup",
+  "agency",
+  "provider",
+  "organisation",
+  "organization",
+  "charity",
+  "operator",
+  "broker",
+  "dealer",
+  "practice",
+  "outfit",
+  "venture",
+  "enterprise",
+  "group",
+  "platform",
+  "marketplace",
+  "publisher",
+  "studio",
+  "workshop",
+  "lab",
+  "institute",
+  "chain",
+  "specialist",
+  "operator",
+  "developer",
+  "supplier",
+  "vendor",
+  "merchant",
+  "retail",
+  "bank",
+  "fund",
+  "trust",
+  "society",
+];
+
+const SECTOR_STOPWORDS = new Set([
+  "a",
+  "an",
+  "the",
+  "at",
+  "in",
+  "on",
+  "of",
+  "for",
+  "with",
+  "and",
+  "or",
+  "to",
+  "as",
+  "is",
+  "by",
+  "from",
+  "this",
+  "that",
+  "uk",
+  "us",
+  "eu",
+  "european",
+  "british",
+  "global",
+  "international",
+  "national",
+  "local",
+  "small",
+  "medium",
+  "large",
+  "leading",
+  "growing",
+  "established",
+  "emerging",
+  "boutique",
+  "independent",
+  "private",
+  "public",
+  "limited",
+  "ltd",
+]);
+
+function tokensFromDescriptor(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9 -]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length >= 3 && !SECTOR_STOPWORDS.has(t));
+}
+
+function extractSectorDescriptors(s1: string): string[] {
+  // Match "at a/an/the ... NOUN" where NOUN is one of the sector descriptor nouns.
+  // Capture up to ~6 words preceding the noun.
+  const out: string[] = [];
+  const re = new RegExp(
+    `\\bat\\s+(?:an?|the)\\s+([\\w\\- ]{2,80}?)\\b(${SECTOR_DESCRIPTOR_NOUNS.join("|")})\\b`,
+    "gi"
+  );
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s1)) !== null) {
+    out.push(`${m[1].trim()} ${m[2]}`.trim());
+  }
+  return out;
+}
+
+export function scanProfileSectorInvention(args: {
+  summary: string;
+  factbaseText: string;
+}): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!args.summary) return hits;
+  const firstSentence = args.summary.split(/(?<=[.!?])\s+/)[0] ?? "";
+  const descriptors = extractSectorDescriptors(firstSentence);
+  if (descriptors.length === 0) return hits;
+  const fbLower = args.factbaseText.toLowerCase();
+  for (const d of descriptors) {
+    const tokens = tokensFromDescriptor(d);
+    if (tokens.length === 0) continue;
+    const ungrounded = tokens.filter((t) => !fbLower.includes(t));
+    if (ungrounded.length > 0) {
+      hits.push({
+        section: "Profile",
+        phrase: `S1 contains an invented sector descriptor "${d}" — the words [${ungrounded.join(", ")}] do not appear anywhere in the FactBase. Either remove the descriptor entirely (lead S1 with role + work scope only) or replace it with sector language that IS in the FactBase.`,
+      });
+    }
+  }
+  return hits;
+}
 
 export interface MasterProfileGenerationResult {
   summary?: string;
@@ -226,7 +371,10 @@ async function runProfileScannersAndRewrite(args: {
   let current = summary;
   for (let attempt = 0; attempt < 2; attempt++) {
     const stub = buildStub(current);
-    const flagged = scanProfile(stub);
+    const flagged = [
+      ...scanProfile(stub),
+      ...scanProfileSectorInvention({ summary: current, factbaseText }),
+    ];
     if (flagged.length === 0) return current;
 
     const fixGuidance = buildFixGuidance(flagged, stub);
@@ -388,6 +536,13 @@ BANNED VOCABULARY: spearhead, leverage, orchestrate, championed, drove, pioneere
 TRUTH CONTRACT: every claim must trace to the FactBase. No inventing metrics, scopes, tools, brands.
 
 IDENTITY ANCHORING (HARD): the Master Profile must lead with the candidate's CURRENT professional identity (most recent role / current employer's sector). NEVER mash up current and previous role titles into one identity claim ("Supply Chain Analyst and Project Coordinator" is BANNED — pick the current role only). NEVER blend sectors from current + previous employers into one statement ("e-commerce and enterprise software" when only the previous job was enterprise software is BANNED — use the current sector only). Previous roles belong in the Experience section of the CV, not the Profile.
+
+NO SECTOR INVENTION (HARDEST RULE — TRUTH CONTRACT):
+- If the FactBase does NOT explicitly state the candidate's employer's sector or industry, do NOT invent one.
+- Specifically banned: "independent e-commerce retailer", "fast-growing startup", "established consumer brand", "boutique consultancy", "leading SME", or any other descriptor of the employer that is not in the FactBase.
+- If sector is unknown, lead S1 with role + work scope only — e.g. "Supply Chain Analyst working across procurement and supplier performance to keep operations running efficiently." NO sector clause.
+- If the FactBase says "Self-employed (D2C skincare)" the sector IS "D2C skincare" — that's allowed. If it just says a company name with no sector, the sector is UNKNOWN — omit it.
+- Same rule applies to company size, geography, funding stage, ownership structure: if the FactBase doesn't say it, you don't say it.
 
 The Master Profile (no JD context) leans on the candidate's strongest UNIVERSAL evidence — the dominant scope anchor and the most distinctive named achievement, both of which travel across applications.
 

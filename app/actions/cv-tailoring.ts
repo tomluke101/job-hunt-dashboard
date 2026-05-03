@@ -203,24 +203,36 @@ export async function suggestDistinctiveAngles(input: {
 
   const systemPrompt = `You help job-seekers identify what makes their situation distinctive — i.e. what would another candidate doing their same role NOT have. Read the user's role context and saved skills/achievements. Return 3-5 specific, evidence-grounded distinctive claims they could make.
 
-EACH suggestion must be:
-- Grounded in the user's actual data (no inventions)
-- Specific (not "you have lots of experience")
-- Distinctive (not "you do procurement" — every candidate at that role does)
-- One short sentence, written as the user would say it ("I'm the only person in this role" / "I built the function from scratch with the company director" / "I report directly to senior leadership")
-- Implied first person (no "I am", lead with the action or status)
+These suggestions are pasted directly into the candidate's CV Profile. They must therefore follow ALL the same Profile rules:
+
+EACH suggestion must:
+- Be grounded in the user's actual data — never invent metrics, employers, sectors, scopes, or credentials. If the data doesn't say it, you don't say it.
+- Be specific (not "you have lots of experience").
+- Be distinctive — not "you do procurement", which every candidate at that role does.
+- Be ONE short sentence, MAX 22 WORDS.
+- Use IMPLIED FIRST PERSON. Start with the action or status — never "I", "I'm", "I've", "my", "me", and never a third-person verb at sentence start ("Manages…", "Holds…", "Leads…", "Owns…", "Builds…").
+- Contain NO em-dashes. Use commas or full stops.
+- Contain NO tricolons (no "X, Y, and Z" lists). Two items max.
+- Contain NO banned vocabulary: spearhead, leverage, orchestrate, championed, drove, pioneered, synergise, utilise, streamline, robust, seamless, cutting-edge, results-driven, passionate, dynamic, proven, demonstrated, hands-on, forward-thinking, fast-paced, world-class, best-in-class, value-add.
+- Contain NO opening adjective stack ("Dedicated, organised…").
+- NOT name a current employer unless the FactBase shows it is brand-tier (FTSE 100, S&P 500, FAANG, MBB, Magic Circle, Big 4, household-name unicorn). If you're not sure, omit the employer name.
 
 Examples of distinctive angles to look for:
-- Sole/only person in their role
+- Sole / only person in their role
 - Founder / first hire / founding-team member
 - Reports unusually high (CEO / Founder / SLT)
 - Built the function from scratch
-- Cross-functional — works across multiple disciplines
-- Unusually rapid promotion or scope-expansion
+- Cross-functional across multiple disciplines
+- Unusually rapid promotion or scope expansion
 - Distinctive credential (rare cert, top-tier school, named scholarship)
 - Single-handedly handled a scope-stretch event (2x growth, crisis, transition)
 - Sector cross-over (career-changer with rare combination)
 - Demographic / pipeline distinctive (only graduate in senior team, etc.)
+
+GOOD example: "Sole supply chain analyst at the business, reporting directly to the founder."
+GOOD example: "First-class Economics from a Russell Group, top of the cohort."
+GOOD example: "Built the function from scratch with no predecessor or playbook."
+BAD example: "I'm spearheading a leverage-driven, cross-functional, cutting-edge transformation across procurement, finance, and operations." (banned vocab, tricolon, "I'm", em-dash)
 
 Return ONLY a JSON object: { "suggestions": [string, string, string, string, string] }. 3-5 items. If you genuinely can't find 3 distinctive things in the user's data, return fewer. Never fabricate.`;
 
@@ -245,12 +257,76 @@ Identify 3-5 distinctive angles the user could claim. Return ONLY the JSON.`;
     const end = trimmed.lastIndexOf("}");
     if (start === -1 || end === -1) return { suggestions: [] };
     const parsed = JSON.parse(trimmed.slice(start, end + 1)) as { suggestions?: string[] };
-    const cleaned = (parsed.suggestions ?? []).filter((s): s is string => typeof s === "string" && !!s.trim());
+    const cleaned = (parsed.suggestions ?? [])
+      .filter((s): s is string => typeof s === "string" && !!s.trim())
+      .map((s) => s.trim())
+      .filter(passesProfileRulesSuggestion);
     return { suggestions: cleaned.slice(0, 5) };
   } catch (e) {
     console.error("[suggestDistinctiveAngles] error:", e);
     return { suggestions: [], error: e instanceof Error ? e.message : "AI call failed." };
   }
+}
+
+// Deterministic post-filter: drops any suggestion that breaks the Profile rules
+// (em-dash, tricolon, first-person, banned vocab, length). Cheap insurance
+// against the model occasionally ignoring the system prompt.
+function passesProfileRulesSuggestion(s: string): boolean {
+  const t = s.trim();
+  if (t.length === 0) return false;
+
+  // Word count cap — 22 words.
+  const wordCount = t.split(/\s+/).filter(Boolean).length;
+  if (wordCount > 24) return false;
+  if (wordCount < 4) return false;
+
+  // No em-dashes.
+  if (/[—–]/.test(t)) return false;
+
+  // No first-person pronouns.
+  if (/\b(?:I|I'm|I've|I'll|my|me|mine)\b/i.test(t)) return false;
+
+  // No tricolons (X, Y, and Z).
+  if (/,[^,]+,[^,]+\band\b/i.test(t)) return false;
+
+  // No banned vocabulary.
+  const banned = [
+    "spearhead",
+    "leverage",
+    "orchestrate",
+    "championed",
+    "championing",
+    "drove",
+    "pioneered",
+    "synergise",
+    "synergize",
+    "utilise",
+    "utilize",
+    "streamline",
+    "robust",
+    "seamless",
+    "cutting-edge",
+    "results-driven",
+    "passionate",
+    "dynamic",
+    "proven",
+    "demonstrated",
+    "hands-on",
+    "forward-thinking",
+    "fast-paced",
+    "world-class",
+    "best-in-class",
+    "value-add",
+  ];
+  const lower = t.toLowerCase();
+  for (const b of banned) {
+    if (lower.includes(b)) return false;
+  }
+
+  // No opening adjective stack ("Dedicated, organised, ...").
+  if (/^[A-Z][a-z]+,\s+[a-z]+,/.test(t)) return false;
+
+  return true;
 }
 
 export async function getProfileBuilderPrefill(): Promise<ProfileBuilderPrefill> {
@@ -286,7 +362,7 @@ export async function getProfileBuilderPrefill(): Promise<ProfileBuilderPrefill>
         .select("id, raw_text, polished_text")
         .eq("user_id", userId)
         .order("created_at", { ascending: false })
-        .limit(15),
+        .limit(200),
     ]);
 
     const employers = employersRes.data ?? [];

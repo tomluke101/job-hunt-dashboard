@@ -338,7 +338,7 @@ Return ONLY the JSON object.`;
 
 // ── Banned-phrase critic ──────────────────────────────────────────────────────
 
-interface BannedHit {
+export interface BannedHit {
   section: string;
   phrase: string;
 }
@@ -1107,6 +1107,8 @@ export function buildFixGuidance(flagged: BannedHit[], cv: TailoredCV): string {
       fix = "Pair the reporting claim with a specific anchor: a named system ('via the supplier scorecard built from scratch'), a named scope detail ('owning the function from purchase-order through to delivery'), or a named count ('across 12 overseas suppliers'). Reporting cadence alone is filler.";
     } else if (/uniform length/i.test(what) || /bullets are uniform/i.test(what)) {
       fix = "Vary bullet length: at least one short bullet (10-13 words), one medium (15-20), and one longer (22-28).";
+    } else if (/invented sector descriptor/i.test(what)) {
+      fix = "DELETE the sector descriptor from S1 entirely. Do NOT replace it with another descriptor. S1 must lead with role + work scope only — e.g. 'Supply Chain Analyst working across procurement and supplier performance to keep operations running efficiently.' If you absolutely cannot avoid mentioning the employer's nature, use ONLY language that already appears verbatim in the FactBase.";
     } else {
       fix = "Rewrite to follow the system prompt rules.";
     }

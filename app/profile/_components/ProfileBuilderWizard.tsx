@@ -2,7 +2,7 @@
 
 import { useState, useTransition, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { X, ChevronLeft, ChevronRight, Loader2, Sparkles, Lightbulb } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Loader2, Sparkles, Lightbulb, Search } from "lucide-react";
 import { addSkill, addEmployer } from "@/app/actions/profile";
 import {
   saveMasterProfile,
@@ -602,59 +602,19 @@ function Step3Achievement({
       </div>
 
       {hasExisting && (
-        <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3">
-          <div className="text-xs font-semibold text-blue-900 mb-1 inline-flex items-center gap-1">
-            <Lightbulb size={11} /> Your saved achievements
-          </div>
-          <p className="text-[11px] text-blue-900/70 mb-2">
-            Pick the ONE you most want to lead with (it goes in the textarea). Tap others to also tag them as supporting headline material — up to 3 total.
-          </p>
-          <div className="space-y-1">
-            {existingSkills.slice(0, 8).map((s) => {
-              const isPrimary = answers.achievement === s.text;
-              const supporting = answers.supportingAchievements ?? [];
-              const isSupporting = supporting.includes(s.text);
-              const totalTagged = (answers.achievement ? 1 : 0) + supporting.length;
-              const canAddSupporting = totalTagged < 3;
-              return (
-                <div key={s.id} className="flex gap-1">
-                  <button
-                    type="button"
-                    onClick={() => update("achievement", s.text)}
-                    className={`flex-1 text-left text-xs px-3 py-1.5 rounded-md border transition-colors ${
-                      isPrimary
-                        ? "border-blue-500 bg-white text-blue-900 font-medium"
-                        : "border-blue-100 bg-white/70 text-slate-700 hover:bg-white hover:border-blue-200"
-                    }`}
-                  >
-                    {isPrimary && <span className="mr-1">★</span>}
-                    {s.text}
-                  </button>
-                  {!isPrimary && (
-                    <button
-                      type="button"
-                      disabled={!isSupporting && !canAddSupporting}
-                      onClick={() => {
-                        const next = isSupporting
-                          ? supporting.filter((t) => t !== s.text)
-                          : [...supporting, s.text];
-                        update("supportingAchievements", next);
-                      }}
-                      className={`shrink-0 text-[10px] px-2 py-1.5 rounded-md border transition-colors ${
-                        isSupporting
-                          ? "border-emerald-400 bg-emerald-50 text-emerald-700"
-                          : "border-slate-200 bg-white text-slate-500 hover:border-slate-300 disabled:opacity-30 disabled:cursor-not-allowed"
-                      }`}
-                      title={isSupporting ? "Remove from supporting" : "Tag as supporting headline material"}
-                    >
-                      {isSupporting ? "✓ supporting" : "+ supporting"}
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
+        <SavedAchievementsPicker
+          skills={existingSkills}
+          primary={answers.achievement}
+          supporting={answers.supportingAchievements ?? []}
+          onSetPrimary={(text) => update("achievement", text)}
+          onToggleSupporting={(text) => {
+            const supporting = answers.supportingAchievements ?? [];
+            const next = supporting.includes(text)
+              ? supporting.filter((t) => t !== text)
+              : [...supporting, text];
+            update("supportingAchievements", next);
+          }}
+        />
       )}
 
       <ExamplePanel
@@ -941,6 +901,179 @@ function Field({
         placeholder={placeholder}
         className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
       />
+    </div>
+  );
+}
+
+// Aesthetic, scalable picker for the user's saved achievements. Supports any
+// quantity (3 or 300) without becoming a wall: search + chip selection +
+// progressive disclosure ("show all"). The user's selections appear pinned at
+// the top with clear primary (★) / supporting (✓) treatments, so picks stay
+// visible even after filtering.
+function SavedAchievementsPicker({
+  skills,
+  primary,
+  supporting,
+  onSetPrimary,
+  onToggleSupporting,
+}: {
+  skills: Array<{ id: string; text: string }>;
+  primary: string | undefined;
+  supporting: string[];
+  onSetPrimary: (text: string) => void;
+  onToggleSupporting: (text: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [showAll, setShowAll] = useState(false);
+
+  const totalTagged = (primary ? 1 : 0) + supporting.length;
+  const canAddSupporting = totalTagged < 3;
+
+  // Build the working list: selections pinned first, then the rest.
+  const selectedIds = new Set<string>();
+  const selectedSkills: typeof skills = [];
+  if (primary) {
+    const found = skills.find((s) => s.text === primary);
+    if (found) {
+      selectedSkills.push(found);
+      selectedIds.add(found.id);
+    }
+  }
+  for (const t of supporting) {
+    const found = skills.find((s) => s.text === t);
+    if (found && !selectedIds.has(found.id)) {
+      selectedSkills.push(found);
+      selectedIds.add(found.id);
+    }
+  }
+  const others = skills.filter((s) => !selectedIds.has(s.id));
+
+  const q = query.trim().toLowerCase();
+  const filteredOthers = q.length > 0
+    ? others.filter((s) => s.text.toLowerCase().includes(q))
+    : others;
+
+  const COLLAPSED_LIMIT = 6;
+  const visibleOthers = showAll || q.length > 0
+    ? filteredOthers
+    : filteredOthers.slice(0, COLLAPSED_LIMIT);
+  const hiddenCount = filteredOthers.length - visibleOthers.length;
+
+  const renderRow = (s: { id: string; text: string }) => {
+    const isPrimary = primary === s.text;
+    const isSupporting = supporting.includes(s.text);
+    return (
+      <div key={s.id} className="flex gap-1">
+        <button
+          type="button"
+          onClick={() => onSetPrimary(s.text)}
+          className={`flex-1 text-left text-xs px-3 py-1.5 rounded-md border transition-colors leading-relaxed ${
+            isPrimary
+              ? "border-blue-500 bg-white text-blue-900 font-medium shadow-sm"
+              : "border-blue-100 bg-white/70 text-slate-700 hover:bg-white hover:border-blue-200"
+          }`}
+        >
+          {isPrimary && <span className="mr-1">★</span>}
+          <span className="line-clamp-2">{s.text}</span>
+        </button>
+        {!isPrimary && (
+          <button
+            type="button"
+            disabled={!isSupporting && !canAddSupporting}
+            onClick={() => onToggleSupporting(s.text)}
+            className={`shrink-0 self-start text-[10px] px-2 py-1.5 rounded-md border transition-colors ${
+              isSupporting
+                ? "border-emerald-400 bg-emerald-50 text-emerald-700"
+                : "border-slate-200 bg-white text-slate-500 hover:border-slate-300 disabled:opacity-30 disabled:cursor-not-allowed"
+            }`}
+            title={isSupporting ? "Remove from supporting" : "Tag as supporting headline material"}
+          >
+            {isSupporting ? "✓ supporting" : "+ supporting"}
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3 space-y-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="text-xs font-semibold text-blue-900 inline-flex items-center gap-1">
+          <Lightbulb size={11} /> Your saved achievements
+          <span className="ml-1 text-[10px] font-normal text-blue-900/60">
+            ({skills.length})
+          </span>
+        </div>
+        <div className="text-[11px] text-blue-900/70">
+          {totalTagged}/3 tagged
+        </div>
+      </div>
+
+      <p className="text-[11px] text-blue-900/70">
+        Pick the ONE to lead with (★). Tag up to 2 more as supporting (✓).
+      </p>
+
+      {skills.length > COLLAPSED_LIMIT && (
+        <div className="relative">
+          <Search
+            size={11}
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-blue-900/40"
+          />
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search achievements…"
+            className="w-full text-xs pl-7 pr-3 py-1.5 rounded-md border border-blue-200 bg-white/80 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 placeholder-blue-900/30"
+          />
+        </div>
+      )}
+
+      {selectedSkills.length > 0 && (
+        <div className="space-y-1">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-blue-900/60">
+            Your picks
+          </div>
+          <div className="space-y-1">{selectedSkills.map(renderRow)}</div>
+        </div>
+      )}
+
+      {visibleOthers.length > 0 && (
+        <div className="space-y-1">
+          {selectedSkills.length > 0 && (
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-blue-900/60">
+              {q.length > 0 ? `Matches (${filteredOthers.length})` : "Pick from"}
+            </div>
+          )}
+          <div className="space-y-1 max-h-[260px] overflow-y-auto pr-1 -mr-1">
+            {visibleOthers.map(renderRow)}
+          </div>
+        </div>
+      )}
+
+      {q.length === 0 && hiddenCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowAll(true)}
+          className="text-[11px] font-medium text-blue-700 hover:text-blue-900"
+        >
+          Show {hiddenCount} more →
+        </button>
+      )}
+      {q.length === 0 && showAll && filteredOthers.length > COLLAPSED_LIMIT && (
+        <button
+          type="button"
+          onClick={() => setShowAll(false)}
+          className="text-[11px] font-medium text-blue-700 hover:text-blue-900"
+        >
+          Show fewer
+        </button>
+      )}
+      {q.length > 0 && filteredOthers.length === 0 && (
+        <div className="text-[11px] text-blue-900/60 italic">
+          No matches. Try a different word, or paste your own achievement below.
+        </div>
+      )}
     </div>
   );
 }

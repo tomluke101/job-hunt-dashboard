@@ -145,12 +145,50 @@ export interface MasterProfileGenerationResult {
   error?: string;
 }
 
+// Wizard answers, mirrored here so we don't import client types into lib.
+// The shape exactly matches WizardContext in app/actions/cv-tailoring.ts.
+export interface WizardContextLib {
+  stage:
+    | "working"
+    | "self_employed"
+    | "founder"
+    | "student"
+    | "between"
+    | "returner"
+    | "other"
+    | null;
+  jobTitle?: string;
+  companyOrSector?: string;
+  freelanceDiscipline?: string;
+  freelanceYears?: string;
+  freelanceSector?: string;
+  businessName?: string;
+  businessDoes?: string;
+  businessFoundedYear?: string;
+  degreeSubject?: string;
+  university?: string;
+  graduationYear?: string;
+  lastJobTitle?: string;
+  lastJobSector?: string;
+  timeOut?: string;
+  otherSituation?: string;
+  achievement?: string;
+  achievementScale?: string;
+  achievementOutcome?: string;
+  supportingAchievements?: string[];
+  distinctive?: string;
+  educationToInclude?: string;
+  educationPlacement?: "lead" | "close" | "skip";
+  anythingElse?: string;
+}
+
 // Build a sector-agnostic Profile from the FactBase. No JD — produces the user's
 // strongest unconditional version of themselves, applying all the same rules
 // (implied first person, scope-anchor in S2, distinctive S3, fact close).
 export async function generateMasterProfileFromFactBase(opts: {
   cvId?: string;
   connectedProviders: Partial<Record<Provider, string>>;
+  wizardContext?: WizardContextLib;
 }): Promise<MasterProfileGenerationResult> {
   const warnings: string[] = [];
 
@@ -161,9 +199,12 @@ export async function generateMasterProfileFromFactBase(opts: {
   const fb = fbResult.factBase;
   warnings.push(...fb.warnings);
 
+  const wizardText = opts.wizardContext ? serialiseWizardContext(opts.wizardContext) : "";
+
   if (
     factsOfKind(fb, "role").length === 0 &&
-    factsOfKind(fb, "achievement").length === 0
+    factsOfKind(fb, "achievement").length === 0 &&
+    !wizardText
   ) {
     return {
       error:
@@ -173,11 +214,15 @@ export async function generateMasterProfileFromFactBase(opts: {
   }
 
   const factbaseText = serialiseFactBaseForMaster(fb);
+  // Truth-grounded text is the union of FactBase + wizard answers. Both are
+  // treated as canonical for the sector-invention scanner so wizard-provided
+  // sectors / employers don't get flagged as inventions.
+  const groundedText = `${factbaseText}\n\n${wizardText}`.trim();
   const systemPrompt = buildMasterSystemPrompt();
   const userPrompt = `=== CANDIDATE FACTBASE ===
-${factbaseText}
+${factbaseText || "(empty — use the wizard answers below as primary input)"}
 
-=== TASK ===
+${wizardText ? `=== USER-PROVIDED CONTEXT (wizard answers — treat as truth) ===\n${wizardText}\n\n` : ""}=== TASK ===
 Produce the candidate's Master Profile — the strongest, sector-agnostic version of themselves. No specific job description to tailor to. Apply ALL Profile rules. Return ONLY the JSON object: { "summary": string }.`;
 
   let summary: string | null = null;
@@ -203,10 +248,12 @@ Produce the candidate's Master Profile — the strongest, sector-agnostic versio
 
   // Run the same Profile scanners as the JD-tailored flow + verify-after-rewrite
   // loop. Wrap the Master string in a minimal TailoredCV stub so we can reuse
-  // the existing scan/critic pipeline.
+  // the existing scan/critic pipeline. Pass the COMBINED grounded text (factbase
+  // + wizard answers) so the sector-invention scanner accepts wizard-supplied
+  // sectors as grounded.
   summary = await runProfileScannersAndRewrite({
     summary,
-    factbaseText,
+    factbaseText: groundedText,
     factbaseFromFactBase: fb,
     connectedProviders: opts.connectedProviders,
     systemPrompt,
@@ -352,7 +399,10 @@ async function runProfileScannersAndRewrite(args: {
   };
 
   let current = summary;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // Up to 4 rewrite attempts. Two wasn't enough — a stubborn model can
+  // re-introduce flagged structures in attempt 1 and still be shipping
+  // them by attempt 2.
+  for (let attempt = 0; attempt < 4; attempt++) {
     const stub = buildStub(current);
     const flagged = [
       ...scanProfile(stub),
@@ -475,6 +525,57 @@ function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+// Serialise the wizard answers as a structured, labelled block. Used both as
+// truth-grounded prompt context AND as input to the sector-invention scanner
+// (so wizard-supplied sectors don't get flagged as inventions).
+function serialiseWizardContext(wc: WizardContextLib): string {
+  const lines: string[] = [];
+  if (wc.stage === "working") {
+    if (wc.jobTitle) lines.push(`Current role: ${wc.jobTitle}`);
+    if (wc.companyOrSector) lines.push(`Current employer / sector: ${wc.companyOrSector}`);
+  } else if (wc.stage === "self_employed") {
+    if (wc.freelanceDiscipline) lines.push(`Self-employed discipline: ${wc.freelanceDiscipline}`);
+    if (wc.freelanceSector) lines.push(`Sector / typical clients: ${wc.freelanceSector}`);
+    if (wc.freelanceYears) lines.push(`Time self-employed: ${wc.freelanceYears}`);
+  } else if (wc.stage === "founder") {
+    if (wc.businessName) lines.push(`Business name / role: ${wc.businessName}`);
+    if (wc.businessDoes) lines.push(`What the business does: ${wc.businessDoes}`);
+    if (wc.businessFoundedYear) lines.push(`Founded: ${wc.businessFoundedYear}`);
+  } else if (wc.stage === "student") {
+    if (wc.degreeSubject) lines.push(`Course / degree: ${wc.degreeSubject}`);
+    if (wc.university) lines.push(`Institution: ${wc.university}`);
+    if (wc.graduationYear) lines.push(`Year: ${wc.graduationYear}`);
+  } else if (wc.stage === "between" || wc.stage === "returner") {
+    if (wc.lastJobTitle) lines.push(`Most recent role: ${wc.lastJobTitle}`);
+    if (wc.lastJobSector) lines.push(`Most recent sector: ${wc.lastJobSector}`);
+    if (wc.timeOut) lines.push(`Time since last worked: ${wc.timeOut}`);
+  } else if (wc.stage === "other") {
+    if (wc.otherSituation) lines.push(`Current situation: ${wc.otherSituation}`);
+  }
+
+  if (wc.achievement) {
+    let a = `Headline achievement: ${wc.achievement}`;
+    if (wc.achievementScale) a += ` | scale: ${wc.achievementScale}`;
+    if (wc.achievementOutcome) a += ` | outcome: ${wc.achievementOutcome}`;
+    lines.push(a);
+  }
+  if (wc.supportingAchievements && wc.supportingAchievements.length > 0) {
+    for (const s of wc.supportingAchievements) {
+      lines.push(`Supporting achievement: ${s}`);
+    }
+  }
+  if (wc.distinctive) lines.push(`Distinctive context: ${wc.distinctive}`);
+  if (wc.educationToInclude) {
+    const placement = wc.educationPlacement
+      ? ` (placement preference: ${wc.educationPlacement})`
+      : "";
+    lines.push(`Education to include: ${wc.educationToInclude}${placement}`);
+  }
+  if (wc.anythingElse) lines.push(`Other context: ${wc.anythingElse}`);
+
+  return lines.join("\n").trim();
+}
+
 // Master Profile system prompt — same Profile rules as the JD-tailored version
 // but written for the canonical version. We import the rules text from tailor.ts
 // to keep them in sync.
@@ -536,15 +637,20 @@ PROHIBITED STRUCTURES (you have produced these before — never again):
 - "specialising in" / "focusing on" / "dedicated to" as S1 connective tissue — fluff. State scope plainly.
 - Adjectives describing the employer that aren't in the FactBase: "independent", "boutique", "leading", "fast-growing", "established", "private". If the FactBase doesn't say it, you don't say it.
 
-CONCRETE BAD-OUTPUT EXAMPLE (this shape is FORBIDDEN — never produce anything like it):
-"Senior auditor at an independent advisory firm, specialising in assurance and reporting across a portfolio of mid-market clients. Owned audit files and drafted partner-review packs during a period of 30% portfolio growth, cutting review cycles through workpaper standardisation. Built a bespoke variance dashboard from scratch, replacing manual reconciliations and recovering missed adjustments via an automated tickmark tracker. Awarded a First-Class BSc Accounting from a Russell Group university, finishing top of the cohort."
+CONCRETE BAD-OUTPUT EXAMPLES (these shapes are FORBIDDEN — never produce anything like them):
 
-Why that example is bad: (1) "independent advisory firm" is invented if the FactBase doesn't say "independent". (2) "specialising in" is fluff. (3) "during a period of 30% portfolio growth" is a structural hedge — anchor wedged into a subordinate clause. (4) S2 jams three actions ("Owned X and drafted Y, cutting Z"). (5) S3 jams two unrelated outcomes ("replacing X and recovering Y via Z"). (6) S4 opens with passive "Awarded a".
+BAD #1: "Senior auditor at an independent advisory firm, specialising in assurance and reporting across a portfolio of mid-market clients. Owned audit files and drafted partner-review packs during a period of 30% portfolio growth, cutting review cycles through workpaper standardisation. Built a bespoke variance dashboard from scratch, replacing manual reconciliations and recovering missed adjustments via an automated tickmark tracker. Awarded a First-Class BSc Accounting from a Russell Group university, finishing top of the cohort."
+
+Why it's bad: (1) "independent advisory firm" — "independent" is invented if not in the FactBase. (2) "specialising in" is fluff. (3) "during a period of 30% portfolio growth" wedges the anchor as a subordinate clause. (4) S2 jams three actions ("Owned X and drafted Y, cutting Z"). (5) S3 jams two unrelated outcomes. (6) "Awarded a" is passive CV-speak.
+
+BAD #2: "Marketing analyst working across content, performance and brand within a scaling D2C business. Supported 2x audience growth by managing higher campaign volumes and a wider channel mix during a sustained period of increased operational complexity. Built a bespoke attribution dashboard from scratch and a campaign performance tracker that surfaced wasted spend and guides weekly budget planning. Graduated with a First-Class BSc Marketing from a Russell Group university, finishing top of the cohort."
+
+Why it's bad: (1) S1 "content, performance and brand" is a TRICOLON. (2) "scaling D2C business" — "scaling" is invented if not in the FactBase. (3) S2 leads with passive "Supported 2x growth by managing X and Y" — anchor wedged. (4) "during a sustained period of increased operational complexity" is a hedge variant — "sustained" doesn't save it. (5) S3 jams two named systems ("attribution dashboard AND campaign performance tracker") with two outcomes ("surfaced spend AND guides planning"). (6) "Graduated with a" is passive CV-speak — same family as "Awarded a".
 
 CORRECTED SHAPE (the kind of structure to aim for, not the words to copy):
 "Senior auditor at [employer], owning assurance and reporting across the firm's mid-market portfolio. Scaled the audit function through 30% portfolio growth, drafting the standardised workpaper template that cut review cycles. Sole reviewer of partner-pack quality, having built the bespoke variance dashboard now used to surface missed adjustments before sign-off. First-Class BSc Accounting from a Russell Group university, top of the cohort."
 
-(That's 4 sentences, ~70 words, scope anchor in S2 only, sole/ownership in S3 only, named built system in S3, fact close in S4. Adapt the SHAPE; do not copy the words. Use the candidate's actual data.)
+(4 sentences, ~70 words, scope anchor in S2 only as the SUBJECT of the verb, sole/ownership in S3 only, ONE named built system in S3, fact close in S4 with the qualification as the SUBJECT of the sentence.)
 
 Return ONLY the JSON object.`;
 }

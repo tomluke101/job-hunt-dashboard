@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition, useEffect, useRef } from "react";
+import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Sparkles, Save, RefreshCw, Loader2, Check, AlertCircle, Wand2 } from "lucide-react";
 import {
@@ -8,7 +8,7 @@ import {
   generateMasterProfile,
   type MasterProfile,
 } from "@/app/actions/cv-tailoring";
-import ProfileBuilderWizard from "./ProfileBuilderWizard";
+import ProfileBuilderWizard, { type WizardAnswers } from "./ProfileBuilderWizard";
 
 interface Props {
   initial: MasterProfile | null;
@@ -16,6 +16,11 @@ interface Props {
 
 export default function MasterProfileSection({ initial }: Props) {
   const router = useRouter();
+  // Local source of truth for the master profile. Initialised from server data
+  // and updated imperatively after every mutation. We deliberately don't sync
+  // back to the `initial` prop — that path proved racy with router.refresh()
+  // + useTransition, which left the textarea empty after the wizard closed.
+  const [master, setMaster] = useState<MasterProfile | null>(initial);
   const [draft, setDraft] = useState<string>(initial?.summary ?? "");
   const [savedId, setSavedId] = useState(false);
   const [isGenerating, startGenerate] = useTransition();
@@ -25,45 +30,31 @@ export default function MasterProfileSection({ initial }: Props) {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [generationStage, setGenerationStage] = useState<string | null>(null);
 
-  // Sync local draft when the server-side `initial` changes (e.g. after the
-  // wizard finishes and triggers router.refresh() on the parent server component).
-  // Without this, the textarea would still show whatever was here at mount.
-  const lastInitialRef = useRef<string>(initial?.summary ?? "");
-  useEffect(() => {
-    const next = initial?.summary ?? "";
-    if (next !== lastInitialRef.current && next !== draft) {
-      // Only update if the user hasn't been editing — preserve their unsaved work.
-      // Heuristic: if current draft equals the previous initial, they haven't edited.
-      if (draft === lastInitialRef.current) {
-        setDraft(next);
-      }
-    }
-    lastInitialRef.current = next;
-  }, [initial?.summary, draft]);
-
   const wordCount = draft.trim().split(/\s+/).filter(Boolean).length;
-  const isDirty = draft !== (initial?.summary ?? "");
-  const lastUpdated = initial?.updated_at
-    ? new Date(initial.updated_at).toLocaleDateString("en-GB", {
+  const isDirty = draft !== (master?.summary ?? "");
+  const lastUpdated = master?.updated_at
+    ? new Date(master.updated_at).toLocaleDateString("en-GB", {
         day: "numeric",
         month: "short",
         year: "numeric",
       })
     : null;
 
+  function startStageCycle() {
+    setGenerationStage("Reading your skills, work history, and CV…");
+    return [
+      setTimeout(() => setGenerationStage("Drafting your Profile with AI…"), 4000),
+      setTimeout(() => setGenerationStage("Checking quality rules…"), 14000),
+      setTimeout(() => setGenerationStage("Polishing — almost done…"), 22000),
+      setTimeout(() => setGenerationStage("Final pass…"), 32000),
+    ];
+  }
+
   function handleGenerate() {
     setError(null);
     setWarnings([]);
     setSavedId(false);
-    setGenerationStage("Reading your skills, work history, and CV…");
-    // Cycle through stage messages so the user sees forward motion across the
-    // ~30s generation pipeline (factbase extract → AI draft → 15 scanners → up to
-    // 2 rewrite passes).
-    const stageTimers: ReturnType<typeof setTimeout>[] = [
-      setTimeout(() => setGenerationStage("Drafting your Profile with AI…"), 4000),
-      setTimeout(() => setGenerationStage("Checking 15 quality rules…"), 14000),
-      setTimeout(() => setGenerationStage("Polishing — almost done…"), 22000),
-    ];
+    const stageTimers = startStageCycle();
     startGenerate(async () => {
       try {
         const result = await generateMasterProfile({});
@@ -73,8 +64,18 @@ export default function MasterProfileSection({ initial }: Props) {
           return;
         }
         if (result.summary) {
+          // Persist immediately so a refresh won't lose it.
+          await saveMasterProfile({ summary: result.summary, source: "generated" });
           setDraft(result.summary);
+          setMaster({
+            user_id: master?.user_id ?? "",
+            summary: result.summary,
+            source: "generated",
+            factbase_hash: master?.factbase_hash ?? null,
+            updated_at: new Date().toISOString(),
+          });
           if (result.warnings) setWarnings(result.warnings);
+          router.refresh(); // best-effort sync of other parts of the page
         }
       } finally {
         for (const t of stageTimers) clearTimeout(t);
@@ -87,18 +88,68 @@ export default function MasterProfileSection({ initial }: Props) {
     if (!draft.trim()) return;
     setError(null);
     startSave(async () => {
-      const result = await saveMasterProfile({
-        summary: draft.trim(),
-        source: initial?.summary === draft ? initial.source : "edited",
-      });
+      const trimmed = draft.trim();
+      const nextSource: "manual" | "generated" | "edited" = master?.summary === trimmed
+        ? master.source
+        : "edited";
+      const result = await saveMasterProfile({ summary: trimmed, source: nextSource });
       if (result.error) {
         setError(result.error);
         return;
       }
+      setMaster({
+        user_id: master?.user_id ?? "",
+        summary: trimmed,
+        source: nextSource,
+        factbase_hash: master?.factbase_hash ?? null,
+        updated_at: new Date().toISOString(),
+      });
       setSavedId(true);
       router.refresh();
       setTimeout(() => setSavedId(false), 2500);
     });
+  }
+
+  // Wizard submits its answers here. We run generation directly so the draft
+  // state is owned by THIS component — no cross-component state sync, no
+  // skill/employer pollution. Returns ok/error so the wizard can decide
+  // whether to close.
+  async function handleWizardSubmit(answers: WizardAnswers): Promise<{ ok: boolean; error?: string }> {
+    setError(null);
+    setWarnings([]);
+    setSavedId(false);
+    const stageTimers = startStageCycle();
+    // We don't use useTransition here — the wizard is awaiting this Promise
+    // and needs the actual result. setIsGenerating is implicitly true via
+    // the stage label being non-null; the textarea overlay uses generationStage.
+    try {
+      const result = await generateMasterProfile({ wizardContext: answers });
+      if (result.error) {
+        setError(result.error);
+        if (result.warnings) setWarnings(result.warnings);
+        return { ok: false, error: result.error };
+      }
+      if (!result.summary) {
+        return { ok: false, error: "Generation returned no Profile." };
+      }
+      await saveMasterProfile({ summary: result.summary, source: "generated" });
+      setDraft(result.summary);
+      setMaster({
+        user_id: master?.user_id ?? "",
+        summary: result.summary,
+        source: "generated",
+        factbase_hash: master?.factbase_hash ?? null,
+        updated_at: new Date().toISOString(),
+      });
+      if (result.warnings) setWarnings(result.warnings);
+      setSavedId(true);
+      setTimeout(() => setSavedId(false), 2500);
+      router.refresh();
+      return { ok: true };
+    } finally {
+      for (const t of stageTimers) clearTimeout(t);
+      setGenerationStage(null);
+    }
   }
 
   return (
@@ -118,10 +169,10 @@ export default function MasterProfileSection({ initial }: Props) {
           }}
           placeholder="Click Generate to draft your Master Profile from your skills, work history, and CV. Or paste/type your own."
           rows={8}
-          disabled={isGenerating || isSaving}
+          disabled={isGenerating || isSaving || generationStage !== null}
           className="w-full text-sm border border-slate-200 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 resize-none leading-relaxed font-serif disabled:opacity-50 placeholder-slate-300"
         />
-        {isGenerating && (
+        {(isGenerating || generationStage !== null) && (
           <div className="absolute inset-0 rounded-xl bg-white/85 backdrop-blur-sm flex flex-col items-center justify-center gap-2 pointer-events-none">
             <Loader2 size={20} className="text-blue-600 animate-spin" />
             <div className="text-xs font-medium text-slate-700">
@@ -138,8 +189,8 @@ export default function MasterProfileSection({ initial }: Props) {
           {lastUpdated && (
             <>
               {" · "}saved {lastUpdated}
-              {initial?.source === "generated" && " (AI generated)"}
-              {initial?.source === "edited" && " (edited)"}
+              {master?.source === "generated" && " (AI generated)"}
+              {master?.source === "edited" && " (edited)"}
             </>
           )}
         </div>
@@ -162,7 +213,7 @@ export default function MasterProfileSection({ initial }: Props) {
               <>
                 <Loader2 size={13} className="animate-spin" /> Generating…
               </>
-            ) : initial?.summary ? (
+            ) : master?.summary ? (
               <>
                 <RefreshCw size={13} /> Regenerate
               </>
@@ -218,11 +269,7 @@ export default function MasterProfileSection({ initial }: Props) {
       {wizardOpen && (
         <ProfileBuilderWizard
           onClose={() => setWizardOpen(false)}
-          onComplete={(summary) => {
-            setDraft(summary);
-            setSavedId(true);
-            setTimeout(() => setSavedId(false), 2500);
-          }}
+          onSubmit={handleWizardSubmit}
         />
       )}
     </div>

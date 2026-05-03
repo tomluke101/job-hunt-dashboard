@@ -1040,8 +1040,16 @@ function scanProfileAnchorLeak(cv: TailoredCV): BannedHit[] {
 // a subordinate clause instead of leading S2 with it. Reads as AI fluff. Same
 // for "through a period of", "in a period of", "amid a period of". The anchor
 // should be the SUBJECT of the verb, not a temporal qualifier on a different verb.
+// Note: matches even with adjectives between "a" and "period" — "during a
+// SUSTAINED period of N", "during a EXTENDED period of N", etc.
 const STRUCTURAL_HEDGE_PATTERNS = [
-  /\b(?:during|through|in|amid|across|over)\s+(?:a\s+)?period\s+of\b/i,
+  /\b(?:during|through|in|amid|across|over)\s+(?:a\s+(?:\w+\s+){0,3})?period\s+of\b/i,
+  // "Supported X by ..." / "Helped support X" — passive scaffolding around the
+  // anchor instead of leading with the verb.
+  /\bsupported\s+\d+x\s+(?:revenue|growth)/i,
+  // "amid increased complexity" / "in a scaling environment" — abstraction
+  // without a real anchor.
+  /\bin\s+a\s+(?:scaling|growing|fast[- ]paced|fast[- ]moving|dynamic|complex|evolving)\s+(?:environment|business|company|setting|market)/i,
 ];
 function scanProfileStructuralHedge(cv: TailoredCV): BannedHit[] {
   const hits: BannedHit[] = [];
@@ -1123,26 +1131,69 @@ function scanProfileMultiActionJam(cv: TailoredCV): BannedHit[] {
   return hits;
 }
 
+// 18a. S1 FLUFF VERBS — "specialising in", "focusing on", "dedicated to",
+// "focused on", "centred on" are connective tissue that doesn't add information.
+// State the work scope plainly. Also catches "supporting X" as a passive
+// scaffolding verb when the user did the X.
+function scanProfileS1Fluff(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  const sentences = splitSentences(cv.summary);
+  if (sentences.length === 0) return hits;
+  const s1 = sentences[0];
+  const fluffPatterns: Array<{ re: RegExp; phrase: string }> = [
+    { re: /\bspecialising\s+in\b/i, phrase: "specialising in" },
+    { re: /\bspecializing\s+in\b/i, phrase: "specializing in" },
+    { re: /\bfocusing\s+on\b/i, phrase: "focusing on" },
+    { re: /\bfocused\s+on\b/i, phrase: "focused on" },
+    { re: /\bcentred\s+on\b/i, phrase: "centred on" },
+    { re: /\bcentered\s+on\b/i, phrase: "centered on" },
+    { re: /\bdedicated\s+to\b/i, phrase: "dedicated to" },
+    { re: /\bcommitted\s+to\b/i, phrase: "committed to" },
+    { re: /\bpassionate\s+about\b/i, phrase: "passionate about" },
+  ];
+  for (const { re, phrase } of fluffPatterns) {
+    if (re.test(s1)) {
+      hits.push({
+        section: "Profile",
+        phrase: `S1 contains "${phrase}" — connective fluff. State the work scope plainly: "Marketing analyst at [employer] working across content and performance" not "...specialising in content and performance".`,
+      });
+      break;
+    }
+  }
+  return hits;
+}
+
 // 18. PASSIVE-AWARDED CLOSE — "Awarded a [degree] from [uni]" reads as passive
 // CV-speak. Strong fact closes lead with the degree itself: "First-Class BSc
-// Economics from LSE". Same for "Holds a..." which is third-person verb.
+// Economics from LSE". Same for "Graduated with...", "Holds a...", "Earned
+// a...", "Achieved a..." which are all introducer-verbs.
 function scanProfileAwardedClose(cv: TailoredCV): BannedHit[] {
   const hits: BannedHit[] = [];
   if (!cv.summary) return hits;
   const sentences = splitSentences(cv.summary);
   if (sentences.length === 0) return hits;
   const last = sentences[sentences.length - 1];
-  if (/^awarded\s+a/i.test(last)) {
-    hits.push({
-      section: "Profile",
-      phrase: `Final sentence opens with "Awarded a ..." — passive CV-speak. Lead with the degree itself: "First-Class BSc Economics from LSE, top of the cohort" not "Awarded a First-Class BSc Economics...".`,
-    });
-  }
-  if (/^holds\s+a/i.test(last)) {
-    hits.push({
-      section: "Profile",
-      phrase: `Final sentence opens with "Holds a ..." — third-person verb (banned). Lead with the degree itself: "First-Class BSc Economics from LSE".`,
-    });
+  const passivePatterns: Array<{ re: RegExp; verb: string }> = [
+    { re: /^awarded\s+a/i, verb: "Awarded a" },
+    { re: /^holds?\s+a/i, verb: "Holds a" },
+    { re: /^graduated\s+(?:with|from)/i, verb: "Graduated with" },
+    { re: /^earned\s+a/i, verb: "Earned a" },
+    { re: /^achieved\s+a/i, verb: "Achieved a" },
+    { re: /^completed\s+a/i, verb: "Completed a" },
+    { re: /^obtained\s+a/i, verb: "Obtained a" },
+    { re: /^received\s+a/i, verb: "Received a" },
+    { re: /^attained\s+a/i, verb: "Attained a" },
+    { re: /^secured\s+a/i, verb: "Secured a" },
+  ];
+  for (const { re, verb } of passivePatterns) {
+    if (re.test(last)) {
+      hits.push({
+        section: "Profile",
+        phrase: `Final sentence opens with "${verb} ..." — passive CV-speak / introducer verb. Lead with the degree itself: "First-Class BSc Economics from LSE, top of the cohort" — no introducer verb.`,
+      });
+      break;
+    }
   }
   return hits;
 }
@@ -1166,6 +1217,7 @@ export function scanProfile(cv: TailoredCV): BannedHit[] {
     ...scanProfileS3Strength(cv),
     ...scanProfileStructuralHedge(cv),
     ...scanProfileMultiActionJam(cv),
+    ...scanProfileS1Fluff(cv),
     ...scanProfileAwardedClose(cv),
   ];
 }
@@ -1227,8 +1279,10 @@ export function buildFixGuidance(flagged: BannedHit[], cv: TailoredCV): string {
       fix = "Rewrite the sentence so the scope anchor IS the subject of the verb, not a temporal qualifier. NOT: 'Switched logistics partners during a period of 2x revenue growth'. YES: 'Scaled the supply chain through 2x revenue growth, switching logistics partners after analysing courier performance data'. The anchor leads, the action follows.";
     } else if (/jammed into one sentence|action verbs jammed/i.test(what)) {
       fix = "Rewrite S2 to pair ONE scope anchor with ONE specific named action. Pick the strongest action verb and drop the others. If you have a second high-value action, move it to S3 — don't stuff it into S2. Reads cleaner with one strong claim than three muddled ones.";
-    } else if (/passive CV-speak|Awarded a|Holds a/i.test(what)) {
-      fix = "Rewrite the close to LEAD with the degree itself — 'First-Class BSc Economics from LSE, top of the cohort' — not 'Awarded a...' or 'Holds a...'. The qualification is the subject; no introducer verb needed.";
+    } else if (/passive CV-speak|introducer verb/i.test(what)) {
+      fix = "Rewrite the close to LEAD with the degree itself — 'First-Class BSc Economics from LSE, top of the cohort' — not 'Awarded a...', 'Graduated with...', 'Holds a...', 'Earned a...'. The qualification is the subject; no introducer verb needed.";
+    } else if (/connective fluff|specialising in|focusing on/i.test(what)) {
+      fix = "Replace the fluff verb with plain scope language. NOT 'X specialising in Y and Z'. YES 'X working across Y and Z' or 'X owning Y and Z' or 'X at [employer], with scope spanning Y and Z'.";
     } else {
       fix = "Rewrite to follow the system prompt rules.";
     }

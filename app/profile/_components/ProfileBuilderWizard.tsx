@@ -1,18 +1,14 @@
 "use client";
 
 import { useState, useTransition, useEffect } from "react";
-import { useRouter } from "next/navigation";
 import { X, ChevronLeft, ChevronRight, Loader2, Sparkles, Lightbulb, Search } from "lucide-react";
-import { addSkill, addEmployer } from "@/app/actions/profile";
 import {
-  saveMasterProfile,
-  generateMasterProfile,
   getProfileBuilderPrefill,
   suggestDistinctiveAngles,
   type ProfileBuilderPrefill,
 } from "@/app/actions/cv-tailoring";
 
-type CareerStage =
+export type CareerStage =
   | "working"
   | "self_employed"
   | "founder"
@@ -21,7 +17,7 @@ type CareerStage =
   | "returner"
   | "other";
 
-interface WizardAnswers {
+export interface WizardAnswers {
   stage: CareerStage | null;
   // Identity (adapts by stage)
   jobTitle?: string;
@@ -61,10 +57,11 @@ interface WizardAnswers {
 
 interface Props {
   onClose: () => void;
-  // Called with the generated Master Profile summary after the wizard finishes.
-  // Lets the parent set the textarea state directly, avoiding the router.refresh()
-  // race that left the textarea empty when the wizard closed.
-  onComplete?: (summary: string) => void;
+  // Parent runs the generation. Wizard hands over the answers, awaits the
+  // result, and closes itself only on success. Keeps the draft state owned
+  // entirely by the parent — no cross-component state sync, no skill/employer
+  // pollution.
+  onSubmit: (answers: WizardAnswers) => Promise<{ ok: boolean; error?: string }>;
 }
 
 const STAGE_LABELS: Record<CareerStage, string> = {
@@ -77,8 +74,7 @@ const STAGE_LABELS: Record<CareerStage, string> = {
   other: "Something else — describe my situation",
 };
 
-export default function ProfileBuilderWizard({ onClose, onComplete }: Props) {
-  const router = useRouter();
+export default function ProfileBuilderWizard({ onClose, onSubmit }: Props) {
   const [step, setStep] = useState(1);
   const [answers, setAnswers] = useState<WizardAnswers>({ stage: null });
   const [isGenerating, startGenerate] = useTransition();
@@ -158,143 +154,22 @@ export default function ProfileBuilderWizard({ onClose, onComplete }: Props) {
     }
   }
 
-  // ── Final generation ────────────────────────────────────────────────────
+  // ── Final submission ────────────────────────────────────────────────────
+  // Wizard answers go DIRECTLY to the parent via onSubmit. No skill/employer
+  // rows added — the parent passes answers to the Master generator as ad-hoc
+  // truth-grounded context.
   async function handleFinish() {
     setError(null);
     startGenerate(async () => {
       try {
-        // 1. Save wizard answers as Skills + Work History entries so the
-        //    FactBase reflects them.
-        // De-dupe against existing prefill skills — if the user picked an
-        //  EXISTING saved achievement as their primary in Step 3, we don't
-        //  want to re-add it (creates duplicates in the Skills section).
-        const existingSkillTexts = new Set(
-          (prefill?.existingSkills ?? []).map((s) => s.text.trim().toLowerCase())
-        );
-        const skillsToAdd: string[] = [];
-        const seenInWizard = new Set<string>();
-        const enqueueSkill = (raw: string) => {
-          const cleaned = raw.trim();
-          if (!cleaned) return;
-          const key = cleaned.toLowerCase();
-          if (existingSkillTexts.has(key)) return; // already in user's Skills
-          if (seenInWizard.has(key)) return;        // dedupe within this wizard run
-          seenInWizard.add(key);
-          skillsToAdd.push(cleaned);
-        };
-
-        if (answers.achievement?.trim()) {
-          // Only ADD a new skill if either (a) the achievement is freshly typed
-          // (not a verbatim selection of an existing skill) OR (b) the user
-          // added meaningful scale/outcome metadata that the existing skill
-          // didn't already capture.
-          const baseAchievement = answers.achievement.trim();
-          const isExistingPick = existingSkillTexts.has(baseAchievement.toLowerCase());
-          const hasExtraScale = !!answers.achievementScale?.trim();
-          const hasExtraOutcome = !!answers.achievementOutcome?.trim();
-
-          if (!isExistingPick) {
-            // Freshly typed — save the composed version with its scale/outcome.
-            let composed = baseAchievement;
-            if (hasExtraScale) composed += ` (scale: ${answers.achievementScale!.trim()})`;
-            if (hasExtraOutcome) composed += ` — outcome: ${answers.achievementOutcome!.trim()}`;
-            enqueueSkill(composed);
-          } else if (hasExtraScale || hasExtraOutcome) {
-            // Existing skill selected, but user added scale/outcome.
-            // Save the metadata as a separate, scoped Skills row tied to that
-            // achievement so we don't lose it but also don't duplicate.
-            const meta: string[] = [];
-            if (hasExtraScale) meta.push(`scale ${answers.achievementScale!.trim()}`);
-            if (hasExtraOutcome) meta.push(`outcome ${answers.achievementOutcome!.trim()}`);
-            enqueueSkill(`Context for "${baseAchievement.slice(0, 80)}${baseAchievement.length > 80 ? "…" : ""}": ${meta.join("; ")}`);
-          }
-          // else: existing skill picked with no new metadata → don't re-add.
-        }
-        if (answers.distinctive?.trim()) {
-          enqueueSkill(`Distinctive context: ${answers.distinctive.trim()}`);
-        }
-        if (answers.anythingElse?.trim()) {
-          enqueueSkill(answers.anythingElse.trim());
-        }
-        if (answers.educationToInclude?.trim()) {
-          enqueueSkill(`Education: ${answers.educationToInclude.trim()}`);
-        }
-        if (answers.stage === "other" && answers.otherSituation?.trim()) {
-          enqueueSkill(`Current situation: ${answers.otherSituation.trim()}`);
-        }
-
-        for (const s of skillsToAdd) {
-          await addSkill(s);
-        }
-
-        // 2. Save Work History entry — adapts to each stage.
-        const today = new Date().toISOString().slice(0, 7);
-        if (answers.stage === "working" && answers.jobTitle && answers.companyOrSector) {
-          await addEmployer({
-            company_name: answers.companyOrSector.trim(),
-            role_title: answers.jobTitle.trim(),
-            start_date: today,
-            is_current: true,
-            employment_type: "full-time",
-          });
-        } else if (answers.stage === "self_employed" && answers.freelanceDiscipline && answers.freelanceSector) {
-          await addEmployer({
-            company_name: `Self-employed (${answers.freelanceSector.trim()})`,
-            role_title: answers.freelanceDiscipline.trim(),
-            start_date: today,
-            is_current: true,
-            employment_type: "freelance",
-            summary: answers.freelanceYears ? `${answers.freelanceYears.trim()} of self-employed work` : null,
-          });
-        } else if (answers.stage === "founder" && answers.businessName && answers.businessDoes) {
-          await addEmployer({
-            company_name: answers.businessName.trim(),
-            role_title: "Founder",
-            start_date: answers.businessFoundedYear?.match(/\d{4}/)?.[0]
-              ? `${answers.businessFoundedYear.match(/\d{4}/)![0]}-01`
-              : today,
-            is_current: true,
-            employment_type: "founder",
-            summary: answers.businessDoes.trim(),
-          });
-        } else if (
-          (answers.stage === "between" || answers.stage === "returner") &&
-          answers.lastJobTitle &&
-          answers.lastJobSector
-        ) {
-          await addEmployer({
-            company_name: answers.lastJobSector.trim(),
-            role_title: answers.lastJobTitle.trim(),
-            start_date: today,
-            is_current: false,
-            employment_type: "full-time",
-            summary: answers.stage === "returner" && answers.timeOut
-              ? `Last role before a career break of ${answers.timeOut.trim()}`
-              : "Most recent role",
-          });
-        }
-
-        // 3. Generate the Master Profile from the now-populated FactBase.
-        const result = await generateMasterProfile({});
-        if (result.error) {
-          setError(result.error);
+        const result = await onSubmit(answers);
+        if (!result.ok) {
+          setError(result.error ?? "Failed to build Profile.");
           return;
         }
-        if (result.summary) {
-          await saveMasterProfile({
-            summary: result.summary,
-            source: "generated",
-          });
-          // Hand the fresh summary to the parent FIRST so the textarea
-          // populates immediately. router.refresh() updates the saved-time
-          // metadata async — it's no longer load-bearing for the textarea.
-          onComplete?.(result.summary);
-        }
-
-        router.refresh();
         onClose();
       } catch (e) {
-        console.error("[ProfileBuilderWizard] generation failed:", e);
+        console.error("[ProfileBuilderWizard] submit failed:", e);
         setError(e instanceof Error ? e.message : "Failed to build Profile.");
       }
     });

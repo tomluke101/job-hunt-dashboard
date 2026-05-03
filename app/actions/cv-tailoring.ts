@@ -117,6 +117,10 @@ export async function deleteMasterProfile(): Promise<{ error?: string }> {
 
 export async function generateMasterProfile(input: {
   cvId?: string;
+  // Optional ad-hoc context from the Profile Builder Wizard. Treated as
+  // truth-grounded supplementary data, not persisted to user_skills /
+  // user_employers. Used only for THIS generation call.
+  wizardContext?: WizardContext;
 }): Promise<{ summary?: string; warnings: string[]; error?: string }> {
   const keys = await getApiKeyValues();
   if (Object.keys(keys).length === 0) {
@@ -125,7 +129,45 @@ export async function generateMasterProfile(input: {
   return generateMasterProfileFromFactBase({
     cvId: input.cvId,
     connectedProviders: keys,
+    wizardContext: input.wizardContext,
   });
+}
+
+// Mirror of WizardAnswers — kept here so the server action signature doesn't
+// have to import client component types.
+export interface WizardContext {
+  stage:
+    | "working"
+    | "self_employed"
+    | "founder"
+    | "student"
+    | "between"
+    | "returner"
+    | "other"
+    | null;
+  jobTitle?: string;
+  companyOrSector?: string;
+  freelanceDiscipline?: string;
+  freelanceYears?: string;
+  freelanceSector?: string;
+  businessName?: string;
+  businessDoes?: string;
+  businessFoundedYear?: string;
+  degreeSubject?: string;
+  university?: string;
+  graduationYear?: string;
+  lastJobTitle?: string;
+  lastJobSector?: string;
+  timeOut?: string;
+  otherSituation?: string;
+  achievement?: string;
+  achievementScale?: string;
+  achievementOutcome?: string;
+  supportingAchievements?: string[];
+  distinctive?: string;
+  educationToInclude?: string;
+  educationPlacement?: "lead" | "close" | "skip";
+  anythingElse?: string;
 }
 
 export async function tailorMasterProfile(input: {

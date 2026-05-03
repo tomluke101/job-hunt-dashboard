@@ -819,6 +819,48 @@ function scanProfileBrandTierEmployer(cv: TailoredCV): BannedHit[] {
   return hits;
 }
 
+// 12. OUTCOME SIGNAL — somewhere in S2 or S3 there must be at least one
+// outcome-flavoured signal: an explicit £-amount, %, count, before/after delta,
+// recovered/saved/cut figure, or a verb-noun outcome ("recovered refunds",
+// "switched providers", "absorbed wider complexity"). Pure capability claims
+// without any delivery/outcome are forgettable.
+const OUTCOME_HINTS = [
+  // Money / numeric outcomes
+  /(?:£|\$|€)\s?\d/,
+  /\b\d+(?:\.\d+)?\s?(?:%|million|billion|m|bn|k)\b/i,
+  // Before/after deltas
+  /\bfrom\s+\d.*\bto\s+\d/i,
+  /\b(?:cut|saved|recovered|reduced|grew|increased|raised|halved|doubled|tripled)\s+(?:by|from|to|on)?\s*(?:£|\$|€)?\s?\d/i,
+  // Outcome verb + noun
+  /\b(?:recovered|switched|consolidated|cut|saved|reduced|halved|doubled|tripled|absorbed|raised|launched|shipped|closed)\s+\w+/i,
+  // Named scale outcomes
+  /\bacross\s+\d+\s+(?:countries|markets|regions|sites|locations|distribution\s+centres|stores|teams|suppliers|vendors|clients|customers|product\s+lines)\b/i,
+  /\bscal(?:ed|ing)\s+(?:the\s+function|the\s+team|operations|to|by|through)/i,
+  /\b(?:on[- ]time|sla|p99|latency)\b/i,
+];
+function scanProfileOutcomeSignal(cv: TailoredCV): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!cv.summary) return hits;
+  const sentences = splitSentences(cv.summary);
+  if (sentences.length < 2) return hits;
+  // Look in S2-S3 only — S1 is role/scope, S4 is fact close.
+  const middle = sentences.slice(1, 3).join(" ");
+  let hasOutcome = false;
+  for (const re of OUTCOME_HINTS) {
+    if (re.test(middle)) {
+      hasOutcome = true;
+      break;
+    }
+  }
+  if (!hasOutcome) {
+    hits.push({
+      section: "Profile",
+      phrase: `S2-S3 contain no outcome signal — only capability/ownership descriptions. Add at least one outcome anchor: £-amount, %, count, before/after delta, or a recovered/saved/switched/cut/scaled outcome verb. Pure "built X, owns Y" without delivery is forgettable.`,
+    });
+  }
+  return hits;
+}
+
 // 11. ANCHOR-LEAK — sole/ownership claim words must appear in S3 only, not S1
 // or S2. Deterministic enforcement.
 const SOLE_OWNERSHIP_KEYWORDS = /\b(?:sole|only\s+(?:person|analyst|hire|owner|engineer|manager|specialist)|single[- ]handed|founding|first\s+hire|first[- ]ever)\b/i;
@@ -855,6 +897,7 @@ function scanProfile(cv: TailoredCV): BannedHit[] {
     ...scanProfileSpecificityAnchor(cv),
     ...scanProfileBrandTierEmployer(cv),
     ...scanProfileAnchorLeak(cv),
+    ...scanProfileOutcomeSignal(cv),
   ];
 }
 
@@ -899,6 +942,8 @@ function buildFixGuidance(flagged: BannedHit[], cv: TailoredCV): string {
       fix = "Remove the current employer's name from sentence 1 entirely. The employer name lives in the Experience section. Replace 'X at [Employer]' with just 'X' (no employer mention) OR add a real scale/sector descriptor instead (e.g. 'at a £10M consumer-goods business' — only if you have a real scale signal).";
     } else if (/sole\/ownership claim word/i.test(what)) {
       fix = "Remove the word 'sole' / 'only [role]' / 'founding' / 'first hire' from this sentence. The ownership claim moves to S3 only. Restructure the sentence around the work scope or scope anchor instead.";
+    } else if (/no outcome signal/i.test(what)) {
+      fix = "Add an outcome anchor in S2 or S3. From the FactBase pull a £-amount, %-improvement, count, before/after delta, or named outcome verb (recovered/saved/switched/cut/scaled/closed/shipped). Pair it with the existing capability claim so the sentence reads as 'did X, achieving outcome Y'.";
     } else if (/uniform length/i.test(what) || /bullets are uniform/i.test(what)) {
       fix = "Vary bullet length: at least one short bullet (10-13 words), one medium (15-20), and one longer (22-28).";
     } else {
@@ -1134,7 +1179,18 @@ Pick ONE template. If genuinely ambiguous, default to (a) Achievement-Led. The u
 
 STRICT SENTENCE-ROLE SEPARATION (each sentence does ONE job, no overlap):
 S1 = WHO. Role + work breadth + sector context. NO scope anchor. NO sole/ownership claim.
-S2 = WHAT. Dominant scope anchor as the centrepiece. The number/scale lives HERE, nowhere else in the Profile.
+S2 = WHAT. Dominant scope anchor PAIRED with a specific named action. NEVER one without the other. The number/scale lives HERE only.
+
+S2 PAIRING RULE (HARD): S2 must combine BOTH:
+  (i) A scope anchor — number, £/$/€-figure, growth multiple ("2x revenue"), count, named scale
+  (ii) A specific named action that delivered or operated within that scope — built/designed/launched a NAMED system; recovered a NAMED amount; switched a NAMED provider; joined a NAMED brand
+Single-signal S2 (scope only OR specifics only) is insufficient.
+GOOD S2 (paired): "Scaled the function through a period of 2x revenue growth, building a supplier scorecard from scratch to absorb wider product complexity."
+GOOD S2 (paired): "Closed £4.2M in indirect-spend savings across 31 contracts by consolidating fragmented vendor base from 180 to 47."
+GOOD S2 (paired): "Shipped the user-facing checkout for a 1.4M-user fintech, sustaining sub-200ms latency at 3x peak traffic."
+BAD S2 (scope only, no specifics): "Scaled the function through a period of 2x revenue growth." [WRONG — no specific named action]
+BAD S2 (specifics only, no scope): "Built an Airtable-based ERP system and a supplier scorecard." [WRONG — no scope/scale/number]
+BAD S2 (neither): "Managed end-to-end procurement across the business." [WRONG]
 S3 = DISTINCTIVE. ONE ownership/breadth/stakeholder claim, not two. The single most JD-relevant distinctive claim lives HERE, nowhere else. Pick the strongest single ownership signal (e.g. "sole [role]", "founding [function]", "first [discipline] hire", "owning [function] from [scope] to [scope]"). Do NOT cram two ownership claims into one sentence — that produces meandering S3s. The other ownership signals belong in the Experience section.
 S4 = CLOSE. Fact (degree+classification+uni) OR named target ("Targeting [specific role] at [specific employer/sector]").
 

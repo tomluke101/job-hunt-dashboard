@@ -2,12 +2,13 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Sparkles, Save, RefreshCw, Loader2, Check, AlertCircle } from "lucide-react";
+import { Sparkles, Save, RefreshCw, Loader2, Check, AlertCircle, Wand2 } from "lucide-react";
 import {
   saveMasterProfile,
   generateMasterProfile,
   type MasterProfile,
 } from "@/app/actions/cv-tailoring";
+import ProfileBuilderWizard from "./ProfileBuilderWizard";
 
 interface Props {
   initial: MasterProfile | null;
@@ -21,6 +22,7 @@ export default function MasterProfileSection({ initial }: Props) {
   const [isSaving, startSave] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   const wordCount = draft.trim().split(/\s+/).filter(Boolean).length;
   const isDirty = draft !== (initial?.summary ?? "");
@@ -88,7 +90,7 @@ export default function MasterProfileSection({ initial }: Props) {
         className="w-full text-sm border border-slate-200 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 resize-none leading-relaxed font-serif disabled:opacity-50 placeholder-slate-300"
       />
 
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="text-xs text-slate-400">
           {wordCount} words
           {lastUpdated && (
@@ -99,7 +101,15 @@ export default function MasterProfileSection({ initial }: Props) {
             </>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => setWizardOpen(true)}
+            disabled={isGenerating || isSaving}
+            className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors disabled:opacity-40"
+            title="Build your Master Profile via a 5-minute guided flow"
+          >
+            <Wand2 size={13} /> Build with help
+          </button>
           <button
             onClick={handleGenerate}
             disabled={isGenerating || isSaving}
@@ -162,6 +172,8 @@ export default function MasterProfileSection({ initial }: Props) {
           ))}
         </div>
       )}
+
+      {wizardOpen && <ProfileBuilderWizard onClose={() => setWizardOpen(false)} />}
     </div>
   );
 }

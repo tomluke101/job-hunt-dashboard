@@ -3,6 +3,7 @@
 import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { callAI } from "@/lib/ai-router";
 import { extractFactBase, ExtractFactBaseOptions, ExtractFactBaseResult } from "@/lib/cv/extract";
 import {
   tailorCV as tailorCVImpl,
@@ -159,6 +160,97 @@ export interface ProfileBuilderPrefill {
   distinctiveCandidates: string[]; // Skills containing sole/founding/only language
   fullName: string | null;
   headline: string | null;
+}
+
+// AI-assisted suggestion: takes the user's wizard answers + their existing
+// Skills, and returns 3-5 specific "distinctive angles" they could claim.
+// Used by Step 4 when users can't think of what's distinctive themselves.
+export async function suggestDistinctiveAngles(input: {
+  jobTitle?: string;
+  companyOrSector?: string;
+  achievement?: string;
+  achievementScale?: string;
+}): Promise<{ suggestions: string[]; error?: string }> {
+  const { userId } = await auth();
+  if (!userId) return { suggestions: [], error: "Not signed in" };
+
+  const keys = await getApiKeyValues();
+  if (Object.keys(keys).length === 0) {
+    return { suggestions: [], error: "No AI provider connected. Add an API key in Settings." };
+  }
+
+  const supabase = await createServerSupabaseClient();
+  const skillsRes = await supabase
+    .from("user_skills")
+    .select("raw_text, polished_text")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(20);
+  const skills = (skillsRes.data ?? [])
+    .map((s) => s.polished_text || s.raw_text)
+    .filter(Boolean);
+
+  const wizardContext = [
+    input.jobTitle && `Current role: ${input.jobTitle}`,
+    input.companyOrSector && `Company / sector: ${input.companyOrSector}`,
+    input.achievement && `Headline achievement: ${input.achievement}`,
+    input.achievementScale && `Scale: ${input.achievementScale}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const skillsContext = skills.length > 0 ? skills.map((s) => `- ${s}`).join("\n") : "(none)";
+
+  const systemPrompt = `You help job-seekers identify what makes their situation distinctive — i.e. what would another candidate doing their same role NOT have. Read the user's role context and saved skills/achievements. Return 3-5 specific, evidence-grounded distinctive claims they could make.
+
+EACH suggestion must be:
+- Grounded in the user's actual data (no inventions)
+- Specific (not "you have lots of experience")
+- Distinctive (not "you do procurement" — every candidate at that role does)
+- One short sentence, written as the user would say it ("I'm the only person in this role" / "I built the function from scratch with the company director" / "I report directly to senior leadership")
+- Implied first person (no "I am", lead with the action or status)
+
+Examples of distinctive angles to look for:
+- Sole/only person in their role
+- Founder / first hire / founding-team member
+- Reports unusually high (CEO / Founder / SLT)
+- Built the function from scratch
+- Cross-functional — works across multiple disciplines
+- Unusually rapid promotion or scope-expansion
+- Distinctive credential (rare cert, top-tier school, named scholarship)
+- Single-handedly handled a scope-stretch event (2x growth, crisis, transition)
+- Sector cross-over (career-changer with rare combination)
+- Demographic / pipeline distinctive (only graduate in senior team, etc.)
+
+Return ONLY a JSON object: { "suggestions": [string, string, string, string, string] }. 3-5 items. If you genuinely can't find 3 distinctive things in the user's data, return fewer. Never fabricate.`;
+
+  const userPrompt = `=== USER'S ROLE CONTEXT ===
+${wizardContext || "(not yet provided)"}
+
+=== USER'S SAVED SKILLS / ACHIEVEMENTS ===
+${skillsContext}
+
+=== TASK ===
+Identify 3-5 distinctive angles the user could claim. Return ONLY the JSON.`;
+
+  try {
+    const result = await callAI({
+      task: "cv-tailor",
+      connectedProviders: keys,
+      systemPrompt,
+      prompt: userPrompt,
+    });
+    const trimmed = result.text.trim();
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start === -1 || end === -1) return { suggestions: [] };
+    const parsed = JSON.parse(trimmed.slice(start, end + 1)) as { suggestions?: string[] };
+    const cleaned = (parsed.suggestions ?? []).filter((s): s is string => typeof s === "string" && !!s.trim());
+    return { suggestions: cleaned.slice(0, 5) };
+  } catch (e) {
+    console.error("[suggestDistinctiveAngles] error:", e);
+    return { suggestions: [], error: e instanceof Error ? e.message : "AI call failed." };
+  }
 }
 
 export async function getProfileBuilderPrefill(): Promise<ProfileBuilderPrefill> {

@@ -8,6 +8,7 @@ import {
   saveMasterProfile,
   generateMasterProfile,
   getProfileBuilderPrefill,
+  suggestDistinctiveAngles,
   type ProfileBuilderPrefill,
 } from "@/app/actions/cv-tailoring";
 
@@ -47,6 +48,8 @@ interface WizardAnswers {
   achievement?: string;
   achievementScale?: string;
   achievementOutcome?: string;
+  // Multi-select of supporting headline achievements (in addition to the main one)
+  supportingAchievements?: string[];
   // Distinctive
   distinctive?: string;
   // Education (always optional)
@@ -600,24 +603,56 @@ function Step3Achievement({
 
       {hasExisting && (
         <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3">
-          <div className="text-xs font-semibold text-blue-900 mb-2 inline-flex items-center gap-1">
-            <Lightbulb size={11} /> Your saved achievements — click any to use as starting point
+          <div className="text-xs font-semibold text-blue-900 mb-1 inline-flex items-center gap-1">
+            <Lightbulb size={11} /> Your saved achievements
           </div>
+          <p className="text-[11px] text-blue-900/70 mb-2">
+            Pick the ONE you most want to lead with (it goes in the textarea). Tap others to also tag them as supporting headline material — up to 3 total.
+          </p>
           <div className="space-y-1">
-            {existingSkills.slice(0, 6).map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                onClick={() => update("achievement", s.text)}
-                className={`block w-full text-left text-xs px-3 py-1.5 rounded-md border transition-colors ${
-                  answers.achievement === s.text
-                    ? "border-blue-400 bg-white text-blue-900"
-                    : "border-blue-100 bg-white/70 text-slate-700 hover:bg-white hover:border-blue-200"
-                }`}
-              >
-                {s.text}
-              </button>
-            ))}
+            {existingSkills.slice(0, 8).map((s) => {
+              const isPrimary = answers.achievement === s.text;
+              const supporting = answers.supportingAchievements ?? [];
+              const isSupporting = supporting.includes(s.text);
+              const totalTagged = (answers.achievement ? 1 : 0) + supporting.length;
+              const canAddSupporting = totalTagged < 3;
+              return (
+                <div key={s.id} className="flex gap-1">
+                  <button
+                    type="button"
+                    onClick={() => update("achievement", s.text)}
+                    className={`flex-1 text-left text-xs px-3 py-1.5 rounded-md border transition-colors ${
+                      isPrimary
+                        ? "border-blue-500 bg-white text-blue-900 font-medium"
+                        : "border-blue-100 bg-white/70 text-slate-700 hover:bg-white hover:border-blue-200"
+                    }`}
+                  >
+                    {isPrimary && <span className="mr-1">★</span>}
+                    {s.text}
+                  </button>
+                  {!isPrimary && (
+                    <button
+                      type="button"
+                      disabled={!isSupporting && !canAddSupporting}
+                      onClick={() => {
+                        const next = isSupporting
+                          ? supporting.filter((t) => t !== s.text)
+                          : [...supporting, s.text];
+                        update("supportingAchievements", next);
+                      }}
+                      className={`shrink-0 text-[10px] px-2 py-1.5 rounded-md border transition-colors ${
+                        isSupporting
+                          ? "border-emerald-400 bg-emerald-50 text-emerald-700"
+                          : "border-slate-200 bg-white text-slate-500 hover:border-slate-300 disabled:opacity-30 disabled:cursor-not-allowed"
+                      }`}
+                      title={isSupporting ? "Remove from supporting" : "Tag as supporting headline material"}
+                    >
+                      {isSupporting ? "✓ supporting" : "+ supporting"}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -661,6 +696,26 @@ function Step4Distinctive({
   prefill: ProfileBuilderPrefill | null;
 }) {
   const candidates = prefill?.distinctiveCandidates ?? [];
+  const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
+  const [isSuggesting, startSuggest] = useTransition();
+  const [suggestError, setSuggestError] = useState<string | null>(null);
+
+  function fetchSuggestions() {
+    setSuggestError(null);
+    startSuggest(async () => {
+      const result = await suggestDistinctiveAngles({
+        jobTitle: answers.jobTitle,
+        companyOrSector: answers.companyOrSector,
+        achievement: answers.achievement,
+        achievementScale: answers.achievementScale,
+      });
+      if (result.error) {
+        setSuggestError(result.error);
+        return;
+      }
+      setAiSuggestions(result.suggestions);
+    });
+  }
 
   return (
     <div className="space-y-4">
@@ -669,9 +724,59 @@ function Step4Distinctive({
           What makes your situation distinctive?
         </h3>
         <p className="text-xs text-slate-500 mt-1">
-          Something another candidate doing your role probably wouldn&apos;t have. Skip if nothing comes to mind.
+          Something another candidate doing your role probably wouldn&apos;t have. Totally OK to skip — many strong Profiles lean on scope and outcome instead.
         </p>
       </div>
+
+      <button
+        type="button"
+        onClick={fetchSuggestions}
+        disabled={isSuggesting}
+        className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors disabled:opacity-40"
+      >
+        {isSuggesting ? (
+          <>
+            <Loader2 size={12} className="animate-spin" /> Thinking…
+          </>
+        ) : (
+          <>
+            <Sparkles size={12} /> Help me — what&apos;s distinctive about my situation?
+          </>
+        )}
+      </button>
+
+      {suggestError && (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900">
+          {suggestError}
+        </div>
+      )}
+
+      {aiSuggestions.length > 0 && (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-3">
+          <div className="text-xs font-semibold text-emerald-900 mb-2 inline-flex items-center gap-1">
+            <Sparkles size={11} /> AI suggestions based on your data — pick one or skip
+          </div>
+          <div className="space-y-1">
+            {aiSuggestions.map((s, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => update("distinctive", s)}
+                className={`block w-full text-left text-xs px-3 py-1.5 rounded-md border transition-colors ${
+                  answers.distinctive === s
+                    ? "border-emerald-500 bg-white text-emerald-900"
+                    : "border-emerald-100 bg-white/70 text-slate-700 hover:bg-white hover:border-emerald-200"
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-emerald-900/70 mt-2">
+            None fit? You can skip this step entirely — the Profile generator handles missing distinctive claims gracefully.
+          </p>
+        </div>
+      )}
 
       {candidates.length > 0 && (
         <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3">

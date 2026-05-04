@@ -642,6 +642,11 @@ function buildMasterSystemPrompt(): string {
 
 Apply ALL of these rules. Every rule is hard.
 
+UK ENGLISH (NON-NEGOTIABLE):
+- British spelling throughout: organise, specialise, analyse, optimise, programme, colour, behaviour, fulfil, recognise, centre, favourite, labour.
+- UK conventions: "First-Class" (degree class), "BA / BSc / MEng / MSc" (post-nominal letters), pound sterling for money.
+- Never use American spellings like organize, specialize, analyze, color, behavior, etc.
+
 LENGTH: 60-100 words, 3-4 sentences, paragraph not bullets.
 
 VOICE — IMPLIED FIRST PERSON (NON-NEGOTIABLE):

@@ -1135,7 +1135,7 @@ export async function analyzeSkillGaps(jobDescription: string, cvId?: string): P
 3. Are concrete and verifiable (specific tools, types of experience, credentials) — not vague soft skills
 4. Are things a plausible candidate MIGHT actually have
 
-Focus only on the most impactful gaps. Do not ask about highly specialized technical skills unlikely to be held. Do not ask about things already in the profile.
+Focus only on the most impactful gaps. Do not ask about highly specialised technical skills unlikely to be held. Do not ask about things already in the profile.
 
 JD:
 ${jobDescription.slice(0, 3000)}

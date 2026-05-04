@@ -2,7 +2,7 @@
 
 import { useState, useTransition, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { Sparkles, Save, RefreshCw, Loader2, Check, AlertCircle, Wand2, Trash2 } from "lucide-react";
+import { Sparkles, Save, RefreshCw, Loader2, Check, AlertCircle, Wand2 } from "lucide-react";
 import {
   saveMasterProfile,
   generateMasterProfile,
@@ -31,8 +31,6 @@ export default function MasterProfileSection({ initial }: Props) {
   const [warnings, setWarnings] = useState<string[]>([]);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [generationStage, setGenerationStage] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [isDeleting, startDelete] = useTransition();
 
   const wordCount = draft.trim().split(/\s+/).filter(Boolean).length;
   const isDirty = draft !== (master?.summary ?? "");
@@ -95,28 +93,35 @@ export default function MasterProfileSection({ initial }: Props) {
     });
   }
 
-  function handleDelete() {
+  // Single Save button handles both save AND delete:
+  // - Empty textarea + a saved master → delete the saved row.
+  // - Non-empty textarea → upsert the saved row.
+  // Matches the user's mental model: "the textarea content IS the saved Master".
+  function handleSave() {
     setError(null);
-    startDelete(async () => {
-      const result = await deleteMasterProfile();
-      if (result.error) {
-        setError(result.error);
+    const trimmed = draft.trim();
+    const hasSavedMaster = !!master?.summary;
+
+    // Nothing to do: empty + nothing saved.
+    if (!trimmed && !hasSavedMaster) return;
+
+    startSave(async () => {
+      if (!trimmed && hasSavedMaster) {
+        // Empty + something saved → delete.
+        const result = await deleteMasterProfile();
+        if (result.error) {
+          setError(result.error);
+          return;
+        }
+        setMaster(null);
+        setWarnings([]);
+        setSavedId(true);
+        router.refresh();
+        setTimeout(() => setSavedId(false), 2500);
         return;
       }
-      setMaster(null);
-      setDraft("");
-      setSavedId(false);
-      setConfirmDelete(false);
-      setWarnings([]);
-      router.refresh();
-    });
-  }
 
-  function handleSave() {
-    if (!draft.trim()) return;
-    setError(null);
-    startSave(async () => {
-      const trimmed = draft.trim();
+      // Non-empty → save.
       const nextSource: "manual" | "generated" | "edited" = master?.summary === trimmed
         ? master.source
         : "edited";
@@ -259,41 +264,9 @@ export default function MasterProfileSection({ initial }: Props) {
           )}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {master?.summary && (
-            confirmDelete ? (
-              <span className="inline-flex items-center gap-1 text-xs">
-                <span className="text-rose-700 font-medium">Delete saved Profile?</span>
-                <button
-                  onClick={handleDelete}
-                  disabled={isDeleting}
-                  className="text-xs font-medium px-2 py-1 rounded-md border border-rose-300 bg-rose-50 text-rose-800 hover:bg-rose-100 disabled:opacity-40"
-                >
-                  {isDeleting ? (
-                    <span className="inline-flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Deleting…</span>
-                  ) : "Yes, delete"}
-                </button>
-                <button
-                  onClick={() => setConfirmDelete(false)}
-                  disabled={isDeleting}
-                  className="text-xs font-medium px-2 py-1 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-40"
-                >
-                  Cancel
-                </button>
-              </span>
-            ) : (
-              <button
-                onClick={() => setConfirmDelete(true)}
-                disabled={isGenerating || isSaving || isDeleting}
-                className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-rose-700 hover:border-rose-200 hover:bg-rose-50 transition-colors disabled:opacity-40"
-                title="Delete the saved Master Profile"
-              >
-                <Trash2 size={13} /> Delete
-              </button>
-            )
-          )}
           <button
             onClick={() => setWizardOpen(true)}
-            disabled={isGenerating || isSaving || isDeleting}
+            disabled={isGenerating || isSaving}
             className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors disabled:opacity-40"
             title="Build your Master Profile via a 5-minute guided flow"
           >
@@ -301,7 +274,7 @@ export default function MasterProfileSection({ initial }: Props) {
           </button>
           <button
             onClick={handleGenerate}
-            disabled={isGenerating || isSaving || isDeleting}
+            disabled={isGenerating || isSaving}
             className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-40"
             title="Generate a fresh Master Profile from your current skills, work history, and CV"
           >
@@ -319,29 +292,46 @@ export default function MasterProfileSection({ initial }: Props) {
               </>
             )}
           </button>
-          <button
-            onClick={handleSave}
-            disabled={isGenerating || isSaving || isDeleting || !draft.trim() || !isDirty}
-            className={`text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-40 ${
-              savedId
-                ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
-                : "bg-blue-600 text-white hover:bg-blue-700"
-            }`}
-          >
-            {isSaving ? (
-              <>
-                <Loader2 size={13} className="animate-spin" /> Saving…
-              </>
-            ) : savedId ? (
-              <>
-                <Check size={13} /> Saved
-              </>
-            ) : (
-              <>
-                <Save size={13} /> Save
-              </>
-            )}
-          </button>
+          {(() => {
+            const willDelete = isDirty && !draft.trim() && !!master?.summary;
+            const canAct = isDirty && (draft.trim() !== "" || !!master?.summary);
+            return (
+              <button
+                onClick={handleSave}
+                disabled={isGenerating || isSaving || !canAct}
+                className={`text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-40 ${
+                  savedId
+                    ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : willDelete
+                      ? "bg-rose-600 text-white hover:bg-rose-700"
+                      : "bg-blue-600 text-white hover:bg-blue-700"
+                }`}
+                title={
+                  willDelete
+                    ? "Saving an empty Profile will delete the saved version"
+                    : undefined
+                }
+              >
+                {isSaving ? (
+                  <>
+                    <Loader2 size={13} className="animate-spin" /> {willDelete ? "Deleting…" : "Saving…"}
+                  </>
+                ) : savedId ? (
+                  <>
+                    <Check size={13} /> Saved
+                  </>
+                ) : willDelete ? (
+                  <>
+                    <Save size={13} /> Save (delete)
+                  </>
+                ) : (
+                  <>
+                    <Save size={13} /> Save
+                  </>
+                )}
+              </button>
+            );
+          })()}
         </div>
       </div>
 

@@ -2,11 +2,12 @@
 
 import { useState, useTransition, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { Sparkles, Save, RefreshCw, Loader2, Check, AlertCircle, Wand2 } from "lucide-react";
+import { Sparkles, Save, RefreshCw, Loader2, Check, AlertCircle, Wand2, Trash2 } from "lucide-react";
 import {
   saveMasterProfile,
   generateMasterProfile,
   getMasterProfile,
+  deleteMasterProfile,
   type MasterProfile,
 } from "@/app/actions/cv-tailoring";
 import ProfileBuilderWizard, { type WizardAnswers } from "./ProfileBuilderWizard";
@@ -30,6 +31,8 @@ export default function MasterProfileSection({ initial }: Props) {
   const [warnings, setWarnings] = useState<string[]>([]);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [generationStage, setGenerationStage] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [isDeleting, startDelete] = useTransition();
 
   const wordCount = draft.trim().split(/\s+/).filter(Boolean).length;
   const isDirty = draft !== (master?.summary ?? "");
@@ -89,6 +92,23 @@ export default function MasterProfileSection({ initial }: Props) {
         for (const t of stageTimers) clearTimeout(t);
         setGenerationStage(null);
       }
+    });
+  }
+
+  function handleDelete() {
+    setError(null);
+    startDelete(async () => {
+      const result = await deleteMasterProfile();
+      if (result.error) {
+        setError(result.error);
+        return;
+      }
+      setMaster(null);
+      setDraft("");
+      setSavedId(false);
+      setConfirmDelete(false);
+      setWarnings([]);
+      router.refresh();
     });
   }
 
@@ -239,9 +259,41 @@ export default function MasterProfileSection({ initial }: Props) {
           )}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          {master?.summary && (
+            confirmDelete ? (
+              <span className="inline-flex items-center gap-1 text-xs">
+                <span className="text-rose-700 font-medium">Delete saved Profile?</span>
+                <button
+                  onClick={handleDelete}
+                  disabled={isDeleting}
+                  className="text-xs font-medium px-2 py-1 rounded-md border border-rose-300 bg-rose-50 text-rose-800 hover:bg-rose-100 disabled:opacity-40"
+                >
+                  {isDeleting ? (
+                    <span className="inline-flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Deleting…</span>
+                  ) : "Yes, delete"}
+                </button>
+                <button
+                  onClick={() => setConfirmDelete(false)}
+                  disabled={isDeleting}
+                  className="text-xs font-medium px-2 py-1 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <button
+                onClick={() => setConfirmDelete(true)}
+                disabled={isGenerating || isSaving || isDeleting}
+                className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-rose-700 hover:border-rose-200 hover:bg-rose-50 transition-colors disabled:opacity-40"
+                title="Delete the saved Master Profile"
+              >
+                <Trash2 size={13} /> Delete
+              </button>
+            )
+          )}
           <button
             onClick={() => setWizardOpen(true)}
-            disabled={isGenerating || isSaving}
+            disabled={isGenerating || isSaving || isDeleting}
             className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors disabled:opacity-40"
             title="Build your Master Profile via a 5-minute guided flow"
           >
@@ -249,7 +301,7 @@ export default function MasterProfileSection({ initial }: Props) {
           </button>
           <button
             onClick={handleGenerate}
-            disabled={isGenerating || isSaving}
+            disabled={isGenerating || isSaving || isDeleting}
             className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-40"
             title="Generate a fresh Master Profile from your current skills, work history, and CV"
           >
@@ -269,7 +321,7 @@ export default function MasterProfileSection({ initial }: Props) {
           </button>
           <button
             onClick={handleSave}
-            disabled={isGenerating || isSaving || !draft.trim() || !isDirty}
+            disabled={isGenerating || isSaving || isDeleting || !draft.trim() || !isDirty}
             className={`text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-40 ${
               savedId
                 ? "border border-emerald-200 bg-emerald-50 text-emerald-700"

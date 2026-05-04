@@ -299,6 +299,7 @@ export default function MasterProfileSection({ initial }: Props) {
               <button
                 onClick={handleSave}
                 disabled={isGenerating || isSaving || !canAct}
+                data-build="v3-empty-deletes"
                 className={`text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-40 ${
                   savedId
                     ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
@@ -308,7 +309,7 @@ export default function MasterProfileSection({ initial }: Props) {
                 }`}
                 title={
                   willDelete
-                    ? "Saving an empty Profile will delete the saved version"
+                    ? "An empty Profile means delete the saved version. Click to confirm."
                     : undefined
                 }
               >
@@ -318,11 +319,11 @@ export default function MasterProfileSection({ initial }: Props) {
                   </>
                 ) : savedId ? (
                   <>
-                    <Check size={13} /> Saved
+                    <Check size={13} /> {willDelete ? "Deleted" : "Saved"}
                   </>
                 ) : willDelete ? (
                   <>
-                    <Save size={13} /> Save (delete)
+                    <Save size={13} /> Delete saved Profile
                   </>
                 ) : (
                   <>

@@ -3,7 +3,6 @@ import { createServerSupabaseClient } from "@/lib/supabase-server";
 import { callAI } from "@/lib/ai-router";
 import { getApiKeyValues } from "@/app/actions/api-keys";
 import { extractFactBase } from "./extract";
-import { tailorMasterToJD } from "./master-profile";
 import {
   AchievementFact,
   CertificationFact,
@@ -90,29 +89,26 @@ export async function tailorCV(input: TailorInput): Promise<TailorResult> {
 
   const factbaseText = serialiseFactBase(fb);
 
-  // Master-aware path: if user has a saved Master Profile, tailor it to the JD
-  // and inject it as the Profile section. The AI then only generates the rest
-  // of the CV (Experience, Skills, Education) and is forbidden from rewriting
-  // the Profile.
+  // Master-aware path: if user has a saved Master Profile, use it VERBATIM as
+  // the Profile section. The AI generates the rest of the CV (Experience,
+  // Skills, Education) and is told to copy the Profile word-for-word. The
+  // critic-rewrite step is also forbidden from touching it (see the
+  // restore-verbatim block after the rewrite loop below).
+  //
+  // Why verbatim by default: the user has curated their Master deliberately —
+  // including specific named systems, employer references, and exclusions.
+  // Per-JD adaptation by AI introduces drift (substituted named systems,
+  // invented credentials, dropped claims). Verbatim is predictable, fast, and
+  // honours the user's choices. Per-JD adaptation is opt-in via the per-CV
+  // "Adapt to this JD" button (Phase 2) — not the default.
   let preTailoredProfile: string | null = null;
   try {
     const master = await loadMasterProfile();
     if (master && master.summary?.trim()) {
-      const masterTailor = await tailorMasterToJD({
-        master: master.summary,
-        jdText: input.jdText,
-        cvId: input.cvId,
-        companyName: input.companyName,
-        roleName: input.roleName,
-        connectedProviders: keys,
-      });
-      if (masterTailor.tailored) {
-        preTailoredProfile = masterTailor.tailored;
-      }
-      if (masterTailor.warnings) warnings.push(...masterTailor.warnings);
+      preTailoredProfile = master.summary.trim();
     }
   } catch (e) {
-    console.error("[tailorCV] master tailor failed (continuing without):", e);
+    console.error("[tailorCV] master profile load failed (continuing without):", e);
   }
 
   const systemPrompt = buildSystemPrompt();
@@ -201,6 +197,9 @@ export async function tailorCV(input: TailorInput): Promise<TailorResult> {
       }
     }
     if (succeeded) {
+      // Restore verbatim Master if user has one — the critic must not silently
+      // mutate the Profile the user explicitly saved.
+      if (preTailoredProfile) current.summary = preTailoredProfile;
       return {
         tailoredCV: current,
         warnings,
@@ -209,6 +208,7 @@ export async function tailorCV(input: TailorInput): Promise<TailorResult> {
       };
     }
     if (current !== sanitised) {
+      if (preTailoredProfile) current.summary = preTailoredProfile;
       // Use the last rewrite even if not fully clean — better than the first pass.
       return {
         tailoredCV: current,
@@ -225,6 +225,7 @@ export async function tailorCV(input: TailorInput): Promise<TailorResult> {
     );
   }
 
+  if (preTailoredProfile) sanitised.summary = preTailoredProfile;
   return {
     tailoredCV: sanitised,
     warnings,
@@ -1765,8 +1766,10 @@ function buildUserPrompt(args: {
     .join("\n");
 
   const profileSection = preTailoredProfile
-    ? `=== PRE-TAILORED PROFILE (MUST USE VERBATIM) ===
-The user's Master Profile has already been tailored to this JD by a separate process. Use the following text VERBATIM as the "summary" field of your output. DO NOT rewrite, edit, summarise, or alter this text in any way:
+    ? `=== USER'S MASTER PROFILE (MUST USE VERBATIM) ===
+The user has saved this Master Profile and chosen to use it verbatim. Copy the following text EXACTLY into the "summary" field of your output — same wording, same punctuation, same word order. Do NOT rewrite, edit, summarise, paraphrase, or "improve" it. Even if you think a phrase could be sharper for this JD, leave it alone — the user has chosen this wording deliberately.
+
+If a JD-relevant fact in the FactBase isn't reflected in the Master Profile, surface it through the bullets, skills, or other sections — never by altering the Profile.
 
 ${preTailoredProfile}
 
@@ -1784,7 +1787,7 @@ Produce a UK-conventional, ATS-safe, JD-tailored CV using ONLY the FactBase abov
 - Pick the bullets and skills with the highest JD relevance.
 - Rewrite each chosen bullet using the XYZ formula where possible, but stay strictly within what the FactBase supports.
 ${preTailoredProfile
-  ? "- The Profile (\"summary\" field) is PRE-DETERMINED above. Copy it verbatim into the output. Do not modify it."
+  ? "- The Profile (\"summary\" field) is the user's Master Profile. Copy it VERBATIM into the output. Same words, same order. Do not modify it under any circumstances. JD-relevance is conveyed through the bullets and skills sections, NOT by editing the Profile."
   : "- Build a 3–4 line summary that anchors on the candidate's most JD-relevant existing experience."}
 - Surface JD keywords naturally where evidence exists.
 - List gaps honestly.

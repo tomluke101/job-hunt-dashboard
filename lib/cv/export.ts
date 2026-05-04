@@ -46,6 +46,13 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#039;");
 }
 
+// Same as escapeHtml but preserves line breaks as <br/>. Use for any field
+// that may contain user-typed multi-line content (Profile summary, bullet
+// items, education details, certification descriptions).
+function escapeHtmlMultiline(s: string): string {
+  return escapeHtml(s).replace(/\r?\n/g, "<br/>");
+}
+
 // Title-left + date-right alignment row. Borderless 2-cell table; ATS parses
 // these as plain inline text in reading order.
 function titleDateRow(titleHtml: string, dateText: string): string {
@@ -83,7 +90,7 @@ function renderBody(cv: TailoredCV): string {
   if (cv.summary) {
     out.push(sectionHeading("Profile"));
     out.push(
-      `<p style="font-size:11pt;line-height:1.5;margin:0 0 10pt 0;text-align:justify">${escapeHtml(cv.summary)}</p>`
+      `<p style="font-size:11pt;line-height:1.5;margin:0 0 10pt 0;text-align:justify">${escapeHtmlMultiline(cv.summary)}</p>`
     );
   }
 
@@ -124,7 +131,7 @@ function renderBody(cv: TailoredCV): string {
       if (r.bullets.length > 0) {
         out.push(
           `<ul style="margin:2pt 0 0 18pt;padding:0;font-size:11pt;line-height:1.5">
-            ${r.bullets.map((b) => `<li style="margin:0 0 3pt 0">${escapeHtml(b)}</li>`).join("")}
+            ${r.bullets.map((b) => `<li style="margin:0 0 3pt 0">${escapeHtmlMultiline(b)}</li>`).join("")}
           </ul>`
         );
       }
@@ -157,7 +164,7 @@ function renderBody(cv: TailoredCV): string {
       }
       if (e.details) {
         out.push(
-          `<div style="font-size:10.5pt;color:#555;margin:0">${escapeHtml(e.details)}</div>`
+          `<div style="font-size:10.5pt;color:#555;margin:0">${escapeHtmlMultiline(e.details)}</div>`
         );
       }
       out.push(`</div>`);
@@ -172,7 +179,7 @@ function renderBody(cv: TailoredCV): string {
         ${cv.certifications
           .map((c) => {
             const meta = [c.issuer, c.year].filter(Boolean).join(", ");
-            return `<li style="margin:0 0 3pt 0">${escapeHtml(c.content)}${
+            return `<li style="margin:0 0 3pt 0">${escapeHtmlMultiline(c.content)}${
               meta ? ` <span style="color:#555">(${escapeHtml(meta)})</span>` : ""
             }</li>`;
           })

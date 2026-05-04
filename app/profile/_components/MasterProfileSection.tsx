@@ -80,6 +80,7 @@ export default function MasterProfileSection({ initial }: Props) {
               summary: result.summary,
               source: "generated",
               factbase_hash: master?.factbase_hash ?? null,
+              exclusions: master?.exclusions ?? [],
               updated_at: new Date().toISOString(),
             });
           }
@@ -135,6 +136,7 @@ export default function MasterProfileSection({ initial }: Props) {
         summary: trimmed,
         source: nextSource,
         factbase_hash: master?.factbase_hash ?? null,
+        exclusions: master?.exclusions ?? [],
         updated_at: new Date().toISOString(),
       });
       setSavedId(true);
@@ -178,6 +180,7 @@ export default function MasterProfileSection({ initial }: Props) {
           summary: result.summary,
           source: "generated",
           factbase_hash: master?.factbase_hash ?? null,
+          exclusions: master?.exclusions ?? [],
           updated_at: new Date().toISOString(),
         });
       }

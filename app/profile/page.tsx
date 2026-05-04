@@ -1,4 +1,4 @@
-import { User, FileText, Sparkles, Pencil, Settings2, Briefcase, Star } from "lucide-react";
+import { User, FileText, Sparkles, Pencil, Settings2, Briefcase, Star, ShieldOff } from "lucide-react";
 import PageHeader from "@/app/_components/PageHeader";
 import ProfileCompletion from "./_components/ProfileCompletion";
 import ConstantsForm from "./_components/ConstantsForm";
@@ -8,6 +8,7 @@ import SkillsManager from "./_components/SkillsManager";
 import WritingExamples from "./_components/WritingExamples";
 import CoverLetterPrefsForm from "./_components/CoverLetterPrefsForm";
 import MasterProfileSection from "./_components/MasterProfileSection";
+import MasterExclusionsSection from "./_components/MasterExclusionsSection";
 import {
   getProfile, getCVs, getSkills, getWritingExamples, getProfileCompleteness, getCoverLetterPrefs, getEmployers,
 } from "@/app/actions/profile";
@@ -97,6 +98,17 @@ export default async function ProfilePage() {
           description="Your canonical Profile section — generated once with AI help, edited freely, used as the base for every CV (tailored per role)"
         >
           <MasterProfileSection initial={masterProfile} />
+        </Section>
+
+        <Section
+          icon={ShieldOff}
+          title="Profile exclusions"
+          description="Phrases the AI must never include in your Profile, regardless of how relevant the JD looks"
+        >
+          <MasterExclusionsSection
+            initial={masterProfile?.exclusions ?? []}
+            hasSavedMaster={!!masterProfile?.summary}
+          />
         </Section>
 
         <Section

@@ -10,13 +10,18 @@ import {
   ClipboardList,
   FileDown,
   FileText,
+  Pencil,
   Printer,
+  RotateCcw,
   Save,
   Sparkles,
   Loader2,
   RefreshCw,
+  Wand2,
 } from "lucide-react";
-import { tailorCV, refineTailoredCV, saveTailoredCV } from "@/app/actions/cv-tailoring";
+import { tailorCV, refineTailoredCV, saveTailoredCV, getMasterProfile } from "@/app/actions/cv-tailoring";
+import ProfileAdaptModal from "./ProfileAdaptModal";
+import ProfileEditModal from "./ProfileEditModal";
 import { updateApplication } from "@/app/actions/applications";
 import type { Application } from "@/app/actions/applications";
 import type { UserCV } from "@/app/actions/profile";
@@ -64,6 +69,12 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }:
   const [savedId, setSavedId] = useState<string | null>(preloadedSaved?.id ?? null);
   const [isSaving, startSave] = useTransition();
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Profile section actions (Phase 2 of Profile section).
+  const [profileAdaptOpen, setProfileAdaptOpen] = useState(false);
+  const [profileEditOpen, setProfileEditOpen] = useState(false);
+  const [isResettingProfile, startResetProfile] = useTransition();
+  const [profileMessage, setProfileMessage] = useState<string | null>(null);
 
   const outputRef = useRef<HTMLDivElement>(null);
   const jdTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -223,6 +234,31 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }:
     a.download = `${base}.doc`;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  // ── Profile section actions (Phase 2 of Profile section) ───────────────
+  // [Edit] [Adapt] [Reset] live above the rendered Profile and let the user
+  // override the verbatim Master for THIS CV without touching their default.
+  function handleResetProfileToMaster() {
+    if (!tailored) return;
+    setProfileMessage(null);
+    startResetProfile(async () => {
+      const fresh = await getMasterProfile();
+      if (!fresh?.summary?.trim()) {
+        setProfileMessage("No saved Master Profile to reset to. Save one on the Profile page first.");
+        return;
+      }
+      setTailored({ ...tailored, summary: fresh.summary.trim() });
+      setProfileMessage("Profile reset to your saved Master.");
+      setTimeout(() => setProfileMessage(null), 2500);
+    });
+  }
+
+  function handleProfileAccept(newSummary: string) {
+    if (!tailored) return;
+    setTailored({ ...tailored, summary: newSummary });
+    setProfileMessage("Profile updated for this CV.");
+    setTimeout(() => setProfileMessage(null), 2500);
   }
 
   function handleDownloadPDF() {
@@ -554,7 +590,74 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }:
             </div>
           )}
 
+          {/* Profile-section action bar — Edit / Adapt / Reset operate on the
+              Profile only (sentence-level, not full CV regenerate). */}
+          <div className="flex items-center justify-between gap-3 flex-wrap rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-2.5">
+            <div className="text-[11px] text-slate-500 inline-flex items-center gap-1.5">
+              <Sparkles size={11} className="text-slate-400" />
+              Profile is your saved Master, used verbatim by default.
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setProfileEditOpen(true)}
+                disabled={isTailoring || isRefining || isResettingProfile}
+                className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-100 transition-colors disabled:opacity-40"
+                title="Edit the Profile manually for this CV"
+              >
+                <Pencil size={12} /> Edit
+              </button>
+              <button
+                onClick={() => setProfileAdaptOpen(true)}
+                disabled={isTailoring || isRefining || isResettingProfile || !jobDescription.trim()}
+                className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors disabled:opacity-40"
+                title="AI adapts your Master Profile to this JD's vocabulary. Every named claim is preserved."
+              >
+                <Wand2 size={12} /> Adapt to this JD
+              </button>
+              <button
+                onClick={handleResetProfileToMaster}
+                disabled={isTailoring || isRefining || isResettingProfile}
+                className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors disabled:opacity-40"
+                title="Restore the Profile to your saved Master verbatim"
+              >
+                {isResettingProfile ? (
+                  <>
+                    <Loader2 size={12} className="animate-spin" /> Resetting…
+                  </>
+                ) : (
+                  <>
+                    <RotateCcw size={12} /> Reset to Master
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {profileMessage && (
+            <div className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+              {profileMessage}
+            </div>
+          )}
+
           <TailoredCVView cv={tailored} />
+
+          {profileAdaptOpen && (
+            <ProfileAdaptModal
+              jdText={jobDescription}
+              cvId={selectedCvId || undefined}
+              companyName={companyName || undefined}
+              roleName={roleName || undefined}
+              onAccept={handleProfileAccept}
+              onClose={() => setProfileAdaptOpen(false)}
+            />
+          )}
+          {profileEditOpen && tailored && (
+            <ProfileEditModal
+              initialValue={tailored.summary || ""}
+              onSave={handleProfileAccept}
+              onClose={() => setProfileEditOpen(false)}
+            />
+          )}
 
           <div className="rounded-2xl border border-slate-200 bg-white p-5">
             <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-2">

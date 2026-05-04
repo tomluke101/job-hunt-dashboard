@@ -191,6 +191,7 @@ export async function generateMasterProfileFromFactBase(opts: {
   cvId?: string;
   connectedProviders: Partial<Record<Provider, string>>;
   wizardContext?: WizardContextLib;
+  exclusions?: string[];
 }): Promise<MasterProfileGenerationResult> {
   const warnings: string[] = [];
 
@@ -220,7 +221,7 @@ export async function generateMasterProfileFromFactBase(opts: {
   // treated as canonical for the sector-invention scanner so wizard-provided
   // sectors / employers don't get flagged as inventions.
   const groundedText = `${factbaseText}\n\n${wizardText}`.trim();
-  const systemPrompt = buildMasterSystemPrompt();
+  const systemPrompt = buildMasterSystemPrompt(opts.exclusions ?? []);
   const userPrompt = `=== CANDIDATE FACTBASE ===
 ${factbaseText || "(empty — use the wizard answers below as primary input)"}
 
@@ -280,9 +281,18 @@ export async function tailorMasterToJD(opts: {
   cvId?: string;
   companyName?: string;
   roleName?: string;
+  exclusions?: string[];
   connectedProviders: Partial<Record<Provider, string>>;
 }): Promise<TailorMasterResult> {
   const warnings: string[] = [];
+
+  if (!opts.master || !opts.master.trim()) {
+    return {
+      error:
+        "No Master Profile to adapt. Save your Master Profile first.",
+      warnings,
+    };
+  }
 
   if (!opts.jdText || opts.jdText.trim().length < 30) {
     return {
@@ -292,31 +302,23 @@ export async function tailorMasterToJD(opts: {
     };
   }
 
-  const fbResult = await extractFactBase({ cvId: opts.cvId });
-  if (fbResult.error || !fbResult.factBase) {
-    return {
-      error: fbResult.error ?? "Could not load profile data.",
-      warnings,
-    };
-  }
-  const fb = fbResult.factBase;
-  warnings.push(...fb.warnings);
-
-  const factbaseText = serialiseFactBaseForMaster(fb);
-  const systemPrompt = buildMasterSystemPrompt();
+  // Run a CONSTRAINED adaptation. The model is forbidden from rewriting,
+  // restructuring, or substituting any claim. Allowed changes are word-level
+  // vocabulary swaps only, and only where the JD has clear domain-vocabulary
+  // preference. After the AI runs, a deterministic entity-preservation check
+  // verifies every named entity, credential, number, and acronym from the
+  // Master survived — if any went missing, we drop the adaptation and return
+  // the verbatim Master.
+  const systemPrompt = buildAdaptSystemPrompt(opts.exclusions ?? []);
   const userPrompt = `=== JOB DESCRIPTION ===
 ${opts.jdText.trim()}
 
-=== CANDIDATE'S MASTER PROFILE (preserve voice; adjust emphasis to the JD) ===
+=== CANDIDATE'S MASTER PROFILE (preserve nearly verbatim — see system rules) ===
 ${opts.master}
 
-=== CANDIDATE FACTBASE (truth contract — every claim must trace here) ===
-${factbaseText}
-
 ${opts.companyName ? `Target company: ${opts.companyName}\n` : ""}${opts.roleName ? `Target role: ${opts.roleName}\n` : ""}
-
 === TASK ===
-Adapt the Master Profile to this specific JD. Keep the user's voice and structure where possible. Surface JD-relevant emphasis from the FactBase. Apply ALL Profile rules. Return ONLY the JSON object: { "summary": string }.`;
+Identify if any words in the Master Profile have a JD-vocabulary equivalent that means the SAME thing. Produce a minimally-modified Profile. If no swaps are warranted, return the Master VERBATIM. Return ONLY the JSON object: { "summary": string }.`;
 
   let tailored: string | null = null;
   try {
@@ -336,21 +338,143 @@ Adapt the Master Profile to this specific JD. Keep the user's voice and structur
   }
 
   if (!tailored) {
-    return { error: "AI returned non-JSON output.", warnings };
+    warnings.push("Adaptation returned non-JSON output — using your Master verbatim.");
+    return { tailored: opts.master, warnings };
   }
 
-  // Run scanners + rewrite loop on the tailored output too
-  tailored = await runProfileScannersAndRewrite({
-    summary: tailored,
-    factbaseText,
-    factbaseFromFactBase: fb,
-    connectedProviders: opts.connectedProviders,
-    systemPrompt,
-    isMaster: false,
-    jdText: opts.jdText,
-  });
+  // Deterministic entity-preservation check. If the AI removed any named
+  // entity / credential / number from the Master, reject the adaptation and
+  // fall back to verbatim Master. Better to skip a JD-emphasis tweak than
+  // to drop the user's chosen claims.
+  const entityCheck = verifyEntitiesPreserved(opts.master, tailored);
+  if (!entityCheck.preserved) {
+    warnings.push(
+      `Adaptation dropped ${entityCheck.missing.length} named claim${entityCheck.missing.length === 1 ? "" : "s"} from your Master — using your Master verbatim. Missing: ${entityCheck.missing.slice(0, 5).join(", ")}${entityCheck.missing.length > 5 ? "…" : ""}`
+    );
+    return { tailored: opts.master, warnings };
+  }
 
+  // Adaptation passed entity preservation. Return it.
+  // Note: we deliberately DO NOT run the full scanner-rewrite loop here —
+  // adaptations are meant to be minimal, and re-running 15 scanners on a
+  // near-verbatim variant of an already-clean Master tends to push it
+  // further from the user's saved wording than necessary.
   return { tailored, warnings };
+}
+
+// ── Constrained-adapt system prompt ─────────────────────────────────────────
+// Used by the per-CV "Adapt to this JD" button. Hard rules forbid any
+// rewriting beyond word-level vocabulary alignment.
+function buildAdaptSystemPrompt(exclusions: string[]): string {
+  const exclusionsBlock = exclusions.length > 0
+    ? `\n\nUSER EXCLUSIONS (NEVER include these in the Profile, even if the Master mentions them):\n${exclusions.map((e) => `- ${e}`).join("\n")}\n`
+    : "";
+
+  return `You produce a single JSON object: { "summary": string } where summary is the user's Master Profile, minimally modified for vocabulary alignment with a specific JD.
+
+THIS IS NOT A REWRITE TASK. This is a vocabulary-alignment task. The default outcome is the Master Profile returned VERBATIM.
+
+ABSOLUTE RULES (every rule is hard — violation means the adaptation is rejected and the user's verbatim Master is used):
+
+1. KEEP every named entity verbatim. This includes:
+   - Company / employer names (Siemens DISW, Goldman Sachs, JLR, etc.)
+   - Built systems / tools (ERP, supplier tracker, dashboard, Power BI, etc.)
+   - Institutions / universities (Birmingham City University, LSE, etc.)
+   - Credentials and degree types (First-Class, BA, BSc, MA, MEng, MSc, MBA, PhD, etc.)
+   - Numerical claims (2x revenue growth, 80%+, £40k, 12 suppliers, etc.)
+   - Acronyms (3+ uppercase letters: ERP, BCU, DISW, MRP, SRM, etc.)
+   - Hyphenated compound terms (First-Class, end-to-end, cross-functional, etc.)
+
+2. KEEP every clause and sentence structure:
+   - No reordering sentences
+   - No merging clauses
+   - No splitting sentences
+   - No adding clauses
+   - No removing clauses
+
+3. KEEP every claim. Every distinct fact in the Master must appear in the adapted output, in the same sentence it lived in.
+
+4. DO NOT add new claims, even if the JD asks for skills the candidate has elsewhere in the FactBase.
+5. DO NOT remove claims, even if the JD doesn't care about them.
+6. DO NOT substitute one named system for another (e.g. NEVER swap "ERP" for "supplier tracker", NEVER swap "Siemens" for "JLR").
+
+ALLOWED CHANGES (only these — and only where the JD specifically uses different vocabulary):
+- Action-verb swaps where the JD prefers one verb: "managing" ↔ "running" / "owning" / "leading"
+- Field-vocabulary swaps where the JD uses an exact different phrase: "demand planning" ↔ "demand forecasting" / "materials planning"
+- Connective-tissue swaps: "specialising in" ↔ "running" / "owning" — only if the JD uses one of these consistently
+- Tense/voice fixes if the original has any (rare)
+
+If the Master's vocabulary already aligns with the JD's, return the Master VERBATIM. Default to verbatim — only deviate when the JD has a clearly preferred different word for the same concept.
+
+UK ENGLISH: British spellings throughout (organise, specialise, analyse, optimise, programme, colour, etc.). Never American.
+
+NO BANNED VOCABULARY: spearhead, leverage, orchestrate, championed, drove, pioneered, synergise, utilise, streamline, robust, seamless, cutting-edge, results-driven, passionate, dynamic, proven, demonstrated, hands-on, forward-thinking, fast-paced, world-class, best-in-class, value-add, absorbing.
+
+NO em-dashes (—). NO tricolons. NO new banned phrases of any kind.${exclusionsBlock}
+
+Return ONLY the JSON object: { "summary": string }.`;
+}
+
+// ── Deterministic entity-preservation check ────────────────────────────────
+// Extracts every named entity / credential / acronym / numerical claim from
+// the original Master and verifies all of them appear in the adapted text.
+// If any are missing, the adaptation has dropped a claim and must be rejected.
+
+function extractNamedEntities(text: string): string[] {
+  const out = new Set<string>();
+
+  // Multi-word capitalised phrases (2+ caps in sequence, 3+ chars per word).
+  // Catches: "Siemens DISW", "Birmingham City University", "Project Coordinator",
+  // "First-Class Business with Marketing BA" (each multi-word run separately).
+  // Skip sentence-initial caps where they aren't proper nouns by requiring 2+ words.
+  for (const m of text.matchAll(/\b[A-Z][a-zA-Z]{2,}(?:\s+[A-Z][a-zA-Z']{1,}){1,}\b/g)) {
+    out.add(m[0]);
+  }
+
+  // Acronyms (3+ uppercase letters) — ERP, BCU, DISW, MRP, JLR, etc.
+  for (const m of text.matchAll(/\b[A-Z]{3,}\b/g)) {
+    out.add(m[0]);
+  }
+
+  // Common 2-letter credential abbreviations — BA, BSc, MA, MSc, MBA, etc.
+  // Match only when used as a credential (followed by " from " / " in " / etc.,
+  // or preceded by a degree class / subject).
+  for (const m of text.matchAll(/\b(?:BA|BSc|BEng|MA|MSc|MEng|MBA|MFin|MPhil|PhD|ACA|ACCA|CFA|CIM|MRICS|FRICS)\b/g)) {
+    out.add(m[0]);
+  }
+
+  // Numerical claims with units. 2x, 80%, £40k, 3 years, 12 suppliers, etc.
+  // Capture the number+unit/word so it can be verified as a unit.
+  for (const m of text.matchAll(/\b\d+(?:\.\d+)?\s*(?:x|%|\+|years?|months?|weeks?|days?|k|m|bn|million|billion)\b/gi)) {
+    out.add(m[0].toLowerCase().replace(/\s+/g, " "));
+  }
+  // Currency-led numerical claims. £3.25, $40k, €1.2m, etc.
+  for (const m of text.matchAll(/[£$€]\s*\d+(?:\.\d+)?\s*[a-z]?\b/gi)) {
+    out.add(m[0].toLowerCase().replace(/\s+/g, ""));
+  }
+
+  // Hyphenated compound terms with a leading capital — "First-Class",
+  // "End-to-End", "Top-of-Cohort". Catches credentials and named compounds.
+  for (const m of text.matchAll(/\b[A-Z][a-z]+(?:-[A-Za-z]+)+\b/g)) {
+    out.add(m[0]);
+  }
+
+  return Array.from(out);
+}
+
+export function verifyEntitiesPreserved(
+  original: string,
+  adapted: string
+): { preserved: boolean; missing: string[] } {
+  const entities = extractNamedEntities(original);
+  if (entities.length === 0) return { preserved: true, missing: [] };
+  const adaptedLower = adapted.toLowerCase().replace(/\s+/g, " ");
+  const missing: string[] = [];
+  for (const e of entities) {
+    const needle = e.toLowerCase().replace(/\s+/g, " ");
+    if (!adaptedLower.includes(needle)) missing.push(e);
+  }
+  return { preserved: missing.length === 0, missing };
 }
 
 // ── Verify-after-rewrite loop for Master / Master-tailored output ────────────
@@ -637,10 +761,14 @@ function serialiseWizardContext(wc: WizardContextLib): string {
 // Master Profile system prompt — same Profile rules as the JD-tailored version
 // but written for the canonical version. We import the rules text from tailor.ts
 // to keep them in sync.
-function buildMasterSystemPrompt(): string {
+function buildMasterSystemPrompt(exclusions: string[] = []): string {
+  const exclusionsBlock = exclusions.length > 0
+    ? `\n\nUSER EXCLUSIONS (HARDEST RULE — never include these in the Profile, regardless of FactBase content or how relevant they seem):\n${exclusions.map((e) => `- ${e}`).join("\n")}\n`
+    : "";
+
   return `You produce a UK CV "Profile" section — the 3-4 sentence summary at the top of a CV. The output is a JSON object: { "summary": string }.
 
-Apply ALL of these rules. Every rule is hard.
+Apply ALL of these rules. Every rule is hard.${exclusionsBlock}
 
 UK ENGLISH (NON-NEGOTIABLE):
 - British spelling throughout: organise, specialise, analyse, optimise, programme, colour, behaviour, fulfil, recognise, centre, favourite, labour.

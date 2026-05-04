@@ -44,6 +44,11 @@ export interface MasterProfile {
   source: "manual" | "generated" | "edited";
   factbase_hash: string | null;
   updated_at: string;
+  // Phase 3 of Profile section: per-user list of phrases the user does not
+  // want included in any Profile generation, regardless of JD relevance.
+  // Defaults to empty array if the DB column doesn't exist yet (graceful
+  // degradation pre-migration).
+  exclusions: string[];
 }
 
 export async function getMasterProfile(): Promise<MasterProfile | null> {
@@ -61,7 +66,21 @@ export async function getMasterProfile(): Promise<MasterProfile | null> {
     console.error("[getMasterProfile] error:", error);
     return null;
   }
-  return data as MasterProfile | null;
+  if (!data) return null;
+  // Defensive: if the exclusions column hasn't been migrated yet, default to [].
+  const exclusions: string[] = Array.isArray((data as { exclusions?: unknown }).exclusions)
+    ? ((data as { exclusions: unknown[] }).exclusions.filter(
+        (e): e is string => typeof e === "string" && !!e.trim()
+      ) as string[])
+    : [];
+  return {
+    user_id: data.user_id,
+    summary: data.summary,
+    source: data.source,
+    factbase_hash: data.factbase_hash,
+    updated_at: data.updated_at,
+    exclusions,
+  };
 }
 
 export async function saveMasterProfile(input: {
@@ -98,6 +117,76 @@ export async function saveMasterProfile(input: {
   }
 }
 
+// Save the per-user "never include in Profile" list. Designed to gracefully
+// no-op (with a clear error) if the migration hasn't been run yet, so the
+// rest of the Master Profile flow keeps working. Once the column exists,
+// writes succeed and exclusions are honoured by all Profile prompts.
+export async function setMasterExclusions(
+  exclusions: string[]
+): Promise<{ error?: string; needsMigration?: boolean }> {
+  try {
+    const { userId } = await auth();
+    if (!userId) return { error: "Not signed in" };
+
+    // Sanitise: trim, drop empties, dedupe (case-insensitive), cap to 50.
+    const cleaned = Array.from(
+      new Map(
+        exclusions
+          .map((e) => (typeof e === "string" ? e.trim() : ""))
+          .filter(Boolean)
+          .map((e) => [e.toLowerCase(), e])
+      ).values()
+    ).slice(0, 50);
+
+    const supabase = await createServerSupabaseClient();
+    // Upsert just the exclusions column. We need the row to exist first; if
+    // the user has no Master saved yet, we create an empty-summary row would
+    // violate the NOT NULL on summary in some schemas, so we update only if
+    // a row exists. If no row exists, we tell the user to save a Master first.
+    const { data: existing } = await supabase
+      .from("user_master_profile")
+      .select("user_id")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (!existing) {
+      return {
+        error:
+          "Save your Master Profile first — exclusions attach to it, so the row needs to exist before we can store them.",
+      };
+    }
+
+    const { error } = await supabase
+      .from("user_master_profile")
+      .update({ exclusions: cleaned, updated_at: new Date().toISOString() })
+      .eq("user_id", userId);
+
+    if (error) {
+      // Detect missing-column error so the UI can show a clear "needs migration" message.
+      const msg = String(error.message ?? "");
+      const code = String((error as { code?: string }).code ?? "");
+      const missingColumn =
+        code === "42703" ||
+        /column .*exclusions.* does not exist/i.test(msg) ||
+        /could not find the .*exclusions.* column/i.test(msg);
+      if (missingColumn) {
+        return {
+          error:
+            "The exclusions feature needs a one-line database migration. Run the SQL in your Supabase dashboard (see deploy notes), then try again.",
+          needsMigration: true,
+        };
+      }
+      console.error("[setMasterExclusions] supabase error:", error);
+      return { error: error.message };
+    }
+    revalidatePath("/profile");
+    revalidatePath("/cv");
+    return {};
+  } catch (e) {
+    console.error("[setMasterExclusions] unexpected:", e);
+    return { error: e instanceof Error ? e.message : "Failed to save exclusions." };
+  }
+}
+
 export async function deleteMasterProfile(): Promise<{ error?: string }> {
   const { userId } = await auth();
   if (!userId) return { error: "Not signed in" };
@@ -126,7 +215,13 @@ export async function generateMasterProfile(input: {
   if (Object.keys(keys).length === 0) {
     return { warnings: [], error: "No AI provider connected. Add an API key in Settings." };
   }
+  // Pull the user's saved exclusions so they're honoured even by the FIRST
+  // Master generation (not just the per-CV adapt step). If the migration
+  // hasn't run, getMasterProfile gracefully returns exclusions: [].
+  const existing = await getMasterProfile();
+  const exclusions = existing?.exclusions ?? [];
   return generateMasterProfileFromFactBase({
+    exclusions,
     cvId: input.cvId,
     connectedProviders: keys,
     wizardContext: input.wizardContext,
@@ -176,6 +271,7 @@ export async function tailorMasterProfile(input: {
   cvId?: string;
   companyName?: string;
   roleName?: string;
+  exclusions?: string[];
 }): Promise<{ tailored?: string; warnings: string[]; error?: string }> {
   const keys = await getApiKeyValues();
   if (Object.keys(keys).length === 0) {
@@ -187,8 +283,62 @@ export async function tailorMasterProfile(input: {
     cvId: input.cvId,
     companyName: input.companyName,
     roleName: input.roleName,
+    exclusions: input.exclusions,
     connectedProviders: keys,
   });
+}
+
+// Per-CV adapter for the "Adapt to this JD" button. Loads the user's saved
+// Master + exclusions from the DB, runs the constrained adaptation, returns
+// both original and adapted (plus warnings) so the UI can render the diff.
+export async function adaptMasterForCV(input: {
+  jdText: string;
+  cvId?: string;
+  companyName?: string;
+  roleName?: string;
+}): Promise<{ master?: string; adapted?: string; warnings: string[]; error?: string; unchanged?: boolean }> {
+  const { userId } = await auth();
+  if (!userId) return { warnings: [], error: "Not signed in" };
+
+  const supabase = await createServerSupabaseClient();
+  const { data: masterRow } = await supabase
+    .from("user_master_profile")
+    .select("summary, exclusions")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  const masterSummary = (masterRow?.summary ?? "").trim();
+  if (!masterSummary) {
+    return {
+      warnings: [],
+      error: "No saved Master Profile to adapt. Save one on the Profile page first.",
+    };
+  }
+
+  const exclusions: string[] = Array.isArray(masterRow?.exclusions)
+    ? (masterRow.exclusions as unknown[]).filter((e): e is string => typeof e === "string" && !!e.trim())
+    : [];
+
+  const result = await tailorMasterProfile({
+    master: masterSummary,
+    jdText: input.jdText,
+    cvId: input.cvId,
+    companyName: input.companyName,
+    roleName: input.roleName,
+    exclusions,
+  });
+
+  if (result.error) {
+    return { warnings: result.warnings, error: result.error };
+  }
+
+  const adapted = result.tailored ?? masterSummary;
+  return {
+    master: masterSummary,
+    adapted,
+    warnings: result.warnings,
+    unchanged: adapted === masterSummary,
+  };
 }
 
 // ── Profile Builder prefill — wizard reads this to populate fields/suggestions ──

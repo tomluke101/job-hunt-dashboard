@@ -58,6 +58,7 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }:
   const [warnings, setWarnings] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isTailoring, startTailor] = useTransition();
+  const [tailorStage, setTailorStage] = useState<string | null>(null);
   const [refineText, setRefineText] = useState("");
   const [isRefining, startRefine] = useTransition();
   const [savedId, setSavedId] = useState<string | null>(preloadedSaved?.id ?? null);
@@ -91,30 +92,55 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }:
     !missingCv &&
     jobDescription.trim().length >= 30;
 
-  function handleTailor() {
+  // Stage cycle for the tailor pipeline (factbase extract → master tailor →
+  // AI generation → critic passes). Mirrors Master Profile UX so the user
+  // sees movement during the 30-60s wait.
+  function startTailorStageCycle() {
+    setTailorStage("Reading your CV, skills and work history…");
+    return [
+      setTimeout(() => setTailorStage("Tailoring your Profile to the JD…"), 4000),
+      setTimeout(() => setTailorStage("Drafting bullets and skills…"), 12000),
+      setTimeout(() => setTailorStage("Running quality critic…"), 24000),
+      setTimeout(() => setTailorStage("Polishing — almost done…"), 38000),
+    ];
+  }
+
+  // Single source of truth for tailor + regenerate. Always clears the previous
+  // tailored CV first so the spinner doesn't sit over a stale one (Tom flagged
+  // this as flicker).
+  function runTailor() {
     setError(null);
     setTailored(null);
     setWarnings([]);
     setSavedId(null);
     setSaveError(null);
+    const stageTimers = startTailorStageCycle();
     startTailor(async () => {
-      const result = await tailorCV({
-        jdText: jobDescription,
-        cvId: selectedCvId || undefined,
-        companyName: companyName || undefined,
-        roleName: roleName || undefined,
-      });
-      if (result.error) {
-        setError(result.error);
-        setWarnings(result.warnings ?? []);
-        return;
-      }
-      if (result.tailoredCV) {
-        setTailored(result.tailoredCV);
-        setWarnings(result.warnings ?? []);
+      try {
+        const result = await tailorCV({
+          jdText: jobDescription,
+          cvId: selectedCvId || undefined,
+          companyName: companyName || undefined,
+          roleName: roleName || undefined,
+        });
+        if (result.error) {
+          setError(result.error);
+          setWarnings(result.warnings ?? []);
+          return;
+        }
+        if (result.tailoredCV) {
+          setTailored(result.tailoredCV);
+          setWarnings(result.warnings ?? []);
+        }
+      } finally {
+        for (const t of stageTimers) clearTimeout(t);
+        setTailorStage(null);
       }
     });
   }
+
+  const handleTailor = runTailor;
+  const handleRegenerate = runTailor;
 
   function handleStartOver() {
     setTailored(null);
@@ -123,6 +149,7 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }:
     setRefineText("");
     setSavedId(null);
     setSaveError(null);
+    setTailorStage(null);
   }
 
   function handleSave() {
@@ -157,29 +184,6 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }:
     });
   }
 
-  function handleRegenerate() {
-    setError(null);
-    setWarnings([]);
-    setSavedId(null);
-    setSaveError(null);
-    startTailor(async () => {
-      const result = await tailorCV({
-        jdText: jobDescription,
-        cvId: selectedCvId || undefined,
-        companyName: companyName || undefined,
-        roleName: roleName || undefined,
-      });
-      if (result.error) {
-        setError(result.error);
-        setWarnings(result.warnings ?? []);
-        return;
-      }
-      if (result.tailoredCV) {
-        setTailored(result.tailoredCV);
-        setWarnings(result.warnings ?? []);
-      }
-    });
-  }
 
   function handleRefine() {
     if (!tailored || !refineText.trim()) return;
@@ -224,7 +228,12 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }:
   function handleDownloadPDF() {
     if (!tailored) return;
     const win = window.open("", "_blank", "width=900,height=1100");
-    if (!win) return;
+    if (!win) {
+      setSaveError(
+        "Browser blocked the PDF preview pop-up. Allow pop-ups for this site, or use the Word download instead."
+      );
+      return;
+    }
     win.document.write(tailoredCVToPrintHtml(tailored));
     win.document.close();
   }
@@ -427,14 +436,21 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }:
           )}
         </div>
 
-        <div className="border-t border-slate-100 bg-slate-50/50 px-6 py-4 flex items-center justify-between">
-          <div className="text-xs text-slate-500">
-            Truth contract: every claim traces to your profile or CV. No invented metrics.
+        <div className="border-t border-slate-100 bg-slate-50/50 px-6 py-4 flex items-center justify-between gap-3 flex-wrap">
+          <div className="text-xs text-slate-500 flex-1 min-w-0">
+            {isTailoring && tailorStage ? (
+              <span className="inline-flex items-center gap-1.5 text-slate-700 font-medium">
+                <Loader2 size={11} className="animate-spin text-blue-600" />
+                {tailorStage}
+              </span>
+            ) : (
+              "Truth contract: every claim traces to your profile or CV. No invented metrics."
+            )}
           </div>
           <button
             onClick={handleTailor}
             disabled={!canTailor}
-            className={`flex items-center gap-2 text-sm font-semibold px-5 py-2.5 rounded-xl transition-all ${
+            className={`flex items-center gap-2 text-sm font-semibold px-5 py-2.5 rounded-xl transition-all shrink-0 ${
               canTailor
                 ? "bg-slate-900 text-white hover:bg-slate-800 shadow-sm"
                 : "bg-slate-100 text-slate-400 cursor-not-allowed"

@@ -1710,9 +1710,23 @@ Vary bullet length deliberately. Mix short (10–15 words), medium (15–22), an
 
 ATS RULES
 - Standard section labels only: "Experience", "Education", "Skills", "Certifications", "Profile" (the renderer adds these — your job is to populate them).
-- Skills: a single flat array of 8–15 short noun-phrase items, ordered by JD relevance. Items use exact JD vocabulary where the FactBase supports the claim. Do not list skills that have no FactBase backing.
-- Each skill item is a short noun phrase ("Power BI", "supplier negotiation", "SAP S/4HANA migration"). Never a full sentence. Never categorised; just one ordered list.
-- The Skills section sits BETWEEN Profile and Experience in the rendered CV — it acts as a scan-friendly keyword block for ATS and recruiters. Pick the items that earn that prime placement.
+- Skills section sits BETWEEN Profile and Experience in the rendered CV — a scan-friendly keyword block for ATS and recruiters. Earn that prime placement with sharp categorisation.
+
+SKILLS — CATEGORISED GROUPS (NON-NEGOTIABLE):
+- Output as 3–5 categories, each with 3–7 items. Total items across all categories: 12–22.
+- Each item is a short noun phrase, never a sentence ("Power BI", "Supplier negotiation", "SAP S/4HANA migration", "End-to-end procurement"). Use JD vocabulary verbatim where the FactBase supports the claim.
+- Categories must be CONCRETE and DOMAIN-FIT — not generic buckets. Pick 3–5 from this list, OR invent equivalent categories that fit the candidate's profession:
+  · "Tools & Systems" / "Software & Platforms" (named tools: Excel, SAP, Power BI, Tableau, Figma, Git, AWS, Salesforce, etc.)
+  · "Methods" / "Frameworks" / "Methodologies" (techniques: Agile, FP&A, Lean Six Sigma, Design Thinking, Statistical analysis)
+  · "Domain Expertise" / "Functional Skills" (subject-matter areas: Procurement, Working capital, Demand forecasting, Brand strategy)
+  · "Leadership & Stakeholders" (people-facing: Cross-functional leadership, Stakeholder management, Vendor negotiation, Board reporting)
+  · "Technical / Coding / Modelling" (for technical roles: Python, SQL, statistical modelling, financial modelling)
+  · "Sector / Industry" (consumer goods, FMCG, B2B SaaS, audit, etc. — only if JD-relevant)
+- NEVER use a generic "Key Skills" or "Other" or "Miscellaneous" category as the only category. NEVER use a single category with all items dumped into it. NEVER use a category called just "Skills".
+- Order categories by JD relevance — the most JD-critical category first.
+- Within each category, order items by JD relevance.
+- Output shape: skills: [{ category: "Tools & Systems", items: ["Power BI", "SAP", ...] }, { category: "Methods", items: [...] }, ...]
+- If the FactBase genuinely doesn't support 3 categories worth of items, pick fewer (minimum 2 categories, minimum 3 items per category). Prefer fewer high-quality categorised items over a flat dump.
 
 ROLE BULLET RULES
 - Each role gets 3–6 bullets. The most JD-relevant role can have up to 7. Older roles get 2–4.

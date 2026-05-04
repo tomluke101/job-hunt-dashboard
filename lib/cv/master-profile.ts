@@ -401,10 +401,14 @@ async function runProfileScannersAndRewrite(args: {
   };
 
   let current = summary;
-  // Up to 4 rewrite attempts. Two wasn't enough — a stubborn model can
-  // re-introduce flagged structures in attempt 1 and still be shipping
-  // them by attempt 2.
-  for (let attempt = 0; attempt < 4; attempt++) {
+  const MAX_ATTEMPTS = 6;
+  // Track which flagged issues are recurring across attempts. After attempt 3
+  // we switch to a focused single-rule prompt — a stubborn rule keeps slipping
+  // through because the model is busy juggling other rules. Forcing a
+  // single-rule fix in plain English breaks the deadlock.
+  const recurrenceCount = new Map<string, number>();
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const stub = buildStub(current);
     const flagged = [
       ...scanProfile(stub),
@@ -412,12 +416,21 @@ async function runProfileScannersAndRewrite(args: {
     ];
     if (flagged.length === 0) return current;
 
-    const fixGuidance = buildFixGuidance(flagged, stub);
-    const escalated = attempt >= 1
-      ? "THIS IS THE SECOND REWRITE ATTEMPT — the previous rewrite still failed. Be ruthless about applying every fix.\n\n"
-      : "";
+    // Bucket recurrences so we know which rule is being stubborn.
+    for (const f of flagged) {
+      const key = bucketIssue(f.phrase);
+      recurrenceCount.set(key, (recurrenceCount.get(key) ?? 0) + 1);
+    }
 
-    const fixupPrompt = `${escalated}Your previous Profile output failed the critic. Each flagged issue below comes with the EXACT fix to apply. Apply every fix.
+    let fixupPrompt: string;
+
+    if (attempt < 3) {
+      // Attempts 0-2: full multi-rule fix prompt with all flagged issues.
+      const fixGuidance = buildFixGuidance(flagged, stub);
+      const escalated = attempt >= 1
+        ? `ATTEMPT ${attempt + 1} of ${MAX_ATTEMPTS} — the previous rewrite still failed. Be ruthless about applying every fix.\n\n`
+        : "";
+      fixupPrompt = `${escalated}Your previous Profile output failed the critic. Each flagged issue below comes with the EXACT fix to apply. Apply every fix.
 
 FLAGGED ISSUES AND FIXES:
 ${fixGuidance}
@@ -429,6 +442,27 @@ Previous (flawed) Profile:
 ${current}
 
 Return ONLY a JSON object: { "summary": string }. The corrected Profile must follow ALL rules.`;
+    } else {
+      // Attempts 3-5: focus on the SINGLE most-recurring issue. Strip the
+      // model's cognitive load so it can fix one thing without re-breaking
+      // others. Lead with a one-rule plain-English directive.
+      const sorted = Array.from(recurrenceCount.entries()).sort((a, b) => b[1] - a[1]);
+      const stubbornKey = sorted[0]?.[0] ?? "";
+      const stubbornFlag = flagged.find((f) => bucketIssue(f.phrase) === stubbornKey) ?? flagged[0];
+      const fixGuidance = buildFixGuidance([stubbornFlag], stub);
+      fixupPrompt = `FINAL ATTEMPT (${attempt + 1} of ${MAX_ATTEMPTS}). One rule keeps slipping through every rewrite. Fix ONLY this one rule. Leave the rest of the Profile alone if it already passes — your previous attempt was nearly correct.
+
+THE ONE RULE TO FIX:
+${fixGuidance}
+
+CANDIDATE FACTBASE (truth contract — do not invent claims):
+${factbaseText}
+
+Previous Profile (fix only the one rule above; preserve everything else verbatim if possible):
+${current}
+
+Return ONLY a JSON object: { "summary": string }.`;
+    }
 
     try {
       const result = await callAI({
@@ -445,9 +479,31 @@ Return ONLY a JSON object: { "summary": string }. The corrected Profile must fol
       return current;
     }
   }
-  // After 2 attempts, return whatever we have — better than blocking.
+  // After all attempts, return whatever we have — better than blocking.
   void isMaster;
   return current;
+}
+
+// Bucket an issue phrase into a short stable key so we can count recurrences
+// across attempts (e.g. all tricolon flags map to "tricolon").
+function bucketIssue(phrase: string): string {
+  const p = phrase.toLowerCase();
+  if (/tricolon/.test(p)) return "tricolon";
+  if (/em-dash/.test(p)) return "em-dash";
+  if (/first-person pronoun/.test(p)) return "first-person";
+  if (/third-person verb/.test(p)) return "third-person-verb";
+  if (/structural hedge/.test(p)) return "structural-hedge";
+  if (/sole\/ownership claim/.test(p)) return "anchor-leak";
+  if (/scope anchor/.test(p)) return "scope-leak";
+  if (/no outcome signal/.test(p)) return "no-outcome";
+  if (/passive cv-speak|introducer verb/.test(p)) return "passive-close";
+  if (/connective fluff|specialising in|focusing on/.test(p)) return "s1-fluff";
+  if (/jammed into one sentence|action verbs jammed/.test(p)) return "multi-action";
+  if (/invented sector descriptor/.test(p)) return "sector-invention";
+  if (/no specific named item|s3 contains no named/.test(p)) return "s3-strength";
+  if (/length is/.test(p)) return "length";
+  if (/uniform length/.test(p)) return "variance";
+  return "other";
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -620,6 +676,25 @@ NO closing aspiration ("seeking to leverage…", "in a dynamic environment…").
 BANNED VOCABULARY: spearhead, leverage, orchestrate, championed, drove, pioneered, synergise, utilise, streamline, robust, seamless, cutting-edge, delve, embark, results-driven, passionate, dynamic, proven, demonstrated, hands-on, end-to-end (as adjective in S3), forward-thinking, fast-paced, fast-moving, innovative-environment, world-class, best-in-class, hit the ground running, value-add, in today's [X] world.
 
 TRUTH CONTRACT: every claim must trace to the FactBase. No inventing metrics, scopes, tools, brands.
+
+NO FALSE CAUSAL LINKS (HARD):
+The Profile must not invent cause-and-effect chains by linking two unrelated FactBase rows with "by", "through", "via", or "after".
+- Each FactBase row is its own claim. If row A says the candidate scaled the function through 2x revenue growth (and lists what they MANAGED during that growth), and row B says they switched logistics providers (with no link to growth), you must NOT write "Scaled the function through 2x revenue growth BY switching logistics providers". The growth and the switch are two separate events.
+- Specifically banned patterns: "Scaled X by [unrelated action]", "Drove X through [unrelated action]", "Achieved X by [unrelated action]" where the action is not present IN THE SAME FactBase row as the scale claim.
+- Use the action that the FactBase actually attaches to the scale. If row A says "scaled through 2x growth, managing increased complexity, higher PO volumes, wider supplier base", S2 should pair the 2x with "absorbing higher PO volumes" or "managing wider supplier base" — words from THE SAME ROW.
+- If you want to mention the unrelated action (e.g. logistics switch), put it in S3 as a separate distinctive claim, not joined to S2's scope anchor.
+
+SOLE-VS-COLLABORATIVE ATTRIBUTION (HARD):
+Look at the FactBase wording carefully before claiming "sole", "built from scratch", "designed alone", "single-handed".
+- If a row says "Helped to design", "Collaborated with [X] to build", "Partnered with [Y] on", "Worked alongside [Z]" — the achievement is COLLABORATIVE. NEVER claim "sole architect", "sole builder", "designed from scratch alone" for that work.
+- Only claim "sole" / "built from scratch" / "designed from the ground up" when a FactBase row explicitly states the candidate did it alone, OR uses a first-person singular ("I designed and built X" with no other party named).
+- If you have TWO FactBase rows about TWO DIFFERENT systems — one solo, one collaborative — keep them attached to the right system. Do not transfer the "sole" claim from the solo system onto the collaborative one.
+- Acceptable wording for collaborative work: "co-designed", "partnered with [role] to design", "contributed to the design of", "helped build".
+
+NO GENERALISATION DRIFT:
+- Don't broaden FactBase scope claims. If a row says "supplier scorecard for our overseas supply base", do NOT write "global supplier risk framework". Stay within the wording of the row.
+- Don't promote scope. If FactBase says the candidate is a Supply Chain Analyst, do NOT write "Senior Supply Chain Manager". If FactBase says small business / startup, do NOT write "global enterprise" or "leading brand".
+- Acceptable to compress wording (paraphrase). Not acceptable to inflate it.
 
 IDENTITY ANCHORING (HARD): the Master Profile must lead with the candidate's CURRENT professional identity (most recent role / current employer's sector). NEVER mash up current and previous role titles into one identity claim ("Supply Chain Analyst and Project Coordinator" is BANNED — pick the current role only). NEVER blend sectors from current + previous employers into one statement ("e-commerce and enterprise software" when only the previous job was enterprise software is BANNED — use the current sector only). Previous roles belong in the Experience section of the CV, not the Profile.
 

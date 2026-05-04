@@ -34,6 +34,14 @@ export default function MasterProfileSection({ initial }: Props) {
 
   const wordCount = draft.trim().split(/\s+/).filter(Boolean).length;
   const isDirty = draft !== (master?.summary ?? "");
+
+  // Diagnostic log so we can verify in the browser console that the latest
+  // build is actually loaded. If you see this in Console with BUILD: v4-debug,
+  // the new code is live.
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log("[MasterProfileSection] BUILD: v4-debug | draft len:", draft.length, "| master.summary len:", master?.summary?.length ?? 0, "| isDirty:", isDirty);
+  }, [draft, master?.summary, isDirty]);
   const lastUpdated = master?.updated_at
     ? new Date(master.updated_at).toLocaleDateString("en-GB", {
         day: "numeric",
@@ -223,6 +231,10 @@ export default function MasterProfileSection({ initial }: Props) {
 
   return (
     <div className="space-y-3">
+      {/* TEMPORARY build indicator so we can confirm which JS bundle is loaded */}
+      <div className="text-[10px] inline-block px-2 py-0.5 rounded bg-amber-100 text-amber-900 font-mono">
+        BUILD v4-debug · {new Date().toISOString().slice(0, 10)}
+      </div>
       <p className="text-xs text-slate-500 leading-relaxed">
         Your canonical Profile — the strongest, sector-agnostic version of yourself. The CV
         generator uses this as the starting point for every application and tailors it to each

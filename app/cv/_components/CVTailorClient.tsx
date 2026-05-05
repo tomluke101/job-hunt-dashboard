@@ -590,56 +590,51 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }:
             </div>
           )}
 
-          {/* Profile-section action bar — Edit / Adapt / Reset operate on the
-              Profile only (sentence-level, not full CV regenerate). */}
-          <div className="flex items-center justify-between gap-3 flex-wrap rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-2.5">
-            <div className="text-[11px] text-slate-500 inline-flex items-center gap-1.5">
-              <Sparkles size={11} className="text-slate-400" />
-              Profile is your saved Master, used verbatim by default.
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setProfileEditOpen(true)}
-                disabled={isTailoring || isRefining || isResettingProfile}
-                className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-100 transition-colors disabled:opacity-40"
-                title="Edit the Profile manually for this CV"
-              >
-                <Pencil size={12} /> Edit
-              </button>
-              <button
-                onClick={() => setProfileAdaptOpen(true)}
-                disabled={isTailoring || isRefining || isResettingProfile || !jobDescription.trim()}
-                className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors disabled:opacity-40"
-                title="AI adapts your Master Profile to this JD's vocabulary. Every named claim is preserved."
-              >
-                <Wand2 size={12} /> Adapt to this JD
-              </button>
-              <button
-                onClick={handleResetProfileToMaster}
-                disabled={isTailoring || isRefining || isResettingProfile}
-                className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors disabled:opacity-40"
-                title="Restore the Profile to your saved Master verbatim"
-              >
-                {isResettingProfile ? (
-                  <>
-                    <Loader2 size={12} className="animate-spin" /> Resetting…
-                  </>
-                ) : (
-                  <>
-                    <RotateCcw size={12} /> Reset to Master
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-
           {profileMessage && (
             <div className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
               {profileMessage}
             </div>
           )}
 
-          <TailoredCVView cv={tailored} />
+          <TailoredCVView
+            cv={tailored}
+            profileActions={
+              <>
+                <button
+                  onClick={() => setProfileEditOpen(true)}
+                  disabled={isTailoring || isRefining || isResettingProfile}
+                  className="text-[11px] font-medium inline-flex items-center gap-1 px-2 py-1 rounded-md border border-slate-200 bg-white text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors disabled:opacity-40"
+                  title="Manually edit the Profile for this CV"
+                >
+                  <Pencil size={11} /> Edit
+                </button>
+                <button
+                  onClick={() => setProfileAdaptOpen(true)}
+                  disabled={isTailoring || isRefining || isResettingProfile || !jobDescription.trim()}
+                  className="text-[11px] font-semibold inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors disabled:opacity-40"
+                  title="AI adapts your saved Master Profile to this JD's vocabulary. Every named claim is preserved."
+                >
+                  <Wand2 size={11} /> Adapt to this JD
+                </button>
+                <button
+                  onClick={handleResetProfileToMaster}
+                  disabled={isTailoring || isRefining || isResettingProfile}
+                  className="text-[11px] font-medium inline-flex items-center gap-1 px-2 py-1 rounded-md border border-slate-200 bg-white text-slate-500 hover:text-slate-900 hover:bg-slate-50 transition-colors disabled:opacity-40"
+                  title="Restore the Profile to your saved Master verbatim"
+                >
+                  {isResettingProfile ? (
+                    <>
+                      <Loader2 size={11} className="animate-spin" /> Resetting…
+                    </>
+                  ) : (
+                    <>
+                      <RotateCcw size={11} /> Master
+                    </>
+                  )}
+                </button>
+              </>
+            }
+          />
 
           {profileAdaptOpen && (
             <ProfileAdaptModal

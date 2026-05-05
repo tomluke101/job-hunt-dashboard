@@ -5,6 +5,11 @@ import { Target, AlertTriangle, Check, X } from "lucide-react";
 
 interface Props {
   cv: TailoredCV;
+  // Optional actions rendered inline on the Profile section heading. Used by
+  // the CV tailor page to surface [Edit / Adapt to this JD / Reset to Master]
+  // adjacent to the Profile content. Not rendered in print/Word output —
+  // these are screen-only UI affordances.
+  profileActions?: React.ReactNode;
 }
 
 // Check whether a JD keyword surfaces verbatim (or as a clear stem) anywhere
@@ -71,7 +76,7 @@ function dateRange(start: string, end: string | null, isCurrent: boolean): strin
 
 const cvFontStack = `"Calibri", "Arial", "Helvetica", sans-serif`;
 
-export default function TailoredCVView({ cv }: Props) {
+export default function TailoredCVView({ cv, profileActions }: Props) {
   const bodyText = buildBodyText(cv);
   const keywordChecks = cv.jdKeywords.map((k) => ({
     keyword: k,
@@ -143,7 +148,7 @@ export default function TailoredCVView({ cv }: Props) {
         </header>
 
         {cv.summary && (
-          <Section title="Profile">
+          <Section title="Profile" actions={profileActions}>
             <p className="text-justify">{cv.summary}</p>
           </Section>
         )}
@@ -265,15 +270,30 @@ export default function TailoredCVView({ cv }: Props) {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  children,
+  actions,
+}: {
+  title: string;
+  children: React.ReactNode;
+  actions?: React.ReactNode;
+}) {
   return (
     <section className="mt-5">
-      <h2
-        className="mb-2 border-b border-slate-400 pb-0.5 font-bold uppercase text-slate-900"
-        style={{ fontSize: "10.5pt", letterSpacing: "0.10em" }}
-      >
-        {title}
-      </h2>
+      <div className="mb-2 flex items-end justify-between gap-3 border-b border-slate-400 pb-0.5">
+        <h2
+          className="font-bold uppercase text-slate-900"
+          style={{ fontSize: "10.5pt", letterSpacing: "0.10em" }}
+        >
+          {title}
+        </h2>
+        {actions && (
+          <div className="flex items-center gap-1.5 print:hidden -mb-1">
+            {actions}
+          </div>
+        )}
+      </div>
       {children}
     </section>
   );

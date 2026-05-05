@@ -15,7 +15,9 @@ import {
 import {
   generateMasterProfileFromFactBase,
   tailorMasterToJD,
+  scanExcludedPhrases,
 } from "@/lib/cv/master-profile";
+import { scanProfile } from "@/lib/cv/tailor";
 import { getApiKeyValues } from "@/app/actions/api-keys";
 import type { TailoredCV } from "@/lib/cv/tailored-cv";
 
@@ -505,6 +507,85 @@ export async function tailorMasterProfile(input: {
     exclusions: input.exclusions,
     connectedProviders: keys,
   });
+}
+
+// ── Inline Profile-text scanning (P2) ───────────────────────────────────
+// Wraps the deterministic scanProfile + exclusions check for client-side
+// MasterCard inline feedback. Returns flagged issues as { hint, where }
+// pairs the UI can render directly under the textarea.
+//
+// Cheap and safe — pure regex, no AI calls. Debounced client-side.
+export interface ProfileScanIssue {
+  // Short user-facing label of the rule violated, e.g. "Tricolon", "Em-dash",
+  // "Excluded phrase", "Banned vocabulary".
+  rule: string;
+  // The full explanation from the scanner, with the suggested fix where
+  // applicable. Rendered as the body of the inline warning row.
+  detail: string;
+}
+
+export async function scanProfileText(input: {
+  text: string;
+  exclusions?: string[];
+}): Promise<{ issues: ProfileScanIssue[] }> {
+  const text = (input.text ?? "").trim();
+  if (!text) return { issues: [] };
+
+  // Build a minimal TailoredCV stub for scanProfile. Scanners only read
+  // .summary and (for brand-tier check) .roles[0].company. We leave roles
+  // empty so the brand-tier scanner doesn't false-flag.
+  const stub: TailoredCV = {
+    contact: { name: "", email: null, phone: null, location: null, linkedin: null },
+    summary: text,
+    skills: [],
+    roles: [],
+    education: [],
+    certifications: [],
+    languages: [],
+    interests: [],
+    jdKeywords: [],
+    gaps: [],
+  };
+
+  const flagged = [
+    ...scanProfile(stub),
+    ...scanExcludedPhrases({ summary: text, exclusions: input.exclusions ?? [] }),
+  ];
+
+  // Convert flagged hits into compact issues with a short rule label so the
+  // UI can group / colour them.
+  const issues: ProfileScanIssue[] = flagged.map((f) => ({
+    rule: ruleLabelFromPhrase(f.phrase),
+    detail: f.phrase,
+  }));
+  return { issues };
+}
+
+function ruleLabelFromPhrase(phrase: string): string {
+  const p = phrase.toLowerCase();
+  if (/tricolon/.test(p)) return "Tricolon";
+  if (/em-dash/.test(p)) return "Em-dash";
+  if (/first-person pronoun|third-person verb|implied first person/.test(p))
+    return "Voice";
+  if (/structural hedge|period of/.test(p)) return "Hedge";
+  if (/sole\/ownership claim|anchor leak/.test(p)) return "Anchor placement";
+  if (/scope anchor.*S2 only|S1 contains a scope anchor/.test(p))
+    return "Scope-anchor leak";
+  if (/no outcome signal/.test(p)) return "Missing outcome";
+  if (/passive cv-speak|introducer verb/.test(p)) return "Passive close";
+  if (/connective fluff|specialising in|focusing on/.test(p)) return "S1 fluff";
+  if (/jammed|action verbs jammed/.test(p)) return "Multi-action S2";
+  if (/invented sector descriptor/.test(p)) return "Sector invention";
+  if (/no specific named item|s3 contains no named/.test(p)) return "Weak S3";
+  if (/length is/.test(p)) return "Length";
+  if (/uniform length/.test(p)) return "Variance";
+  if (/excluded phrase/.test(p)) return "Excluded phrase";
+  if (/adjective stack/.test(p)) return "Adjective stack";
+  if (/sentence 2 contains no number/.test(p)) return "Weak S2";
+  if (/closing sentence is a generic|aspiration/.test(p)) return "Aspirational close";
+  if (/banned/.test(p)) return "Banned vocab";
+  if (/jd echo/.test(p)) return "JD echo";
+  return "Issue";
 }
 
 // ── Master fit-scoring (B2) ──────────────────────────────────────────────

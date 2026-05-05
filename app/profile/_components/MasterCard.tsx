@@ -6,9 +6,10 @@
 // existing master = delete). Default toggle, regenerate, delete-confirm all
 // in this component so the parent list stays simple.
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect } from "react";
 import {
   AlertCircle,
+  AlertTriangle,
   Check,
   ChevronDown,
   ChevronUp,
@@ -30,7 +31,9 @@ import {
   generateMasterProfile,
   setMasterExclusions,
   getMasterProfileById,
+  scanProfileText,
   type MasterProfile,
+  type ProfileScanIssue,
 } from "@/app/actions/cv-tailoring";
 
 interface Props {
@@ -54,6 +57,40 @@ export default function MasterCard({ master, onChange }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
   const [generationStage, setGenerationStage] = useState<string | null>(null);
+
+  // Inline quality scan — runs on summaryDraft (debounced 600ms after typing
+  // stops). Surfaces tricolons, em-dashes, banned vocab, missing anchors,
+  // excluded phrases, etc. as a collapsible warning row beneath the textarea
+  // so the user knows what's wrong before they save.
+  const [scanIssues, setScanIssues] = useState<ProfileScanIssue[]>([]);
+  const [scanIssuesOpen, setScanIssuesOpen] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
+
+  useEffect(() => {
+    const text = summaryDraft.trim();
+    if (!text) {
+      setScanIssues([]);
+      return;
+    }
+    setIsScanning(true);
+    let cancelled = false;
+    const handle = setTimeout(async () => {
+      try {
+        const r = await scanProfileText({
+          text,
+          exclusions: exclusionsDraft,
+        });
+        if (cancelled) return;
+        setScanIssues(r.issues);
+      } finally {
+        if (!cancelled) setIsScanning(false);
+      }
+    }, 600);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [summaryDraft, exclusionsDraft]);
 
   const isDirty =
     nameDraft.trim() !== master.name ||
@@ -353,6 +390,47 @@ export default function MasterCard({ master, onChange }: Props) {
         <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900 flex items-start gap-1.5">
           <AlertCircle size={11} className="mt-0.5 shrink-0" />
           <span>{error}</span>
+        </div>
+      )}
+
+      {/* Inline quality scan — surfaces issues like tricolons, em-dashes,
+          banned vocab, excluded phrases as user types. Collapsible so the
+          card stays tidy when there are many issues. */}
+      {scanIssues.length > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2">
+          <button
+            onClick={() => setScanIssuesOpen((v) => !v)}
+            className="w-full text-left text-[11px] font-medium text-amber-900 hover:text-amber-950 inline-flex items-center gap-1.5"
+          >
+            {scanIssuesOpen ? (
+              <ChevronUp size={11} />
+            ) : (
+              <ChevronDown size={11} />
+            )}
+            <AlertTriangle size={11} />
+            {scanIssues.length} quality issue{scanIssues.length === 1 ? "" : "s"} flagged
+            <span className="ml-1 font-normal text-amber-700/80">
+              — {Array.from(new Set(scanIssues.map((i) => i.rule))).slice(0, 4).join(", ")}
+              {Array.from(new Set(scanIssues.map((i) => i.rule))).length > 4 ? "…" : ""}
+            </span>
+          </button>
+          {scanIssuesOpen && (
+            <ul className="mt-2 space-y-1.5">
+              {scanIssues.map((issue, i) => (
+                <li key={i} className="text-[11px] text-amber-900 leading-relaxed flex items-start gap-1.5">
+                  <span className="shrink-0 inline-block px-1.5 py-0.5 rounded bg-amber-200 text-amber-950 font-semibold text-[10px]">
+                    {issue.rule}
+                  </span>
+                  <span>{issue.detail}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+      {isScanning && scanIssues.length === 0 && summaryDraft.trim().length > 40 && (
+        <div className="text-[10px] text-slate-400 inline-flex items-center gap-1">
+          <Loader2 size={9} className="animate-spin" /> checking quality…
         </div>
       )}
 

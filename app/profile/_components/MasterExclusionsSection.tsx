@@ -108,7 +108,7 @@ export default function MasterExclusionsSection({ initial, hasSavedMaster }: Pro
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
           disabled={!hasSavedMaster || isSaving}
-          placeholder='e.g. "supplier performance tracker", "lifeguard work", "any sole architect claim"'
+          placeholder="e.g. a tool name you don't want surfaced, an old role, or a specific claim you've moved on from"
           className="flex-1 text-xs border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 disabled:opacity-40 placeholder-slate-300"
         />
         <button

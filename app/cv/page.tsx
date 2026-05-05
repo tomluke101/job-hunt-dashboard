@@ -6,16 +6,17 @@ import { getApiKeys } from "@/app/actions/api-keys";
 import { getTaskPreferences } from "@/app/actions/preferences";
 import { getApplications } from "@/app/actions/applications";
 import { getCVs } from "@/app/actions/profile";
-import { getSavedTailoredCVs, type SavedTailoredCV } from "@/app/actions/cv-tailoring";
+import { getSavedTailoredCVs, getMasterProfiles, type SavedTailoredCV } from "@/app/actions/cv-tailoring";
 import type { Provider } from "@/lib/ai-providers";
 
 export default async function CVPage() {
-  const [savedKeys, preferences, applications, cvs, savedCVs] = await Promise.all([
+  const [savedKeys, preferences, applications, cvs, savedCVs, masters] = await Promise.all([
     getApiKeys(),
     getTaskPreferences(),
     getApplications(),
     getCVs(),
     getSavedTailoredCVs(),
+    getMasterProfiles(),
   ]);
 
   const connectedProviders = savedKeys.map((k) => k.provider as Provider);
@@ -47,6 +48,7 @@ export default async function CVPage() {
             applications={applications}
             cvs={cvs}
             savedCVByApp={savedCVByApp}
+            masters={masters}
           />
         </Suspense>
       </div>

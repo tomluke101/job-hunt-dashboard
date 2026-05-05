@@ -10,6 +10,9 @@ interface Props {
   cvId?: string;
   companyName?: string;
   roleName?: string;
+  // Optional — which Master to adapt. Falls back to the user's default if
+  // not specified.
+  masterId?: string;
   // Called when the user accepts the adapted Profile to use it for THIS CV
   // only. The parent updates tailored.summary.
   onAccept: (adapted: string) => void;
@@ -29,6 +32,7 @@ export default function ProfileAdaptModal({
   cvId,
   companyName,
   roleName,
+  masterId,
   onAccept,
   onClose,
 }: Props) {
@@ -52,6 +56,7 @@ export default function ProfileAdaptModal({
         cvId,
         companyName,
         roleName,
+        masterId,
       });
       if (r.error) {
         setError(r.error);

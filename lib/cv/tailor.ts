@@ -19,18 +19,24 @@ import {
 } from "./factbase";
 import { TailoredCV, TailoredContact } from "./tailored-cv";
 
-// Load the user's saved Master Profile, if any.
-async function loadMasterProfile(): Promise<{ summary: string } | null> {
+// Load the user's saved Master Profile. If masterId is provided, loads that
+// specific one; otherwise loads the default Master.
+async function loadMasterProfile(masterId?: string): Promise<{ summary: string; name: string } | null> {
   try {
     const { userId } = await auth();
     if (!userId) return null;
     const supabase = await createServerSupabaseClient();
-    const { data } = await supabase
+    let query = supabase
       .from("user_master_profile")
-      .select("summary")
-      .eq("user_id", userId)
-      .maybeSingle();
-    return data && data.summary ? { summary: data.summary } : null;
+      .select("summary, name")
+      .eq("user_id", userId);
+    if (masterId) {
+      query = query.eq("id", masterId);
+    } else {
+      query = query.eq("is_default", true);
+    }
+    const { data } = await query.maybeSingle();
+    return data && data.summary ? { summary: data.summary, name: data.name ?? "My Master" } : null;
   } catch (e) {
     console.error("[loadMasterProfile] error:", e);
     return null;
@@ -42,6 +48,9 @@ export interface TailorInput {
   cvId?: string;
   companyName?: string;
   roleName?: string;
+  // Optional — which Master to use. If omitted, the user's default Master
+  // is used. Lets the UI pass the explicit selection from the picker.
+  masterId?: string;
 }
 
 export interface RefineInput extends TailorInput {
@@ -103,7 +112,7 @@ export async function tailorCV(input: TailorInput): Promise<TailorResult> {
   // "Adapt to this JD" button (Phase 2) — not the default.
   let preTailoredProfile: string | null = null;
   try {
-    const master = await loadMasterProfile();
+    const master = await loadMasterProfile(input.masterId);
     if (master && master.summary?.trim()) {
       preTailoredProfile = master.summary.trim();
     }

@@ -19,7 +19,7 @@ import {
   RefreshCw,
   Wand2,
 } from "lucide-react";
-import { tailorCV, refineTailoredCV, saveTailoredCV, getMasterProfile } from "@/app/actions/cv-tailoring";
+import { tailorCV, refineTailoredCV, saveTailoredCV, getMasterProfileById, type MasterProfile } from "@/app/actions/cv-tailoring";
 import ProfileAdaptModal from "./ProfileAdaptModal";
 import ProfileEditModal from "./ProfileEditModal";
 import { updateApplication } from "@/app/actions/applications";
@@ -38,9 +38,10 @@ interface Props {
   applications: Application[];
   cvs: UserCV[];
   savedCVByApp?: Record<string, SavedTailoredCV>;
+  masters: MasterProfile[];
 }
 
-export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }: Props) {
+export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, masters }: Props) {
   const searchParams = useSearchParams();
   const preselectedAppId = searchParams.get("applicationId");
   const preloadedSaved = preselectedAppId ? savedCVByApp[preselectedAppId] : undefined;
@@ -75,6 +76,11 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }:
   const [profileEditOpen, setProfileEditOpen] = useState(false);
   const [isResettingProfile, startResetProfile] = useTransition();
   const [profileMessage, setProfileMessage] = useState<string | null>(null);
+
+  // Master picker — defaults to user's default Master, can be switched per CV.
+  const defaultMaster = masters.find((m) => m.is_default) ?? masters[0] ?? null;
+  const [selectedMasterId, setSelectedMasterId] = useState<string>(defaultMaster?.id ?? "");
+  const selectedMaster = masters.find((m) => m.id === selectedMasterId) ?? defaultMaster;
 
   const outputRef = useRef<HTMLDivElement>(null);
   const jdTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -133,6 +139,7 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }:
           cvId: selectedCvId || undefined,
           companyName: companyName || undefined,
           roleName: roleName || undefined,
+          masterId: selectedMasterId || undefined,
         });
         if (result.error) {
           setError(result.error);
@@ -243,13 +250,16 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }:
     if (!tailored) return;
     setProfileMessage(null);
     startResetProfile(async () => {
-      const fresh = await getMasterProfile();
+      // Reset to whichever Master is currently selected for this CV.
+      const fresh = selectedMasterId
+        ? await getMasterProfileById(selectedMasterId)
+        : null;
       if (!fresh?.summary?.trim()) {
         setProfileMessage("No saved Master Profile to reset to. Save one on the Profile page first.");
         return;
       }
       setTailored({ ...tailored, summary: fresh.summary.trim() });
-      setProfileMessage("Profile reset to your saved Master.");
+      setProfileMessage(`Profile reset to ${fresh.name}.`);
       setTimeout(() => setProfileMessage(null), 2500);
     });
   }
@@ -472,6 +482,49 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }:
           )}
         </div>
 
+        {/* Master picker — auto-defaults to user's default Master, can be
+            switched per CV. Shown above the Tailor footer so the user knows
+            which Profile will be used before clicking. */}
+        {masters.length > 0 && (
+          <div className="border-t border-slate-100 bg-white px-6 py-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="text-xs text-slate-500 inline-flex items-center gap-1.5">
+                <Sparkles size={11} className="text-blue-500" />
+                <span>
+                  Master Profile:{" "}
+                  <span className="font-semibold text-slate-900">
+                    {selectedMaster?.name ?? "—"}
+                  </span>
+                  {selectedMaster?.is_default && (
+                    <span className="ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded bg-blue-50 border border-blue-100 text-blue-700">
+                      default
+                    </span>
+                  )}
+                </span>
+              </div>
+              {masters.length > 1 && (
+                <div className="relative">
+                  <select
+                    value={selectedMasterId}
+                    onChange={(e) => setSelectedMasterId(e.target.value)}
+                    className="text-xs border border-slate-200 rounded-lg px-3 py-1.5 pr-8 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 appearance-none bg-white text-slate-800"
+                  >
+                    {masters.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name}
+                        {m.is_default ? " · default" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown
+                    size={12}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
         <div className="border-t border-slate-100 bg-slate-50/50 px-6 py-4 flex items-center justify-between gap-3 flex-wrap">
           <div className="text-xs text-slate-500 flex-1 min-w-0">
             {isTailoring && tailorStage ? (
@@ -642,6 +695,7 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {} }:
               cvId={selectedCvId || undefined}
               companyName={companyName || undefined}
               roleName={roleName || undefined}
+              masterId={selectedMasterId || undefined}
               onAccept={handleProfileAccept}
               onClose={() => setProfileAdaptOpen(false)}
             />

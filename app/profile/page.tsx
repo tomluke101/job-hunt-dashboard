@@ -1,4 +1,4 @@
-import { User, FileText, Sparkles, Pencil, Settings2, Briefcase, Star, ShieldOff } from "lucide-react";
+import { User, FileText, Sparkles, Pencil, Settings2, Briefcase, Star } from "lucide-react";
 import PageHeader from "@/app/_components/PageHeader";
 import ProfileCompletion from "./_components/ProfileCompletion";
 import ConstantsForm from "./_components/ConstantsForm";
@@ -7,12 +7,11 @@ import WorkHistoryManager from "./_components/WorkHistoryManager";
 import SkillsManager from "./_components/SkillsManager";
 import WritingExamples from "./_components/WritingExamples";
 import CoverLetterPrefsForm from "./_components/CoverLetterPrefsForm";
-import MasterProfileSection from "./_components/MasterProfileSection";
-import MasterExclusionsSection from "./_components/MasterExclusionsSection";
+import MastersListSection from "./_components/MastersListSection";
 import {
   getProfile, getCVs, getSkills, getWritingExamples, getProfileCompleteness, getCoverLetterPrefs, getEmployers,
 } from "@/app/actions/profile";
-import { getMasterProfile } from "@/app/actions/cv-tailoring";
+import { getMasterProfiles } from "@/app/actions/cv-tailoring";
 
 function Section({ icon: Icon, title, description, children }: {
   icon: React.ElementType;
@@ -39,7 +38,7 @@ function Section({ icon: Icon, title, description, children }: {
 }
 
 export default async function ProfilePage() {
-  const [profile, cvs, skills, writingExamples, completeness, clPrefs, employers, masterProfile] = await Promise.all([
+  const [profile, cvs, skills, writingExamples, completeness, clPrefs, employers, masters] = await Promise.all([
     getProfile(),
     getCVs(),
     getSkills(),
@@ -47,7 +46,7 @@ export default async function ProfilePage() {
     getProfileCompleteness(),
     getCoverLetterPrefs(),
     getEmployers(),
-    getMasterProfile(),
+    getMasterProfiles(),
   ]);
 
   return (
@@ -94,21 +93,10 @@ export default async function ProfilePage() {
 
         <Section
           icon={Star}
-          title="Master Profile"
-          description="Your canonical Profile section — generated once with AI help, edited freely, used as the base for every CV (tailored per role)"
+          title="Master Profiles"
+          description="Save one or more canonical Profiles — one per role family you apply to (e.g. supply chain, property, finance). The CV builder uses your default unless you pick a different one."
         >
-          <MasterProfileSection initial={masterProfile} />
-        </Section>
-
-        <Section
-          icon={ShieldOff}
-          title="Profile exclusions"
-          description="Phrases the AI must never include in your Profile, regardless of how relevant the JD looks"
-        >
-          <MasterExclusionsSection
-            initial={masterProfile?.exclusions ?? []}
-            hasSavedMaster={!!masterProfile?.summary}
-          />
+          <MastersListSection initial={masters} />
         </Section>
 
         <Section

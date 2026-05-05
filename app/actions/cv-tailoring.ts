@@ -33,100 +33,287 @@ export async function refineTailoredCV(input: RefineInput): Promise<TailorResult
   return refineTailoredCVImpl(input);
 }
 
-// ── Master Profile ───────────────────────────────────────────────────────────
+// ── Master Profiles (multi-Master) ───────────────────────────────────────────
 //
-// The user's canonical Profile. Generated once with system help, edited freely,
-// saved permanently. Every CV generation tailors this to the specific JD.
+// Users can save multiple Masters (e.g. "Supply Chain Analyst", "Commercial
+// Property Master") with one marked as default. CV tailoring uses the user's
+// chosen Master per JD; if not specified, the default is used.
 
 export interface MasterProfile {
+  id: string;
   user_id: string;
+  name: string;
   summary: string;
   source: "manual" | "generated" | "edited";
   factbase_hash: string | null;
   updated_at: string;
-  // Phase 3 of Profile section: per-user list of phrases the user does not
-  // want included in any Profile generation, regardless of JD relevance.
-  // Defaults to empty array if the DB column doesn't exist yet (graceful
-  // degradation pre-migration).
+  created_at: string;
+  is_default: boolean;
+  // Per-Master "never include in Profile" list. Phrases the AI must honour
+  // when this Master is in use (Master generator + per-CV Adapt prompts).
   exclusions: string[];
 }
 
-export async function getMasterProfile(): Promise<MasterProfile | null> {
-  const { userId } = await auth();
-  if (!userId) return null;
+function rowToMaster(data: Record<string, unknown>): MasterProfile {
+  const exclusions: string[] = Array.isArray(data.exclusions)
+    ? (data.exclusions as unknown[]).filter(
+        (e): e is string => typeof e === "string" && !!e.trim()
+      )
+    : [];
+  return {
+    id: String(data.id ?? ""),
+    user_id: String(data.user_id ?? ""),
+    name: String(data.name ?? "My Master"),
+    summary: String(data.summary ?? ""),
+    source: (data.source as MasterProfile["source"]) ?? "manual",
+    factbase_hash: (data.factbase_hash as string | null) ?? null,
+    updated_at: String(data.updated_at ?? ""),
+    created_at: String(data.created_at ?? data.updated_at ?? ""),
+    is_default: !!data.is_default,
+    exclusions,
+  };
+}
 
+// List every Master the signed-in user has saved, default first.
+export async function getMasterProfiles(): Promise<MasterProfile[]> {
+  const { userId } = await auth();
+  if (!userId) return [];
   const supabase = await createServerSupabaseClient();
   const { data, error } = await supabase
     .from("user_master_profile")
     .select("*")
     .eq("user_id", userId)
-    .maybeSingle();
-
+    .order("is_default", { ascending: false })
+    .order("created_at", { ascending: true });
   if (error) {
-    console.error("[getMasterProfile] error:", error);
-    return null;
+    console.error("[getMasterProfiles] error:", error);
+    return [];
   }
-  if (!data) return null;
-  // Defensive: if the exclusions column hasn't been migrated yet, default to [].
-  const exclusions: string[] = Array.isArray((data as { exclusions?: unknown }).exclusions)
-    ? ((data as { exclusions: unknown[] }).exclusions.filter(
-        (e): e is string => typeof e === "string" && !!e.trim()
-      ) as string[])
-    : [];
-  return {
-    user_id: data.user_id,
-    summary: data.summary,
-    source: data.source,
-    factbase_hash: data.factbase_hash,
-    updated_at: data.updated_at,
-    exclusions,
-  };
+  return (data ?? []).map((row) => rowToMaster(row as Record<string, unknown>));
 }
 
-export async function saveMasterProfile(input: {
+// Get the user's default Master, or null if they have none.
+export async function getDefaultMasterProfile(): Promise<MasterProfile | null> {
+  const { userId } = await auth();
+  if (!userId) return null;
+  const supabase = await createServerSupabaseClient();
+  const { data, error } = await supabase
+    .from("user_master_profile")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("is_default", true)
+    .maybeSingle();
+  if (error) {
+    console.error("[getDefaultMasterProfile] error:", error);
+    return null;
+  }
+  return data ? rowToMaster(data as Record<string, unknown>) : null;
+}
+
+// Get a specific Master by id (RLS ensures it's the user's own).
+export async function getMasterProfileById(id: string): Promise<MasterProfile | null> {
+  const { userId } = await auth();
+  if (!userId) return null;
+  const supabase = await createServerSupabaseClient();
+  const { data, error } = await supabase
+    .from("user_master_profile")
+    .select("*")
+    .eq("id", id)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) {
+    console.error("[getMasterProfileById] error:", error);
+    return null;
+  }
+  return data ? rowToMaster(data as Record<string, unknown>) : null;
+}
+
+// Backwards-compat alias for the single-Master era. New code should use
+// getDefaultMasterProfile() or getMasterProfileById(id).
+export async function getMasterProfile(): Promise<MasterProfile | null> {
+  return getDefaultMasterProfile();
+}
+
+// Save (insert OR update) a Master. id present = update; absent = insert new.
+// On insert, becomes the default if the user has none yet, otherwise follows
+// the explicit isDefault flag.
+export async function saveMaster(input: {
+  id?: string;
+  name?: string;
   summary: string;
   source?: "manual" | "generated" | "edited";
-}): Promise<{ error?: string }> {
+  isDefault?: boolean;
+}): Promise<{ error?: string; id?: string }> {
   try {
     const { userId } = await auth();
     if (!userId) return { error: "Not signed in" };
     if (!input.summary || !input.summary.trim()) return { error: "Profile is empty" };
 
     const supabase = await createServerSupabaseClient();
-    const { error } = await supabase
+    const trimmedSummary = input.summary.trim();
+    const trimmedName = (input.name ?? "").trim() || "My Master";
+    const source = input.source ?? "manual";
+
+    if (input.id) {
+      // Update existing Master (preserving exclusions / default flag unless overridden).
+      const update: Record<string, unknown> = {
+        summary: trimmedSummary,
+        name: trimmedName,
+        source,
+        updated_at: new Date().toISOString(),
+      };
+      if (typeof input.isDefault === "boolean") update.is_default = input.isDefault;
+      const { error } = await supabase
+        .from("user_master_profile")
+        .update(update)
+        .eq("id", input.id)
+        .eq("user_id", userId);
+      if (error) {
+        console.error("[saveMaster] update error:", error);
+        return { error: error.message };
+      }
+      // If we just set this one default, demote others.
+      if (input.isDefault === true) {
+        await supabase
+          .from("user_master_profile")
+          .update({ is_default: false })
+          .eq("user_id", userId)
+          .neq("id", input.id);
+      }
+      revalidatePath("/profile");
+      revalidatePath("/cv");
+      return { id: input.id };
+    }
+
+    // Insert new Master. If user has no Masters yet, this one becomes default.
+    const { data: existing } = await supabase
       .from("user_master_profile")
-      .upsert(
-        {
-          user_id: userId,
-          summary: input.summary.trim(),
-          source: input.source ?? "manual",
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "user_id" }
-      );
+      .select("id")
+      .eq("user_id", userId)
+      .limit(1);
+    const willBeFirst = !existing || existing.length === 0;
+    const isDefault = input.isDefault ?? willBeFirst;
+
+    if (isDefault && !willBeFirst) {
+      // Demote current default before inserting the new one (partial unique index).
+      await supabase
+        .from("user_master_profile")
+        .update({ is_default: false })
+        .eq("user_id", userId)
+        .eq("is_default", true);
+    }
+
+    const { data: inserted, error } = await supabase
+      .from("user_master_profile")
+      .insert({
+        user_id: userId,
+        name: trimmedName,
+        summary: trimmedSummary,
+        source,
+        is_default: isDefault,
+        updated_at: new Date().toISOString(),
+      })
+      .select("id")
+      .single();
     if (error) {
-      console.error("[saveMasterProfile] supabase error:", error);
+      console.error("[saveMaster] insert error:", error);
       return { error: error.message };
+    }
+    revalidatePath("/profile");
+    revalidatePath("/cv");
+    return { id: inserted?.id };
+  } catch (e) {
+    console.error("[saveMaster] unexpected:", e);
+    return { error: e instanceof Error ? e.message : "Failed to save." };
+  }
+}
+
+// Backwards-compat: save (or upsert) the default Master. Maintained for any
+// callers that haven't migrated to saveMaster() yet.
+export async function saveMasterProfile(input: {
+  summary: string;
+  source?: "manual" | "generated" | "edited";
+}): Promise<{ error?: string }> {
+  // Find the user's default (if any) and update; otherwise insert as default.
+  const { userId } = await auth();
+  if (!userId) return { error: "Not signed in" };
+  const existing = await getDefaultMasterProfile();
+  return saveMaster({
+    id: existing?.id,
+    name: existing?.name ?? "My Master",
+    summary: input.summary,
+    source: input.source,
+    isDefault: true,
+  });
+}
+
+// Set which Master is the user's default. Atomically demotes the current
+// default and promotes the chosen one.
+export async function setDefaultMaster(id: string): Promise<{ error?: string }> {
+  try {
+    const { userId } = await auth();
+    if (!userId) return { error: "Not signed in" };
+    const supabase = await createServerSupabaseClient();
+    // Demote all of user's Masters first, then promote the chosen one.
+    const { error: demoteErr } = await supabase
+      .from("user_master_profile")
+      .update({ is_default: false })
+      .eq("user_id", userId)
+      .neq("id", id);
+    if (demoteErr) {
+      console.error("[setDefaultMaster] demote error:", demoteErr);
+      return { error: demoteErr.message };
+    }
+    const { error: promoteErr } = await supabase
+      .from("user_master_profile")
+      .update({ is_default: true, updated_at: new Date().toISOString() })
+      .eq("id", id)
+      .eq("user_id", userId);
+    if (promoteErr) {
+      console.error("[setDefaultMaster] promote error:", promoteErr);
+      return { error: promoteErr.message };
     }
     revalidatePath("/profile");
     revalidatePath("/cv");
     return {};
   } catch (e) {
-    console.error("[saveMasterProfile] unexpected:", e);
-    return { error: e instanceof Error ? e.message : "Failed to save." };
+    console.error("[setDefaultMaster] unexpected:", e);
+    return { error: e instanceof Error ? e.message : "Failed to set default." };
   }
 }
 
-// Save the per-user "never include in Profile" list. Designed to gracefully
-// no-op (with a clear error) if the migration hasn't been run yet, so the
-// rest of the Master Profile flow keeps working. Once the column exists,
-// writes succeed and exclusions are honoured by all Profile prompts.
+// Save exclusions for a specific Master.
 export async function setMasterExclusions(
-  exclusions: string[]
+  arg1: string | string[],
+  arg2?: string[]
 ): Promise<{ error?: string; needsMigration?: boolean }> {
+  // Backwards-compat overload: setMasterExclusions(exclusions) operates on
+  // the default Master. setMasterExclusions(masterId, exclusions) operates
+  // on the specified one.
+  let masterId: string | null = null;
+  let exclusions: string[];
+  if (Array.isArray(arg1)) {
+    exclusions = arg1;
+  } else {
+    masterId = arg1;
+    exclusions = arg2 ?? [];
+  }
+
   try {
     const { userId } = await auth();
     if (!userId) return { error: "Not signed in" };
+
+    // Resolve the target Master.
+    if (!masterId) {
+      const def = await getDefaultMasterProfile();
+      if (!def) {
+        return {
+          error:
+            "Save a Master Profile first — exclusions attach to it, so the row needs to exist before we can store them.",
+        };
+      }
+      masterId = def.id;
+    }
 
     // Sanitise: trim, drop empties, dedupe (case-insensitive), cap to 50.
     const cleaned = Array.from(
@@ -139,29 +326,13 @@ export async function setMasterExclusions(
     ).slice(0, 50);
 
     const supabase = await createServerSupabaseClient();
-    // Upsert just the exclusions column. We need the row to exist first; if
-    // the user has no Master saved yet, we create an empty-summary row would
-    // violate the NOT NULL on summary in some schemas, so we update only if
-    // a row exists. If no row exists, we tell the user to save a Master first.
-    const { data: existing } = await supabase
-      .from("user_master_profile")
-      .select("user_id")
-      .eq("user_id", userId)
-      .maybeSingle();
-    if (!existing) {
-      return {
-        error:
-          "Save your Master Profile first — exclusions attach to it, so the row needs to exist before we can store them.",
-      };
-    }
-
     const { error } = await supabase
       .from("user_master_profile")
       .update({ exclusions: cleaned, updated_at: new Date().toISOString() })
+      .eq("id", masterId)
       .eq("user_id", userId);
 
     if (error) {
-      // Detect missing-column error so the UI can show a clear "needs migration" message.
       const msg = String(error.message ?? "");
       const code = String((error as { code?: string }).code ?? "");
       const missingColumn =
@@ -171,7 +342,7 @@ export async function setMasterExclusions(
       if (missingColumn) {
         return {
           error:
-            "The exclusions feature needs a one-line database migration. Run the SQL in your Supabase dashboard (see deploy notes), then try again.",
+            "The exclusions feature needs a one-line database migration. Run the SQL in your Supabase dashboard, then try again.",
           needsMigration: true,
         };
       }
@@ -187,21 +358,63 @@ export async function setMasterExclusions(
   }
 }
 
-export async function deleteMasterProfile(): Promise<{ error?: string }> {
-  const { userId } = await auth();
-  if (!userId) return { error: "Not signed in" };
-  const supabase = await createServerSupabaseClient();
-  const { error } = await supabase
-    .from("user_master_profile")
-    .delete()
-    .eq("user_id", userId);
-  if (error) {
-    console.error("[deleteMasterProfile] error:", error);
-    return { error: error.message };
+// Delete a Master by id. If it was the default and others remain, the
+// most-recently-updated other becomes the new default.
+export async function deleteMaster(id: string): Promise<{ error?: string }> {
+  try {
+    const { userId } = await auth();
+    if (!userId) return { error: "Not signed in" };
+    const supabase = await createServerSupabaseClient();
+
+    // Fetch the row to know if it was default.
+    const { data: row } = await supabase
+      .from("user_master_profile")
+      .select("id, is_default")
+      .eq("id", id)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (!row) return { error: "Master not found." };
+
+    const { error: delErr } = await supabase
+      .from("user_master_profile")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", userId);
+    if (delErr) {
+      console.error("[deleteMaster] error:", delErr);
+      return { error: delErr.message };
+    }
+
+    // Promote a replacement default if needed.
+    if (row.is_default) {
+      const { data: replacement } = await supabase
+        .from("user_master_profile")
+        .select("id")
+        .eq("user_id", userId)
+        .order("updated_at", { ascending: false })
+        .limit(1);
+      if (replacement && replacement.length > 0) {
+        await supabase
+          .from("user_master_profile")
+          .update({ is_default: true })
+          .eq("id", replacement[0].id);
+      }
+    }
+
+    revalidatePath("/profile");
+    revalidatePath("/cv");
+    return {};
+  } catch (e) {
+    console.error("[deleteMaster] unexpected:", e);
+    return { error: e instanceof Error ? e.message : "Failed to delete." };
   }
-  revalidatePath("/profile");
-  revalidatePath("/cv");
-  return {};
+}
+
+// Backwards-compat: deletes the user's default Master.
+export async function deleteMasterProfile(): Promise<{ error?: string }> {
+  const def = await getDefaultMasterProfile();
+  if (!def) return {};
+  return deleteMaster(def.id);
 }
 
 export async function generateMasterProfile(input: {
@@ -215,10 +428,10 @@ export async function generateMasterProfile(input: {
   if (Object.keys(keys).length === 0) {
     return { warnings: [], error: "No AI provider connected. Add an API key in Settings." };
   }
-  // Pull the user's saved exclusions so they're honoured even by the FIRST
-  // Master generation (not just the per-CV adapt step). If the migration
-  // hasn't run, getMasterProfile gracefully returns exclusions: [].
-  const existing = await getMasterProfile();
+  // Pull the default Master's saved exclusions so they're honoured even by
+  // the FIRST Master generation (not just per-CV adapt). If user has no
+  // Master yet, exclusions is [].
+  const existing = await getDefaultMasterProfile();
   const exclusions = existing?.exclusions ?? [];
   return generateMasterProfileFromFactBase({
     exclusions,
@@ -288,36 +501,40 @@ export async function tailorMasterProfile(input: {
   });
 }
 
-// Per-CV adapter for the "Adapt to this JD" button. Loads the user's saved
-// Master + exclusions from the DB, runs the constrained adaptation, returns
-// both original and adapted (plus warnings) so the UI can render the diff.
+// Per-CV adapter for the "Adapt to this JD" button. Loads the chosen Master
+// (or the user's default if no id given) + its exclusions, runs the
+// constrained adaptation, returns original + adapted + warnings + the master
+// name so the UI can show "Adapting [Master name] for [JD]".
 export async function adaptMasterForCV(input: {
   jdText: string;
   cvId?: string;
   companyName?: string;
   roleName?: string;
-}): Promise<{ master?: string; adapted?: string; warnings: string[]; error?: string; unchanged?: boolean }> {
+  masterId?: string;
+}): Promise<{
+  master?: string;
+  adapted?: string;
+  masterName?: string;
+  warnings: string[];
+  error?: string;
+  unchanged?: boolean;
+}> {
   const { userId } = await auth();
   if (!userId) return { warnings: [], error: "Not signed in" };
 
-  const supabase = await createServerSupabaseClient();
-  const { data: masterRow } = await supabase
-    .from("user_master_profile")
-    .select("summary, exclusions")
-    .eq("user_id", userId)
-    .maybeSingle();
+  const masterRow = input.masterId
+    ? await getMasterProfileById(input.masterId)
+    : await getDefaultMasterProfile();
 
-  const masterSummary = (masterRow?.summary ?? "").trim();
-  if (!masterSummary) {
+  if (!masterRow || !masterRow.summary?.trim()) {
     return {
       warnings: [],
       error: "No saved Master Profile to adapt. Save one on the Profile page first.",
     };
   }
 
-  const exclusions: string[] = Array.isArray(masterRow?.exclusions)
-    ? (masterRow.exclusions as unknown[]).filter((e): e is string => typeof e === "string" && !!e.trim())
-    : [];
+  const masterSummary = masterRow.summary.trim();
+  const exclusions = masterRow.exclusions ?? [];
 
   const result = await tailorMasterProfile({
     master: masterSummary,
@@ -336,6 +553,7 @@ export async function adaptMasterForCV(input: {
   return {
     master: masterSummary,
     adapted,
+    masterName: masterRow.name,
     warnings: result.warnings,
     unchanged: adapted === masterSummary,
   };

@@ -117,6 +117,30 @@ function extractSectorDescriptors(s1: string): string[] {
   return out;
 }
 
+// Deterministic exclusion enforcement. Exclusions are passed as a HARD rule
+// in the system prompt, but AI compliance with HARD rules is not 100%. This
+// scanner catches any excluded phrase that slipped through — substring match,
+// case-insensitive — so the rewrite loop or fallback can take it back out.
+export function scanExcludedPhrases(args: {
+  summary: string;
+  exclusions: string[];
+}): BannedHit[] {
+  const hits: BannedHit[] = [];
+  if (!args.summary || args.exclusions.length === 0) return hits;
+  const summaryLower = args.summary.toLowerCase();
+  for (const e of args.exclusions) {
+    const needle = e.trim().toLowerCase();
+    if (!needle) continue;
+    if (summaryLower.includes(needle)) {
+      hits.push({
+        section: "Profile",
+        phrase: `Profile contains the excluded phrase "${e}". Remove it entirely. The user has explicitly forbidden this in any Profile generation, regardless of JD relevance.`,
+      });
+    }
+  }
+  return hits;
+}
+
 export function scanProfileSectorInvention(args: {
   summary: string;
   factbaseText: string;
@@ -261,6 +285,7 @@ Produce the candidate's Master Profile — the strongest, sector-agnostic versio
     connectedProviders: opts.connectedProviders,
     systemPrompt,
     isMaster: true,
+    exclusions: opts.exclusions ?? [],
   });
 
   return { summary, warnings };
@@ -350,6 +375,23 @@ Identify if any words in the Master Profile have a JD-vocabulary equivalent that
   if (!entityCheck.preserved) {
     warnings.push(
       `Adaptation dropped ${entityCheck.missing.length} named claim${entityCheck.missing.length === 1 ? "" : "s"} from your Master — using your Master verbatim. Missing: ${entityCheck.missing.slice(0, 5).join(", ")}${entityCheck.missing.length > 5 ? "…" : ""}`
+    );
+    return { tailored: opts.master, warnings };
+  }
+
+  // Deterministic exclusion-rule enforcement. If the AI introduced any phrase
+  // the user has excluded (whether it was in the original Master or not —
+  // user might have JUST added a new exclusion), reject the adaptation.
+  const exclusionViolations = scanExcludedPhrases({
+    summary: tailored,
+    exclusions: opts.exclusions ?? [],
+  });
+  if (exclusionViolations.length > 0) {
+    const offenders = (opts.exclusions ?? [])
+      .filter((e) => tailored!.toLowerCase().includes(e.trim().toLowerCase()))
+      .slice(0, 3);
+    warnings.push(
+      `Adaptation contained excluded phrase${offenders.length === 1 ? "" : "s"} (${offenders.map((o) => `"${o}"`).join(", ")}) — using your Master verbatim instead.`
     );
     return { tailored: opts.master, warnings };
   }
@@ -459,6 +501,40 @@ function extractNamedEntities(text: string): string[] {
     out.add(m[0]);
   }
 
+  // CamelCase / mIxedCase tokens (uppercase letter not at position 0). Catches
+  // tool/brand names like PowerBI, GitHub, OpenAI, eXtensible, BigQuery.
+  for (const m of text.matchAll(/\b[A-Za-z]*[a-z][A-Z][A-Za-z]*\b/g)) {
+    if (m[0].length >= 3) out.add(m[0]);
+  }
+
+  // Single-word brand allowlist. Common SaaS/tools that users mention by name
+  // and the AI might quietly drop. Case-insensitive match against original.
+  const SINGLE_WORD_BRANDS = [
+    "Airtable", "Excel", "Salesforce", "Anthropic", "OpenAI", "Snowflake",
+    "Tableau", "Figma", "Notion", "Slack", "Zoom", "GitHub", "GitLab",
+    "Atlassian", "Coupa", "Ariba", "Jaegger", "Workday", "NetSuite",
+    "HubSpot", "Stripe", "Shopify", "Mailchimp", "Substack", "Asana",
+    "Monday", "Linear", "Looker", "Databricks", "Segment", "Mixpanel",
+    "Amplitude", "Heap", "Hotjar", "Pendo", "Intercom", "Zendesk",
+    "Mongo", "Postgres", "Redis", "Kafka", "Spark", "Hadoop",
+    "Kubernetes", "Docker", "Terraform", "Ansible", "Jenkins",
+    "Tally", "Xero", "QuickBooks", "Sage", "Pipedrive", "Klaviyo",
+    "AWS", "Azure", "GCP", "Vercel", "Netlify", "Cloudflare",
+    "Google", "Microsoft", "Oracle", "Adobe", "SAP", "Siemens",
+  ];
+  const textLower = text.toLowerCase();
+  for (const brand of SINGLE_WORD_BRANDS) {
+    const idx = textLower.indexOf(brand.toLowerCase());
+    if (idx !== -1) {
+      // Confirm word boundary on both sides.
+      const before = idx === 0 || /\W/.test(text[idx - 1]);
+      const after =
+        idx + brand.length === text.length ||
+        /\W/.test(text[idx + brand.length]);
+      if (before && after) out.add(text.slice(idx, idx + brand.length));
+    }
+  }
+
   return Array.from(out);
 }
 
@@ -490,8 +566,9 @@ async function runProfileScannersAndRewrite(args: {
   systemPrompt: string;
   isMaster: boolean;
   jdText?: string;
+  exclusions?: string[];
 }): Promise<string> {
-  const { summary, factbaseText, factbaseFromFactBase, connectedProviders, systemPrompt, isMaster, jdText } = args;
+  const { summary, factbaseText, factbaseFromFactBase, connectedProviders, systemPrompt, isMaster, jdText, exclusions = [] } = args;
 
   // Build a minimal TailoredCV stub for the scanners. Scanners only read
   // .summary and .roles[0].company for the brand-tier check. Everything else
@@ -537,6 +614,7 @@ async function runProfileScannersAndRewrite(args: {
     const flagged = [
       ...scanProfile(stub),
       ...scanProfileSectorInvention({ summary: current, factbaseText }),
+      ...scanExcludedPhrases({ summary: current, exclusions }),
     ];
     if (flagged.length === 0) return current;
 

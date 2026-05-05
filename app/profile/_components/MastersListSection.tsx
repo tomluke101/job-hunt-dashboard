@@ -36,11 +36,16 @@ export default function MastersListSection({ initial }: Props) {
   function handleAddBlank() {
     setError(null);
     startAddBlank(async () => {
+      // Truly empty summary — placeholder is shown as a UI hint inside the
+      // textarea, NOT saved as content. The tailor flow detects empty Master
+      // summary and falls back to AI-generated Profile, so a blank Master
+      // doesn't break a CV until the user fills it in.
       const r = await saveMaster({
         name: `Master ${masters.length + 1}`,
-        summary: "Type or paste your Profile here, or click Generate to draft from your FactBase.",
+        summary: "",
         source: "manual",
         isDefault: masters.length === 0,
+        allowEmpty: true,
       });
       if (r.error) {
         setError(r.error);

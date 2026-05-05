@@ -143,14 +143,20 @@ export async function saveMaster(input: {
   summary: string;
   source?: "manual" | "generated" | "edited";
   isDefault?: boolean;
+  // When true, allow empty summary (used for "Add blank Master" — the row
+  // exists as a stub the user fills in. tailorCV detects empty summary and
+  // falls back to the no-Master AI generation path.)
+  allowEmpty?: boolean;
 }): Promise<{ error?: string; id?: string }> {
   try {
     const { userId } = await auth();
     if (!userId) return { error: "Not signed in" };
-    if (!input.summary || !input.summary.trim()) return { error: "Profile is empty" };
+    const trimmedSummary = (input.summary ?? "").trim();
+    if (!trimmedSummary && !input.allowEmpty) {
+      return { error: "Profile is empty" };
+    }
 
     const supabase = await createServerSupabaseClient();
-    const trimmedSummary = input.summary.trim();
     const trimmedName = (input.name ?? "").trim() || "My Master";
     const source = input.source ?? "manual";
 
@@ -640,7 +646,9 @@ export async function adaptMasterForCV(input: {
   if (!masterRow || !masterRow.summary?.trim()) {
     return {
       warnings: [],
-      error: "No saved Master Profile to adapt. Save one on the Profile page first.",
+      error: masterRow
+        ? `"${masterRow.name}" Master is empty — add content to it on the Profile page before adapting.`
+        : "No saved Master Profile to adapt. Save one on the Profile page first.",
     };
   }
 

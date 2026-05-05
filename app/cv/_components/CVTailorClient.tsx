@@ -605,13 +605,17 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
                     onChange={(e) => handleMasterSwitch(e.target.value)}
                     className="text-xs border border-slate-200 rounded-lg px-3 py-1.5 pr-8 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 appearance-none bg-white text-slate-800"
                   >
-                    {masters.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name}
-                        {m.is_default ? " · default" : ""}
-                        {fitResult?.bestMasterId === m.id ? " · best fit" : ""}
-                      </option>
-                    ))}
+                    {masters.map((m) => {
+                      const isEmpty = !m.summary?.trim();
+                      return (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                          {m.is_default ? " · default" : ""}
+                          {fitResult?.bestMasterId === m.id ? " · best fit" : ""}
+                          {isEmpty ? " · empty" : ""}
+                        </option>
+                      );
+                    })}
                   </select>
                   <ChevronDown
                     size={12}
@@ -620,6 +624,16 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
                 </div>
               )}
             </div>
+
+            {/* Empty-Master warning — chosen Master has no content. The CV
+                will fall back to AI-generated Profile from FactBase + JD. */}
+            {selectedMaster && !selectedMaster.summary?.trim() && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-2.5 text-[11px] text-amber-900 leading-relaxed">
+                <span className="font-semibold">{selectedMaster.name}</span> is
+                empty — add content on the Profile page, or this CV will use a
+                one-off AI-generated Profile instead.
+              </div>
+            )}
 
             {/* Fit warning when no saved Master matches the JD's role family. */}
             {fitResult && fitResult.fitScore === "low" && (

@@ -110,12 +110,17 @@ export async function tailorCV(input: TailorInput): Promise<TailorResult> {
   // invented credentials, dropped claims). Verbatim is predictable, fast, and
   // honours the user's choices. Per-JD adaptation is opt-in via the per-CV
   // "Adapt to this JD" button (Phase 2) — not the default.
+  // If the chosen Master has actual content, use it verbatim as the Profile.
+  // If it's empty (e.g. user created a blank Master and hasn't filled it in),
+  // we fall through to the AI-generated Profile path — same as having no
+  // Master saved.
   let preTailoredProfile: string | null = null;
   try {
     const master = await loadMasterProfile(input.masterId);
     if (master && master.summary?.trim()) {
       preTailoredProfile = master.summary.trim();
     }
+    // Empty summary → no preTailoredProfile → AI generates Profile fresh.
   } catch (e) {
     console.error("[tailorCV] master profile load failed (continuing without):", e);
   }
@@ -223,15 +228,13 @@ export async function tailorCV(input: TailorInput): Promise<TailorResult> {
         tailoredCV: current,
         warnings: [
           ...warnings,
-          `Critic flagged ${lastFlagged.length} issue${lastFlagged.length === 1 ? "" : "s"} that two rewrite passes couldn't fully fix. Click "Tailor CV" again to regenerate.`,
+          ...formatFlaggedWarnings(lastFlagged),
         ],
         jdKeywords: current.jdKeywords,
         gaps: current.gaps,
       };
     }
-    warnings.push(
-      `Critic flagged ${flagged.length} AI-tell phrase${flagged.length === 1 ? "" : "s"} that auto-rewrite couldn't fix. Click "Tailor CV" again to regenerate.`
-    );
+    warnings.push(...formatFlaggedWarnings(flagged));
   }
 
   if (preTailoredProfile) sanitised.summary = preTailoredProfile;
@@ -241,6 +244,36 @@ export async function tailorCV(input: TailorInput): Promise<TailorResult> {
     jdKeywords: sanitised.jdKeywords,
     gaps: sanitised.gaps,
   };
+}
+
+// Convert flagged BannedHits into specific user-facing warnings. Names the
+// section AND surfaces a short snippet of the offending phrase so the user
+// knows exactly what to fix manually rather than just being told there's a
+// vague "AI-tell".
+function formatFlaggedWarnings(flagged: BannedHit[]): string[] {
+  if (flagged.length === 0) return [];
+  // Group by section for compact display.
+  const bySection = new Map<string, string[]>();
+  for (const f of flagged) {
+    const section = f.section || "Output";
+    // Trim phrase to a readable hint.
+    const cleaned = f.phrase.replace(/\s+/g, " ").trim();
+    const hint =
+      cleaned.length > 140 ? cleaned.slice(0, 137) + "…" : cleaned;
+    const list = bySection.get(section) ?? [];
+    list.push(hint);
+    bySection.set(section, list);
+  }
+  const messages: string[] = [];
+  for (const [section, hints] of bySection) {
+    const dedup = Array.from(new Set(hints));
+    const top = dedup.slice(0, 4);
+    const more = dedup.length - top.length;
+    messages.push(
+      `Critic flagged ${dedup.length} issue${dedup.length === 1 ? "" : "s"} in ${section}: ${top.map((h) => `"${h}"`).join("; ")}${more > 0 ? `; +${more} more` : ""}. Click "Tailor CV" again to regenerate, or ignore if intentional.`
+    );
+  }
+  return messages;
 }
 
 // ── Refine: take the previous output + a natural-language instruction ────────

@@ -19,7 +19,7 @@ import {
   RefreshCw,
   Wand2,
 } from "lucide-react";
-import { tailorCV, refineTailoredCV, saveTailoredCV, getMasterProfileById, type MasterProfile } from "@/app/actions/cv-tailoring";
+import { tailorCV, refineTailoredCV, saveTailoredCV, getMasterProfileById, scoreMastersForJD, saveMaster, type MasterProfile, type MasterFitResult } from "@/app/actions/cv-tailoring";
 import ProfileAdaptModal from "./ProfileAdaptModal";
 import ProfileEditModal from "./ProfileEditModal";
 import { updateApplication } from "@/app/actions/applications";
@@ -78,9 +78,21 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
   const [profileMessage, setProfileMessage] = useState<string | null>(null);
 
   // Master picker — defaults to user's default Master, can be switched per CV.
+  // After fit-scoring runs, auto-selects the best-fit Master.
   const defaultMaster = masters.find((m) => m.is_default) ?? masters[0] ?? null;
   const [selectedMasterId, setSelectedMasterId] = useState<string>(defaultMaster?.id ?? "");
   const selectedMaster = masters.find((m) => m.id === selectedMasterId) ?? defaultMaster;
+
+  // Fit-scoring state. Populated when user picks/pastes a JD with 2+ Masters.
+  const [fitResult, setFitResult] = useState<MasterFitResult | null>(null);
+  const [isScoringFit, setIsScoringFit] = useState(false);
+  const [userOverrodeMaster, setUserOverrodeMaster] = useState(false);
+
+  // Save-as-first-Master state for users with no saved Masters.
+  const [isSavingAsMaster, startSaveAsMaster] = useTransition();
+  const [savedAsMasterFlash, setSavedAsMasterFlash] = useState(false);
+  const [saveMasterName, setSaveMasterName] = useState("");
+  const [saveMasterError, setSaveMasterError] = useState<string | null>(null);
 
   const outputRef = useRef<HTMLDivElement>(null);
   const jdTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -101,7 +113,43 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
 
   useEffect(() => {
     setInlineJd("");
+    // JD context changed — invalidate fit-scoring state.
+    setFitResult(null);
+    setUserOverrodeMaster(false);
   }, [selectedAppId]);
+
+  // Run fit-scoring when JD has been chosen / pasted, user has 2+ Masters,
+  // and the user hasn't manually overridden the picker. Debounced so paste-
+  // typed JDs don't trigger on every keystroke.
+  useEffect(() => {
+    if (masters.length < 2) return;
+    if (userOverrodeMaster) return;
+    const jd = jobDescription.trim();
+    if (jd.length < 100) return; // need real JD content to classify
+    let cancelled = false;
+    setIsScoringFit(true);
+    const handle = setTimeout(async () => {
+      const r = await scoreMastersForJD({ jdText: jd });
+      if (cancelled) return;
+      setIsScoringFit(false);
+      if (r.error || !r.result) return;
+      setFitResult(r.result);
+      // Auto-select best-fit Master only if user hasn't explicitly switched.
+      if (!userOverrodeMaster && r.result.bestMasterId) {
+        setSelectedMasterId(r.result.bestMasterId);
+      }
+    }, 600);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobDescription, masters.length]);
+
+  function handleMasterSwitch(id: string) {
+    setSelectedMasterId(id);
+    setUserOverrodeMaster(true); // disables auto-pick until JD changes
+  }
 
   const missingCv = cvs.length === 0;
   const canTailor =
@@ -269,6 +317,35 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
     setTailored({ ...tailored, summary: newSummary });
     setProfileMessage("Profile updated for this CV.");
     setTimeout(() => setProfileMessage(null), 2500);
+  }
+
+  // Save the AI-generated Profile from this tailor as the user's first Master.
+  // Only relevant when masters.length === 0 — see the post-tailor banner.
+  function handleSaveAsFirstMaster() {
+    if (!tailored?.summary?.trim()) return;
+    const name =
+      saveMasterName.trim() ||
+      fitResult?.detectedRoleFamily?.trim() ||
+      roleName?.trim() ||
+      "My Master";
+    setSaveMasterError(null);
+    startSaveAsMaster(async () => {
+      const r = await saveMaster({
+        name,
+        summary: tailored.summary,
+        source: "generated",
+        isDefault: true,
+      });
+      if (r.error) {
+        setSaveMasterError(r.error);
+        return;
+      }
+      setSavedAsMasterFlash(true);
+      setTimeout(() => setSavedAsMasterFlash(false), 3000);
+      // Note: the masters prop won't auto-update without a refetch — but
+      // for the banner UX we set savedAsMasterFlash, and the next page load
+      // (or router.refresh) will pick up the new Master.
+    });
   }
 
   function handleDownloadPDF() {
@@ -483,10 +560,10 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
         </div>
 
         {/* Master picker — auto-defaults to user's default Master, can be
-            switched per CV. Shown above the Tailor footer so the user knows
-            which Profile will be used before clicking. */}
-        {masters.length > 0 && (
-          <div className="border-t border-slate-100 bg-white px-6 py-3">
+            switched per CV. Fit-scoring auto-picks the best Master once the
+            JD is chosen. Banner below shows fit level. */}
+        {masters.length > 0 ? (
+          <div className="border-t border-slate-100 bg-white px-6 py-3 space-y-2">
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div className="text-xs text-slate-500 inline-flex items-center gap-1.5">
                 <Sparkles size={11} className="text-blue-500" />
@@ -500,19 +577,39 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
                       default
                     </span>
                   )}
+                  {fitResult && fitResult.bestMasterId === selectedMasterId && (
+                    <span
+                      className={`ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded border ${
+                        fitResult.fitScore === "high"
+                          ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                          : fitResult.fitScore === "medium"
+                            ? "bg-amber-50 border-amber-200 text-amber-700"
+                            : "bg-rose-50 border-rose-200 text-rose-700"
+                      }`}
+                      title={fitResult.reason}
+                    >
+                      {fitResult.fitScore} fit
+                    </span>
+                  )}
+                  {isScoringFit && (
+                    <span className="ml-1.5 text-[10px] text-slate-400 inline-flex items-center gap-1">
+                      <Loader2 size={9} className="animate-spin" /> matching…
+                    </span>
+                  )}
                 </span>
               </div>
               {masters.length > 1 && (
                 <div className="relative">
                   <select
                     value={selectedMasterId}
-                    onChange={(e) => setSelectedMasterId(e.target.value)}
+                    onChange={(e) => handleMasterSwitch(e.target.value)}
                     className="text-xs border border-slate-200 rounded-lg px-3 py-1.5 pr-8 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 appearance-none bg-white text-slate-800"
                   >
                     {masters.map((m) => (
                       <option key={m.id} value={m.id}>
                         {m.name}
                         {m.is_default ? " · default" : ""}
+                        {fitResult?.bestMasterId === m.id ? " · best fit" : ""}
                       </option>
                     ))}
                   </select>
@@ -522,6 +619,40 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
                   />
                 </div>
               )}
+            </div>
+
+            {/* Fit warning when no saved Master matches the JD's role family. */}
+            {fitResult && fitResult.fitScore === "low" && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-2.5 text-[11px] text-amber-900 leading-relaxed">
+                <div className="font-semibold mb-0.5">
+                  This JD looks like a {fitResult.detectedRoleFamily || "different role family"}.
+                </div>
+                <div className="text-amber-800">
+                  None of your saved Masters fit it well. The CV will use{" "}
+                  <span className="font-medium">{selectedMaster?.name}</span>{" "}
+                  as the closest match — but consider creating a Master for this
+                  role family on the Profile page.
+                </div>
+              </div>
+            )}
+            {fitResult && fitResult.fitScore === "medium" && (
+              <div className="text-[11px] text-amber-800 leading-relaxed">
+                Detected role family: <span className="font-medium">{fitResult.detectedRoleFamily}</span>.{" "}
+                <span className="font-medium">{selectedMaster?.name}</span> is a partial match —
+                click <span className="font-semibold">Adapt to this JD</span> on the Profile after tailoring for vocabulary tweaks.
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="border-t border-slate-100 bg-amber-50/50 px-6 py-3">
+            <div className="text-xs text-amber-900 leading-relaxed">
+              <span className="font-semibold">No Master Profile saved.</span>{" "}
+              The CV will use a one-off AI-generated Profile from your CV + JD.
+              Quality varies — once it&apos;s generated, you can save it as your
+              first Master for future applications.{" "}
+              <a href="/profile" className="underline font-medium">
+                Or set one up now.
+              </a>
             </div>
           </div>
         )}
@@ -646,6 +777,71 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
           {profileMessage && (
             <div className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
               {profileMessage}
+            </div>
+          )}
+
+          {/* No-Master onboarding banner — shown when the user generated this
+              CV without a saved Master. Lets them save the auto-Profile as
+              their first Master in one click, with optional name. */}
+          {masters.length === 0 && tailored.summary && (
+            <div className="rounded-xl border border-blue-200 bg-blue-50/60 px-4 py-3 space-y-2.5">
+              <div className="flex items-start gap-2 text-xs text-blue-900 leading-relaxed">
+                <Sparkles size={13} className="mt-0.5 shrink-0 text-blue-500" />
+                <div className="flex-1">
+                  <div className="font-semibold mb-0.5">
+                    This Profile was generated one-off from your CV + JD.
+                  </div>
+                  <div className="text-blue-800">
+                    Save it as your first Master and it&apos;ll be reused
+                    (and tailorable) for every future CV. You can edit it
+                    later on the Profile page.
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <input
+                  type="text"
+                  value={saveMasterName}
+                  onChange={(e) => setSaveMasterName(e.target.value)}
+                  disabled={isSavingAsMaster}
+                  placeholder={
+                    fitResult?.detectedRoleFamily
+                      ? `e.g. ${fitResult.detectedRoleFamily}`
+                      : roleName
+                        ? `e.g. ${roleName}`
+                        : "Name this Master"
+                  }
+                  className="flex-1 min-w-[180px] text-xs border border-blue-200 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 placeholder-slate-400 disabled:opacity-50"
+                />
+                <button
+                  onClick={handleSaveAsFirstMaster}
+                  disabled={isSavingAsMaster || savedAsMasterFlash}
+                  className={`text-xs font-semibold inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 ${
+                    savedAsMasterFlash
+                      ? "bg-emerald-100 border border-emerald-300 text-emerald-800"
+                      : "bg-blue-600 text-white hover:bg-blue-700"
+                  }`}
+                >
+                  {isSavingAsMaster ? (
+                    <>
+                      <Loader2 size={11} className="animate-spin" /> Saving…
+                    </>
+                  ) : savedAsMasterFlash ? (
+                    <>
+                      <Check size={11} /> Saved as your first Master
+                    </>
+                  ) : (
+                    <>
+                      <Save size={11} /> Save as my first Master
+                    </>
+                  )}
+                </button>
+              </div>
+              {saveMasterError && (
+                <div className="text-[11px] text-rose-700 inline-flex items-center gap-1">
+                  <AlertCircle size={10} /> {saveMasterError}
+                </div>
+              )}
             </div>
           )}
 

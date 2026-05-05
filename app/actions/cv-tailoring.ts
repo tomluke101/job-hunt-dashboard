@@ -501,6 +501,117 @@ export async function tailorMasterProfile(input: {
   });
 }
 
+// ── Master fit-scoring (B2) ──────────────────────────────────────────────
+// Given a JD and the user's saved Masters, classify which Master is the
+// best fit (or if none are). Used by the CV tailor page to auto-pick the
+// right Master and warn when no saved Master matches the JD's role family.
+//
+// Cheap single AI call: send all Master names + summaries + the JD, return
+// the best id + fitScore + detected role family.
+export interface MasterFitResult {
+  bestMasterId: string | null;
+  fitScore: "high" | "medium" | "low";
+  detectedRoleFamily: string;
+  reason: string;
+}
+
+export async function scoreMastersForJD(input: {
+  jdText: string;
+}): Promise<{ result?: MasterFitResult; error?: string }> {
+  const masters = await getMasterProfiles();
+  if (masters.length === 0) return { error: "No saved Masters." };
+  if (!input.jdText || input.jdText.trim().length < 30) {
+    return { error: "JD too short to score." };
+  }
+
+  // Single-Master shortcut: no scoring needed, just classify the fit.
+  // We still run the AI call so the banner can say "high/medium/low fit".
+  const keys = await getApiKeyValues();
+  if (Object.keys(keys).length === 0) {
+    // No AI keys — degrade gracefully: pick default Master, claim "medium" fit.
+    const def = masters.find((m) => m.is_default) ?? masters[0];
+    return {
+      result: {
+        bestMasterId: def.id,
+        fitScore: "medium",
+        detectedRoleFamily: "(no AI provider connected)",
+        reason: "Fit-scoring requires an AI provider. Picked your default Master.",
+      },
+    };
+  }
+
+  const mastersBlock = masters
+    .map(
+      (m, i) =>
+        `Master ${i + 1} — id: ${m.id}\nName: ${m.name}\nSummary: ${m.summary}`
+    )
+    .join("\n\n---\n\n");
+
+  const systemPrompt = `You classify how well a candidate's saved Master Profiles fit a specific job description.
+
+For each Master, consider whether the JD's role family (e.g. supply chain analyst, commercial property surveyor, software engineer) aligns with the Master's identity.
+
+Return ONE JSON object: {
+  "bestMasterId": "<id of the best-fitting Master>",
+  "fitScore": "high" | "medium" | "low",
+  "detectedRoleFamily": "<short noun phrase describing the JD's role family, e.g. 'commercial property surveyor', 'demand planner', 'investment analyst'>",
+  "reason": "<one short sentence explaining the pick>"
+}
+
+Fit thresholds:
+- "high" = the Master's role family matches the JD's role family closely. Vocabulary mostly aligns. Master is the right starting point with at most word-level adjustments.
+- "medium" = adjacent role family. Some transferable skills, but the JD uses meaningfully different vocabulary. Adapt may help.
+- "low" = different role family. The Master would need substantial restructuring (i.e. a new Master would be more honest).
+
+Pick the BEST fit even when fitScore is "low" — bestMasterId is always the closest match.
+
+Output ONLY the JSON object. No prose.`;
+
+  const userPrompt = `=== JOB DESCRIPTION ===
+${input.jdText.trim()}
+
+=== CANDIDATE'S SAVED MASTER PROFILES ===
+${mastersBlock}
+
+=== TASK ===
+Classify which Master fits this JD best. Return ONLY the JSON object.`;
+
+  try {
+    const result = await callAI({
+      task: "cv-tailor",
+      connectedProviders: keys,
+      systemPrompt,
+      prompt: userPrompt,
+    });
+    const trimmed = result.text.trim();
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start === -1 || end === -1) {
+      return { error: "Fit-scoring AI returned non-JSON output." };
+    }
+    const parsed = JSON.parse(trimmed.slice(start, end + 1)) as Partial<MasterFitResult>;
+    const bestMasterId =
+      typeof parsed.bestMasterId === "string" && masters.some((m) => m.id === parsed.bestMasterId)
+        ? parsed.bestMasterId
+        : (masters.find((m) => m.is_default)?.id ?? masters[0].id);
+    const fitScore: MasterFitResult["fitScore"] =
+      parsed.fitScore === "high" || parsed.fitScore === "medium" || parsed.fitScore === "low"
+        ? parsed.fitScore
+        : "medium";
+    return {
+      result: {
+        bestMasterId,
+        fitScore,
+        detectedRoleFamily: typeof parsed.detectedRoleFamily === "string" ? parsed.detectedRoleFamily : "",
+        reason: typeof parsed.reason === "string" ? parsed.reason : "",
+      },
+    };
+  } catch (e) {
+    console.error("[scoreMastersForJD] error:", e);
+    return { error: e instanceof Error ? e.message : "Fit-scoring AI call failed." };
+  }
+}
+
 // Per-CV adapter for the "Adapt to this JD" button. Loads the chosen Master
 // (or the user's default if no id given) + its exclusions, runs the
 // constrained adaptation, returns original + adapted + warnings + the master

@@ -42,9 +42,17 @@ interface Props {
   onChange: () => void;
 }
 
+// Old blank-Master placeholder content — created before the empty-Master fix
+// landed. Treat as "really empty" so the user gets a clean textarea and the
+// scanner / picker behaves correctly.
+const LEGACY_PLACEHOLDER =
+  "Type or paste your Profile here, or click Generate to draft from your FactBase.";
+
 export default function MasterCard({ master, onChange }: Props) {
+  const initialSummary =
+    master.summary?.trim() === LEGACY_PLACEHOLDER ? "" : master.summary;
   const [nameDraft, setNameDraft] = useState(master.name);
-  const [summaryDraft, setSummaryDraft] = useState(master.summary);
+  const [summaryDraft, setSummaryDraft] = useState(initialSummary);
   const [exclusionsDraft, setExclusionsDraft] = useState<string[]>(master.exclusions);
   const [exclusionInput, setExclusionInput] = useState("");
   const [exclusionsOpen, setExclusionsOpen] = useState(false);
@@ -65,6 +73,30 @@ export default function MasterCard({ master, onChange }: Props) {
   const [scanIssues, setScanIssues] = useState<ProfileScanIssue[]>([]);
   const [scanIssuesOpen, setScanIssuesOpen] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+
+  // One-shot cleanup of legacy placeholder content. Old "+ Add a blank Master"
+  // saved the placeholder string as the row's actual summary; new ones save
+  // empty. Detect the legacy state on mount and write empty to clean it up
+  // silently — user doesn't need to take any action.
+  useEffect(() => {
+    if (master.summary?.trim() !== LEGACY_PLACEHOLDER) return;
+    let cancelled = false;
+    (async () => {
+      const r = await saveMaster({
+        id: master.id,
+        name: master.name,
+        summary: "",
+        source: master.source,
+        allowEmpty: true,
+      });
+      if (cancelled) return;
+      if (!r.error) onChange();
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [master.id]);
 
   useEffect(() => {
     const text = summaryDraft.trim();
@@ -92,9 +124,14 @@ export default function MasterCard({ master, onChange }: Props) {
     };
   }, [summaryDraft, exclusionsDraft]);
 
+  // "Server-state-equivalent" master.summary — placeholder is treated as
+  // empty for dirty-checking, so saving an empty draft over a placeholder
+  // counts as a meaningful change (and writes a real empty value).
+  const effectiveServerSummary =
+    master.summary?.trim() === LEGACY_PLACEHOLDER ? "" : master.summary;
   const isDirty =
     nameDraft.trim() !== master.name ||
-    summaryDraft.trim() !== master.summary;
+    summaryDraft.trim() !== effectiveServerSummary.trim();
   const exclusionsDirty =
     JSON.stringify(exclusionsDraft) !== JSON.stringify(master.exclusions);
   const wordCount = summaryDraft.trim().split(/\s+/).filter(Boolean).length;

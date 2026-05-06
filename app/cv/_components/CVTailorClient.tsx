@@ -79,9 +79,20 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
 
   // Master picker — defaults to user's default Master, can be switched per CV.
   // After fit-scoring runs, auto-selects the best-fit Master.
-  const defaultMaster = masters.find((m) => m.is_default) ?? masters[0] ?? null;
+  // Empty / placeholder-only Masters are treated as not usable for tailoring —
+  // they don't appear in the picker, can't be auto-selected, and the system
+  // falls back to the no-Master AI generation path until they're filled in.
+  const PLACEHOLDER_TEXT =
+    "Type or paste your Profile here, or click Generate to draft from your FactBase.";
+  const isUsableMaster = (m: MasterProfile) => {
+    const s = (m.summary ?? "").trim();
+    return s.length > 0 && s !== PLACEHOLDER_TEXT;
+  };
+  const usableMasters = masters.filter(isUsableMaster);
+  const defaultMaster =
+    usableMasters.find((m) => m.is_default) ?? usableMasters[0] ?? null;
   const [selectedMasterId, setSelectedMasterId] = useState<string>(defaultMaster?.id ?? "");
-  const selectedMaster = masters.find((m) => m.id === selectedMasterId) ?? defaultMaster;
+  const selectedMaster = usableMasters.find((m) => m.id === selectedMasterId) ?? defaultMaster;
 
   // Fit-scoring state. Populated when user picks/pastes a JD with 2+ Masters.
   const [fitResult, setFitResult] = useState<MasterFitResult | null>(null);
@@ -122,7 +133,7 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
   // and the user hasn't manually overridden the picker. Debounced so paste-
   // typed JDs don't trigger on every keystroke.
   useEffect(() => {
-    if (masters.length < 2) return;
+    if (usableMasters.length < 2) return;
     if (userOverrodeMaster) return;
     const jd = jobDescription.trim();
     if (jd.length < 100) return; // need real JD content to classify
@@ -133,10 +144,15 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
       if (cancelled) return;
       setIsScoringFit(false);
       if (r.error || !r.result) return;
-      setFitResult(r.result);
-      // Auto-select best-fit Master only if user hasn't explicitly switched.
-      if (!userOverrodeMaster && r.result.bestMasterId) {
-        setSelectedMasterId(r.result.bestMasterId);
+      // Filter out blank Masters in case the scorer returned one (it
+      // shouldn't, since blank Masters have no summary to compare, but
+      // safe-guarding the auto-pick).
+      if (
+        r.result.bestMasterId &&
+        usableMasters.some((m) => m.id === r.result?.bestMasterId)
+      ) {
+        setFitResult(r.result);
+        if (!userOverrodeMaster) setSelectedMasterId(r.result.bestMasterId);
       }
     }, 600);
     return () => {
@@ -144,7 +160,7 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
       clearTimeout(handle);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobDescription, masters.length]);
+  }, [jobDescription, usableMasters.length]);
 
   function handleMasterSwitch(id: string) {
     setSelectedMasterId(id);
@@ -562,7 +578,7 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
         {/* Master picker — auto-defaults to user's default Master, can be
             switched per CV. Fit-scoring auto-picks the best Master once the
             JD is chosen. Banner below shows fit level. */}
-        {masters.length > 0 ? (
+        {usableMasters.length > 0 ? (
           <div className="border-t border-slate-100 bg-white px-6 py-3 space-y-2">
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div className="text-xs text-slate-500 inline-flex items-center gap-1.5">
@@ -598,24 +614,20 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
                   )}
                 </span>
               </div>
-              {masters.length > 1 && (
+              {usableMasters.length > 1 && (
                 <div className="relative">
                   <select
                     value={selectedMasterId}
                     onChange={(e) => handleMasterSwitch(e.target.value)}
                     className="text-xs border border-slate-200 rounded-lg px-3 py-1.5 pr-8 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 appearance-none bg-white text-slate-800"
                   >
-                    {masters.map((m) => {
-                      const isEmpty = !m.summary?.trim();
-                      return (
-                        <option key={m.id} value={m.id}>
-                          {m.name}
-                          {m.is_default ? " · default" : ""}
-                          {fitResult?.bestMasterId === m.id ? " · best fit" : ""}
-                          {isEmpty ? " · empty" : ""}
-                        </option>
-                      );
-                    })}
+                    {usableMasters.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name}
+                        {m.is_default ? " · default" : ""}
+                        {fitResult?.bestMasterId === m.id ? " · best fit" : ""}
+                      </option>
+                    ))}
                   </select>
                   <ChevronDown
                     size={12}
@@ -624,16 +636,6 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
                 </div>
               )}
             </div>
-
-            {/* Empty-Master warning — chosen Master has no content. The CV
-                will fall back to AI-generated Profile from FactBase + JD. */}
-            {selectedMaster && !selectedMaster.summary?.trim() && (
-              <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-2.5 text-[11px] text-amber-900 leading-relaxed">
-                <span className="font-semibold">{selectedMaster.name}</span> is
-                empty — add content on the Profile page, or this CV will use a
-                one-off AI-generated Profile instead.
-              </div>
-            )}
 
             {/* Fit warning when no saved Master matches the JD's role family. */}
             {fitResult && fitResult.fitScore === "low" && (
@@ -660,12 +662,16 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
         ) : (
           <div className="border-t border-slate-100 bg-amber-50/50 px-6 py-3">
             <div className="text-xs text-amber-900 leading-relaxed">
-              <span className="font-semibold">No Master Profile saved.</span>{" "}
+              <span className="font-semibold">
+                {masters.length === 0
+                  ? "No Master Profile saved."
+                  : "Your saved Master Profiles are empty."}
+              </span>{" "}
               The CV will use a one-off AI-generated Profile from your CV + JD.
               Quality varies — once it&apos;s generated, you can save it as your
               first Master for future applications.{" "}
               <a href="/profile" className="underline font-medium">
-                Or set one up now.
+                Set one up now.
               </a>
             </div>
           </div>
@@ -795,9 +801,9 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
           )}
 
           {/* No-Master onboarding banner — shown when the user generated this
-              CV without a saved Master. Lets them save the auto-Profile as
-              their first Master in one click, with optional name. */}
-          {masters.length === 0 && tailored.summary && (
+              CV without a usable saved Master. Lets them save the auto-Profile
+              as their first Master in one click, with optional name. */}
+          {usableMasters.length === 0 && tailored.summary && (
             <div className="rounded-xl border border-blue-200 bg-blue-50/60 px-4 py-3 space-y-2.5">
               <div className="flex items-start gap-2 text-xs text-blue-900 leading-relaxed">
                 <Sparkles size={13} className="mt-0.5 shrink-0 text-blue-500" />

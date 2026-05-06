@@ -17,7 +17,7 @@ import {
   tailorMasterToJD,
   scanExcludedPhrases,
 } from "@/lib/cv/master-profile";
-import { scanProfile } from "@/lib/cv/tailor";
+import { scanProfile, scanBannedPhrases } from "@/lib/cv/tailor";
 import { getApiKeyValues } from "@/app/actions/api-keys";
 import type { TailoredCV } from "@/lib/cv/tailored-cv";
 
@@ -549,6 +549,10 @@ export async function scanProfileText(input: {
 
   const flagged = [
     ...scanProfile(stub),
+    // scanBannedPhrases catches AI-tell vocabulary like "spearheading",
+    // "fast-paced", "leverage" that scanProfile doesn't cover. We restrict
+    // its scope to the summary by handing it the stub (no skills/roles/etc.).
+    ...scanBannedPhrases(stub),
     ...scanExcludedPhrases({ summary: text, exclusions: input.exclusions ?? [] }),
   ];
 

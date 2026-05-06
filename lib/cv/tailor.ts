@@ -444,7 +444,7 @@ function scanText(label: string, text: string, hits: BannedHit[]): void {
   }
 }
 
-function scanBannedPhrases(cv: TailoredCV): BannedHit[] {
+export function scanBannedPhrases(cv: TailoredCV): BannedHit[] {
   const hits: BannedHit[] = [];
   scanText("Profile", cv.summary, hits);
   for (let i = 0; i < cv.roles.length; i++) {
@@ -708,8 +708,16 @@ function scanProfileTricolon(cv: TailoredCV): BannedHit[] {
   const sentences = splitSentences(cv.summary);
   for (let i = 0; i < sentences.length; i++) {
     const s = sentences[i];
-    const commaCount = (s.match(/,/g) || []).length;
-    if (commaCount >= 2 && /,\s*(?:and|&)\s+/i.test(s)) {
+    // Catches BOTH Oxford ("X, Y, and Z") AND non-Oxford ("X, Y and Z").
+    // Pattern: a comma followed (possibly via more text) by a final "and" /
+    // "&" + word — across an item list. We require the comma and "and"
+    // to be within a list-shaped span (no period/sentence break between).
+    // Non-Oxford detection — comma + non-punct text + " and " + word:
+    const nonOxford = /,\s+[^,.!?]+\s+and\s+[A-Za-z]/i.test(s);
+    // Oxford comma form — strict ", and " pattern (catches even when only
+    // one comma exists with the final "and"):
+    const oxford = /,\s*(?:and|&)\s+/i.test(s);
+    if (nonOxford || oxford) {
       hits.push({
         section: "Profile",
         phrase: `sentence ${i + 1} is a tricolon (X, Y, and Z list). Pick one or two items; do not list three.`,

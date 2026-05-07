@@ -592,6 +592,184 @@ function ruleLabelFromPhrase(phrase: string): string {
   return "Issue";
 }
 
+// ── FactBase gap detection (B4) ──────────────────────────────────────────
+// Given a JD and the user's FactBase, classify whether the FactBase has
+// sufficient evidence to support a strong Profile for this role. If thin,
+// returns 2-4 targeted gap-filling questions the user can answer in 1-2
+// sentences each. Answers can be fed straight into the tailor as ad-hoc
+// context (one-off) or saved to Skills (persistent for future tailors).
+
+export interface FactBaseGapQuestion {
+  id: string;
+  text: string;
+  example: string;
+}
+
+export interface FactBaseGapResult {
+  coverageScore: "high" | "medium" | "low";
+  reason: string;
+  gaps: string[];
+  questions: FactBaseGapQuestion[];
+}
+
+export async function detectFactBaseGaps(input: {
+  jdText: string;
+  cvId?: string;
+}): Promise<{ result?: FactBaseGapResult; error?: string }> {
+  if (!input.jdText || input.jdText.trim().length < 30) {
+    return { error: "JD too short to analyse." };
+  }
+
+  const keys = await getApiKeyValues();
+  if (Object.keys(keys).length === 0) {
+    return { error: "No AI provider connected. Add an API key in Settings." };
+  }
+
+  const fbResult = await extractFactBase({ cvId: input.cvId });
+  if (fbResult.error || !fbResult.factBase) {
+    return { error: fbResult.error ?? "Could not load profile data." };
+  }
+
+  // Serialise FactBase into a compact summary for the AI.
+  const fb = fbResult.factBase;
+  const fbSummary = serialiseFactBaseLight(fb);
+
+  const systemPrompt = `You analyse whether a candidate's FactBase has enough evidence to write a strong CV Profile for a specific JD.
+
+Output a single JSON object:
+{
+  "coverageScore": "high" | "medium" | "low",
+  "reason": "<one short sentence — why this coverage level>",
+  "gaps": ["<short noun-phrase gap>", ...],
+  "questions": [
+    { "id": "g1", "text": "<a question the candidate could answer in 1-2 sentences>", "example": "<a brief example answer the candidate might give — illustrative only, not a fabrication>" }
+  ]
+}
+
+Coverage scoring:
+- "high" — FactBase has solid evidence for the JD's role concept. No critical gaps. Return gaps: [] and questions: [].
+- "medium" — FactBase covers the role concept partially. Some specific evidence missing. Return 2-3 questions targeting the most important gaps.
+- "low" — FactBase has little overlap with the JD's role concept. Return 3-4 questions targeting the most important gaps.
+
+Question quality bar (every question must meet):
+- Specific to the JD (e.g. "Have you ever run an MRP cycle?" — NOT "What's your supply chain experience?").
+- Answerable in 1-2 sentences by the candidate.
+- Targets evidence likely to exist in the candidate's actual experience (don't ask about exotic credentials).
+- Each question fills a DIFFERENT gap (no overlap).
+
+Examples (illustrative):
+{
+  "id": "g1",
+  "text": "The JD asks about formal third-party risk management (TPRM). Have you ever worked inside a TPRM framework, even informally — vendor risk reviews, supplier due diligence, etc.?",
+  "example": "I haven't worked inside a formal TPRM framework, but I've done supplier-risk-adjacent work at Grain and Frame — investigating shipment discrepancies and root-causing supplier issues."
+}
+
+Output ONLY the JSON.`;
+
+  const userPrompt = `=== JOB DESCRIPTION ===
+${input.jdText.trim()}
+
+=== CANDIDATE FACTBASE ===
+${fbSummary}
+
+=== TASK ===
+Classify FactBase coverage for this JD and return targeted gap-filling questions if needed. Return ONLY the JSON object.`;
+
+  try {
+    const result = await callAI({
+      task: "cv-tailor",
+      connectedProviders: keys,
+      systemPrompt,
+      prompt: userPrompt,
+    });
+    const trimmed = result.text.trim();
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start === -1 || end === -1) {
+      return { error: "Gap detection returned non-JSON output." };
+    }
+    const parsed = JSON.parse(trimmed.slice(start, end + 1)) as Partial<FactBaseGapResult>;
+    const coverageScore: FactBaseGapResult["coverageScore"] =
+      parsed.coverageScore === "high" || parsed.coverageScore === "medium" || parsed.coverageScore === "low"
+        ? parsed.coverageScore
+        : "medium";
+    const gaps = Array.isArray(parsed.gaps)
+      ? parsed.gaps.filter((g): g is string => typeof g === "string" && g.trim().length > 0).slice(0, 6)
+      : [];
+    const rawQs = Array.isArray(parsed.questions) ? parsed.questions : [];
+    const questions: FactBaseGapQuestion[] = rawQs
+      .filter(
+        (q): q is FactBaseGapQuestion =>
+          !!q &&
+          typeof q === "object" &&
+          typeof (q as { text?: unknown }).text === "string" &&
+          (q as { text: string }).text.trim().length > 0
+      )
+      .slice(0, 4)
+      .map((q, i) => ({
+        id: typeof q.id === "string" && q.id.trim() ? q.id : `g${i + 1}`,
+        text: q.text,
+        example: typeof q.example === "string" ? q.example : "",
+      }));
+    return {
+      result: {
+        coverageScore,
+        reason: typeof parsed.reason === "string" ? parsed.reason : "",
+        gaps,
+        questions,
+      },
+    };
+  } catch (e) {
+    console.error("[detectFactBaseGaps] error:", e);
+    return { error: e instanceof Error ? e.message : "Gap detection AI call failed." };
+  }
+}
+
+// Compact FactBase serialisation for the gap detector. Trimmed-down version
+// of what the Master generator uses — we only need enough signal to classify
+// coverage, not enough to generate full content.
+function serialiseFactBaseLight(fb: import("@/lib/cv/factbase").FactBase): string {
+  const lines: string[] = [];
+  const roles = fb.facts.filter(
+    (f): f is import("@/lib/cv/factbase").RoleFact => f.kind === "role"
+  );
+  if (roles.length > 0) {
+    lines.push("== Roles ==");
+    for (const r of roles) {
+      const dates = `${r.startDate ?? "?"} – ${r.isCurrent ? "Present" : r.endDate ?? "?"}`;
+      lines.push(`- ${r.title} at ${r.company} (${dates})`);
+    }
+  }
+  const achievements = fb.facts.filter(
+    (f): f is import("@/lib/cv/factbase").AchievementFact => f.kind === "achievement"
+  );
+  if (achievements.length > 0) {
+    lines.push("\n== Achievements / Skills evidence ==");
+    for (const a of achievements) {
+      lines.push(`- ${a.content}`);
+    }
+  }
+  const skills = fb.facts.filter(
+    (f): f is import("@/lib/cv/factbase").SkillFact => f.kind === "skill"
+  );
+  if (skills.length > 0) {
+    lines.push("\n== Skills ==");
+    for (const s of skills) {
+      lines.push(`- ${s.content}`);
+    }
+  }
+  const educations = fb.facts.filter(
+    (f): f is import("@/lib/cv/factbase").EducationFact => f.kind === "education"
+  );
+  if (educations.length > 0) {
+    lines.push("\n== Education ==");
+    for (const e of educations) {
+      lines.push(`- ${e.qualification} from ${e.institution}${e.classification ? ` (${e.classification})` : ""}`);
+    }
+  }
+  return lines.join("\n").trim();
+}
+
 // ── Master fit-scoring (B2) ──────────────────────────────────────────────
 // Given a JD and the user's saved Masters, classify which Master is the
 // best fit (or if none are). Used by the CV tailor page to auto-pick the

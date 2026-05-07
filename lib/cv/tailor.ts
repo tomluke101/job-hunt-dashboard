@@ -706,18 +706,27 @@ function scanProfileTricolon(cv: TailoredCV): BannedHit[] {
   const hits: BannedHit[] = [];
   if (!cv.summary) return hits;
   const sentences = splitSentences(cv.summary);
+  // True tricolon = three short noun-phrase items separated by commas / and.
+  // Each item bounded to 1-4 words to avoid flagging compound verb clauses
+  // ("X, building Y from scratch that recovered refunds and guided Z" — that's
+  // one main action with a nested participial clause, not a list).
+  const ITEM = "[A-Za-z][\\w-]*(?:\\s+[\\w-]+){0,3}"; // 1-4 words
+  // Oxford: "X, Y, and Z" — three short noun-phrase items separated by
+  // commas with a final ", and Z".
+  const oxford = new RegExp(
+    `${ITEM}\\s*,\\s*${ITEM}\\s*,\\s*and\\s+${ITEM}`,
+    "i"
+  );
+  // Non-Oxford: "X, Y and Z" — three short noun-phrase items where the
+  // last two are joined by "and" (no Oxford comma). Must terminate at a
+  // sentence boundary (., !, ?, end) so we don't pick up clause structures.
+  const nonOxford = new RegExp(
+    `${ITEM}\\s*,\\s*${ITEM}\\s+and\\s+${ITEM}\\s*(?:[.!?,]|$)`,
+    "i"
+  );
   for (let i = 0; i < sentences.length; i++) {
     const s = sentences[i];
-    // Catches BOTH Oxford ("X, Y, and Z") AND non-Oxford ("X, Y and Z").
-    // Pattern: a comma followed (possibly via more text) by a final "and" /
-    // "&" + word — across an item list. We require the comma and "and"
-    // to be within a list-shaped span (no period/sentence break between).
-    // Non-Oxford detection — comma + non-punct text + " and " + word:
-    const nonOxford = /,\s+[^,.!?]+\s+and\s+[A-Za-z]/i.test(s);
-    // Oxford comma form — strict ", and " pattern (catches even when only
-    // one comma exists with the final "and"):
-    const oxford = /,\s*(?:and|&)\s+/i.test(s);
-    if (nonOxford || oxford) {
+    if (oxford.test(s) || nonOxford.test(s)) {
       hits.push({
         section: "Profile",
         phrase: `sentence ${i + 1} is a tricolon (X, Y, and Z list). Pick one or two items; do not list three.`,

@@ -10,6 +10,11 @@ interface Props {
   // adjacent to the Profile content. Not rendered in print/Word output —
   // these are screen-only UI affordances.
   profileActions?: React.ReactNode;
+  // Optional banner rendered immediately ABOVE the Profile section heading.
+  // Used for contextual prompts like "Save this auto-generated Profile as
+  // your first Master?" so the CTA sits right next to the Profile it relates
+  // to, not floating above the whole CV. print:hidden.
+  profileBanner?: React.ReactNode;
 }
 
 // Check whether a JD keyword surfaces verbatim (or as a clear stem) anywhere
@@ -76,7 +81,7 @@ function dateRange(start: string, end: string | null, isCurrent: boolean): strin
 
 const cvFontStack = `"Calibri", "Arial", "Helvetica", sans-serif`;
 
-export default function TailoredCVView({ cv, profileActions }: Props) {
+export default function TailoredCVView({ cv, profileActions, profileBanner }: Props) {
   const bodyText = buildBodyText(cv);
   const keywordChecks = cv.jdKeywords.map((k) => ({
     keyword: k,
@@ -148,9 +153,14 @@ export default function TailoredCVView({ cv, profileActions }: Props) {
         </header>
 
         {cv.summary && (
-          <Section title="Profile" actions={profileActions}>
-            <p className="text-justify">{cv.summary}</p>
-          </Section>
+          <>
+            {profileBanner && (
+              <div className="mt-4 print:hidden">{profileBanner}</div>
+            )}
+            <Section title="Profile" actions={profileActions}>
+              <p className="text-justify">{cv.summary}</p>
+            </Section>
+          </>
         )}
 
         {cv.skills.length > 0 && (

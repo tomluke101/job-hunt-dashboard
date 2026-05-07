@@ -904,6 +904,8 @@ ANCHORS-APPEAR-ONCE:
 
 EMPLOYER-NAME RULE: include current employer name in S1 only if brand-tier (FTSE 100, S&P 500, FAANG, MBB, Magic Circle, Big 4, household-name). Otherwise omit — employer lives in Experience section.
 
+BRAND-TIER PRIOR-EMPLOYER RULE (NON-NEGOTIABLE): if the FactBase contains ANY brand-tier prior employer (FTSE 100, S&P 500, FAANG, MBB, Magic Circle, Big 4, household-name unicorn — e.g. Siemens, Goldman Sachs, McKinsey, JLR, PwC, Apple, Google, Stripe, Anthropic), you MUST surface that employer in the Profile. This is non-optional credibility signal that travels across applications. Place it where it fits — as a career-narrative bridge in S1 ("…building on a Project Coordinator placement at Siemens DISW") or as the close in S4 — but include it. Dropping a brand-tier prior employer for any reason is a critical omission.
+
 S2 PAIRING RULE: S2 must contain BOTH (i) a scope anchor (£/$/€-figure, growth multiple, count of named entities, before/after delta) AND (ii) a specific named action (built/designed/launched a NAMED system, recovered a NAMED amount, switched a NAMED provider).
 
 S3 STRENGTH RULE: S3 must contain a NAMED specific item — named system, named brand collaborator, named outcome, named count. Generic ownership/scope phrases ("end-to-end", "from purchase order through to delivery") are insufficient.

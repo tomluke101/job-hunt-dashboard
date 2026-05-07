@@ -800,73 +800,74 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
             </div>
           )}
 
-          {/* No-Master onboarding banner — shown when the user generated this
-              CV without a usable saved Master. Lets them save the auto-Profile
-              as their first Master in one click, with optional name. */}
-          {usableMasters.length === 0 && tailored.summary && (
-            <div className="rounded-xl border border-blue-200 bg-blue-50/60 px-4 py-3 space-y-2.5">
-              <div className="flex items-start gap-2 text-xs text-blue-900 leading-relaxed">
-                <Sparkles size={13} className="mt-0.5 shrink-0 text-blue-500" />
-                <div className="flex-1">
-                  <div className="font-semibold mb-0.5">
-                    This Profile was generated one-off from your CV + JD.
-                  </div>
-                  <div className="text-blue-800">
-                    Save it as your first Master and it&apos;ll be reused
-                    (and tailorable) for every future CV. You can edit it
-                    later on the Profile page.
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <input
-                  type="text"
-                  value={saveMasterName}
-                  onChange={(e) => setSaveMasterName(e.target.value)}
-                  disabled={isSavingAsMaster}
-                  placeholder={
-                    fitResult?.detectedRoleFamily
-                      ? `e.g. ${fitResult.detectedRoleFamily}`
-                      : roleName
-                        ? `e.g. ${roleName}`
-                        : "Name this Master"
-                  }
-                  className="flex-1 min-w-[180px] text-xs border border-blue-200 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 placeholder-slate-400 disabled:opacity-50"
-                />
-                <button
-                  onClick={handleSaveAsFirstMaster}
-                  disabled={isSavingAsMaster || savedAsMasterFlash}
-                  className={`text-xs font-semibold inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 ${
-                    savedAsMasterFlash
-                      ? "bg-emerald-100 border border-emerald-300 text-emerald-800"
-                      : "bg-blue-600 text-white hover:bg-blue-700"
-                  }`}
-                >
-                  {isSavingAsMaster ? (
-                    <>
-                      <Loader2 size={11} className="animate-spin" /> Saving…
-                    </>
-                  ) : savedAsMasterFlash ? (
-                    <>
-                      <Check size={11} /> Saved as your first Master
-                    </>
-                  ) : (
-                    <>
-                      <Save size={11} /> Save as my first Master
-                    </>
-                  )}
-                </button>
-              </div>
-              {saveMasterError && (
-                <div className="text-[11px] text-rose-700 inline-flex items-center gap-1">
-                  <AlertCircle size={10} /> {saveMasterError}
-                </div>
-              )}
-            </div>
-          )}
-
           <TailoredCVView
             cv={tailored}
+            profileBanner={
+              // No-Master onboarding banner — sits IMMEDIATELY above the
+              // Profile section heading inside the rendered CV. Visually
+              // attached to the Profile, not floating above the whole CV.
+              usableMasters.length === 0 && tailored.summary ? (
+                <div className="rounded-xl border border-blue-200 bg-blue-50/60 px-4 py-3 space-y-2.5">
+                  <div className="flex items-start gap-2 text-xs text-blue-900 leading-relaxed">
+                    <Sparkles size={13} className="mt-0.5 shrink-0 text-blue-500" />
+                    <div className="flex-1">
+                      <div className="font-semibold mb-0.5">
+                        This Profile was generated one-off from your CV + JD.
+                      </div>
+                      <div className="text-blue-800">
+                        Save it as your first Master and it&apos;ll be reused
+                        (and tailorable) for every future CV. You can edit it
+                        later on the Profile page.
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <input
+                      type="text"
+                      value={saveMasterName}
+                      onChange={(e) => setSaveMasterName(e.target.value)}
+                      disabled={isSavingAsMaster}
+                      placeholder={
+                        fitResult?.detectedRoleFamily
+                          ? `e.g. ${fitResult.detectedRoleFamily}`
+                          : roleName
+                            ? `e.g. ${roleName}`
+                            : "Name this Master"
+                      }
+                      className="flex-1 min-w-[180px] text-xs border border-blue-200 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 placeholder-slate-400 disabled:opacity-50"
+                    />
+                    <button
+                      onClick={handleSaveAsFirstMaster}
+                      disabled={isSavingAsMaster || savedAsMasterFlash}
+                      className={`text-xs font-semibold inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 ${
+                        savedAsMasterFlash
+                          ? "bg-emerald-100 border border-emerald-300 text-emerald-800"
+                          : "bg-blue-600 text-white hover:bg-blue-700"
+                      }`}
+                    >
+                      {isSavingAsMaster ? (
+                        <>
+                          <Loader2 size={11} className="animate-spin" /> Saving…
+                        </>
+                      ) : savedAsMasterFlash ? (
+                        <>
+                          <Check size={11} /> Saved as your first Master
+                        </>
+                      ) : (
+                        <>
+                          <Save size={11} /> Save as my first Master
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  {saveMasterError && (
+                    <div className="text-[11px] text-rose-700 inline-flex items-center gap-1">
+                      <AlertCircle size={10} /> {saveMasterError}
+                    </div>
+                  )}
+                </div>
+              ) : null
+            }
             profileActions={
               <>
                 <button

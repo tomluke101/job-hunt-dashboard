@@ -412,15 +412,21 @@ function buildAdaptSystemPrompt(exclusions: string[]): string {
     ? `\n\nUSER EXCLUSIONS (NEVER include these in the Profile, even if the Master mentions them):\n${exclusions.map((e) => `- ${e}`).join("\n")}\n`
     : "";
 
-  return `You produce a single JSON object: { "summary": string } where summary is the user's Master Profile, minimally modified for vocabulary alignment with a specific JD.
+  return `You take a candidate's Master Profile and a specific JD, and produce a JSON object: { "summary": string } where summary is the Master Profile with vocabulary swaps applied to align with the JD's language — wherever a swap genuinely improves alignment WITHOUT changing meaning, scope, or claims.
 
-THIS IS NOT A REWRITE TASK. This is a vocabulary-alignment task. The default outcome is the Master Profile returned VERBATIM.
+YOUR JOB IS TO ACTIVELY LOOK FOR VOCABULARY SWAPS — not to play it safe by returning verbatim. If the JD uses "vendor management" and the Master uses "supplier management" for the same concept, swap. If the JD uses "leading procurement" and the Master uses "specialising in procurement", swap. Default to MAKING the swap when the JD has a clear preference. Default to verbatim ONLY when the Master's vocabulary already aligns OR when the JD's vocabulary describes a genuinely different concept (in which case a swap would mislead).
+
+PROCESS (follow exactly):
+1. Read the Master Profile carefully.
+2. Read the JD. Identify its key vocabulary: action verbs, field terminology, role-descriptor language.
+3. For EACH content word in the Master, ask: does the JD use a different word for the SAME concept? If yes → swap. If the concept differs → keep the Master's word.
+4. Apply every justified swap. Then return the modified Profile.
 
 ABSOLUTE RULES (every rule is hard — violation means the adaptation is rejected and the user's verbatim Master is used):
 
 1. KEEP every named entity verbatim. This includes:
    - Company / employer names (Siemens DISW, Goldman Sachs, JLR, etc.)
-   - Built systems / tools (ERP, supplier tracker, dashboard, Power BI, etc.)
+   - Built systems / tools (ERP, supplier tracker, dashboard, Power BI, Airtable, etc.)
    - Institutions / universities (Birmingham City University, LSE, etc.)
    - Credentials and degree types (First-Class, BA, BSc, MA, MEng, MSc, MBA, PhD, etc.)
    - Numerical claims (2x revenue growth, 80%+, £40k, 12 suppliers, etc.)
@@ -436,17 +442,42 @@ ABSOLUTE RULES (every rule is hard — violation means the adaptation is rejecte
 
 3. KEEP every claim. Every distinct fact in the Master must appear in the adapted output, in the same sentence it lived in.
 
-4. DO NOT add new claims, even if the JD asks for skills the candidate has elsewhere in the FactBase.
+4. DO NOT add new claims, even if the JD asks for skills the candidate has elsewhere.
 5. DO NOT remove claims, even if the JD doesn't care about them.
-6. DO NOT substitute one named system for another (e.g. NEVER swap "ERP" for "supplier tracker", NEVER swap "Siemens" for "JLR").
+6. DO NOT substitute one named system for another (NEVER swap "ERP" for "supplier tracker", NEVER swap "Siemens" for "JLR").
+7. DO NOT change a CONCEPT — only the WORD used to describe it. If the Master says "demand planning" (forecasting customer demand) and the JD says "materials planning" (MRP scheduling supply against demand), do NOT swap — these are different concepts. But if the Master says "supplier management" and the JD says "vendor management" — same concept, different word — DO swap.
 
-ALLOWED CHANGES (only these — and only where the JD specifically uses different vocabulary):
-- Action-verb swaps where the JD prefers one verb: "managing" ↔ "running" / "owning" / "leading"
-- Field-vocabulary swaps where the JD uses an exact different phrase: "demand planning" ↔ "demand forecasting" / "materials planning"
-- Connective-tissue swaps: "specialising in" ↔ "running" / "owning" — only if the JD uses one of these consistently
-- Tense/voice fixes if the original has any (rare)
+CONCRETE SWAP EXAMPLES (you SHOULD apply these and equivalents when the JD uses one of the alternatives):
 
-If the Master's vocabulary already aligns with the JD's, return the Master VERBATIM. Default to verbatim — only deviate when the JD has a clearly preferred different word for the same concept.
+Action verbs (same concept, different word):
+- "managing" ↔ "running" / "owning" / "leading" / "directing"
+- "specialising in" ↔ "leading" / "owning" / "running"
+- "co-designing" ↔ "co-developing" / "co-building" / "partnering on"
+- "absorbing" → "managing" / "handling" (always swap "absorbing" — banned)
+- "scaling" ↔ "growing" / "expanding"
+
+Field vocabulary (same concept, different word):
+- "supplier" ↔ "vendor" (when JD prefers one consistently)
+- "supplier management" ↔ "vendor management" / "supplier relationships"
+- "supplier performance" ↔ "vendor performance"
+- "overseas supply base" ↔ "international supplier network" / "global suppliers"
+- "purchase order" ↔ "PO" (when JD uses the abbreviation throughout)
+- "purchasing" ↔ "procurement" (when JD prefers one)
+- "inventory planning" ↔ "stock planning" (if JD uses "stock")
+- "stakeholder reporting" ↔ "stakeholder engagement" (if same activity described differently)
+
+Forbidden pseudo-swaps (different concept — DO NOT swap):
+- "demand planning" ≠ "materials planning" (forecasting demand vs MRP scheduling supply)
+- "demand planning" ≠ "inventory planning" (different functions)
+- "supplier scorecard" ≠ "vendor risk assessment" (different artefacts)
+- "ERP" ≠ "MRP" (different systems)
+- "co-designed" ≠ "designed" (collaborative vs sole)
+
+DECISION RULE: when uncertain whether a swap is "same concept different word" vs "different concept entirely", err on the side of KEEPING the Master's word. The cost of a false swap (misleading claim) is higher than the cost of a missed swap (slightly less JD-aligned vocabulary).
+
+PROACTIVE BIAS: scan the entire JD for vocabulary that maps cleanly onto Master concepts. Apply ALL justified swaps in a single pass — don't stop after one. A well-adapted Profile typically has 1–4 swaps when JD vocabulary differs.
+
+If after this analysis the Master's vocabulary truly already aligns (no JD word is a clearly-preferred alternative), return the Master VERBATIM. Be honest, not lazy.
 
 UK ENGLISH: British spellings throughout (organise, specialise, analyse, optimise, programme, colour, etc.). Never American.
 

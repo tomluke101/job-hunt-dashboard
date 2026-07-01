@@ -236,6 +236,37 @@ function splitBlocks(text: string): Block[] {
   return out;
 }
 
+function scoreTier(v: number | null | undefined): { border: string; bg: string; text: string; labelText: string; bar: string } {
+  if (v == null) return { border: "border-slate-200", bg: "bg-slate-50", text: "text-slate-400", labelText: "text-slate-500", bar: "bg-slate-200" };
+  if (v >= 75) return { border: "border-emerald-200", bg: "bg-emerald-50", text: "text-emerald-800", labelText: "text-emerald-700", bar: "bg-emerald-500" };
+  if (v >= 55) return { border: "border-blue-200", bg: "bg-blue-50", text: "text-blue-800", labelText: "text-blue-700", bar: "bg-blue-500" };
+  if (v >= 35) return { border: "border-amber-200", bg: "bg-amber-50", text: "text-amber-800", labelText: "text-amber-700", bar: "bg-amber-500" };
+  return { border: "border-rose-200", bg: "bg-rose-50", text: "text-rose-800", labelText: "text-rose-700", bar: "bg-rose-500" };
+}
+
+function ScoreTile({ label, value, comingSoon }: { label: string; value: number | null | undefined; comingSoon?: boolean }) {
+  const tier = scoreTier(value);
+  const pct = value != null ? Math.max(0, Math.min(100, value)) : 0;
+  return (
+    <div className={`rounded-md border p-2 ${tier.border} ${tier.bg}`}>
+      <p className={`text-[10px] uppercase tracking-wider font-semibold ${tier.labelText}`}>{label}</p>
+      <div className="flex items-baseline gap-1 mt-0.5">
+        {value != null ? (
+          <>
+            <p className={`text-sm font-semibold tabular-nums ${tier.text}`}>{value}</p>
+            <p className={`text-[10px] tabular-nums ${tier.text} opacity-70`}>%</p>
+          </>
+        ) : (
+          <p className="text-sm font-semibold text-slate-400">{comingSoon ? "next" : "—"}</p>
+        )}
+      </div>
+      <div className="mt-1.5 h-1 rounded-full bg-white/60 overflow-hidden">
+        <div className={`h-full rounded-full ${tier.bar}`} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
 function RankingExplanation({ entry }: { entry: ShortlistEntry }) {
   const scores = [
     { label: "Match to search", value: entry.match_to_search_score },
@@ -253,12 +284,7 @@ function RankingExplanation({ entry }: { entry: ShortlistEntry }) {
     <div className="space-y-3">
       <div className="grid grid-cols-4 gap-2">
         {scores.map((s) => (
-          <div key={s.label} className="rounded-md border border-slate-200 bg-slate-50 p-2">
-            <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">{s.label}</p>
-            <p className="text-sm font-semibold text-slate-800 tabular-nums">
-              {s.value ?? <span className="text-slate-400">{s.comingSoon ? "next" : "—"}</span>}
-            </p>
-          </div>
+          <ScoreTile key={s.label} label={s.label} value={s.value} comingSoon={s.comingSoon} />
         ))}
       </div>
       {(keywordHits?.length || qualityReasons?.length || salaryFit !== undefined) && (

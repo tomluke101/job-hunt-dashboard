@@ -43,15 +43,30 @@ const STOPWORDS = new Set([
 // don't strip content words we care about (analyst, driver, engineer, etc.).
 const TITLE_STOP = new Set(["the","a","an","and","or","of","to","in","for","with","on","at","by","from","-"]);
 
+// Level qualifiers that appear at the end of role phrases ("senior", "manager")
+// which shouldn't be treated as THE core noun.
+const LEVEL_QUALIFIERS = new Set(["junior","senior","lead","principal","staff","chief","head","director","manager","assistant","intern","graduate"]);
+
+// The role's core noun is the last content word that isn't a level qualifier.
+// e.g. "senior supply chain analyst" -> "analyst"; "engineering manager" -> "engineering".
+function coreRoleNoun(askWords: string[]): string | null {
+  for (let i = askWords.length - 1; i >= 0; i--) {
+    if (!LEVEL_QUALIFIERS.has(askWords[i])) return askWords[i];
+  }
+  return askWords[askWords.length - 1] ?? null;
+}
+
 // True if the job title is relevant to the search phrase. Accepts if:
 //   * the title contains the exact search phrase, OR
-//   * the title contains at least half of the search's content words.
+//   * the title contains the search's CORE ROLE NOUN (last content word).
+// Loose by design: precision is handled by ranking + LLM match-to-you.
 function titleRelevant(title: string, phrase: string, askWords: string[]): boolean {
   const t = title.toLowerCase();
   if (phrase && t.includes(phrase)) return true;
   if (!askWords.length) return true;
-  const hits = askWords.filter((w) => new RegExp(`\\b${w}\\b`, "i").test(t)).length;
-  return hits / askWords.length >= 0.5;
+  const core = coreRoleNoun(askWords);
+  if (core && new RegExp(`\\b${core}\\b`, "i").test(t)) return true;
+  return false;
 }
 
 function tokens(s: string): string[] {
@@ -247,6 +262,19 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
   const top = ranked.slice(0, input.jobsPerRun);
 
   // ---- Upsert postings + shortlist ----
+  // Look up which posting_ids already sit on this user's shortlist for this
+  // search — so we can UPDATE ranking without resurrecting rows the user has
+  // already decided on (rejected/applied/etc.).
+  const existingByPosting = new Map<string, { id: string; state: string }>();
+  {
+    const { data: existing } = await supabase
+      .from("job_shortlist")
+      .select("id, posting_id, state")
+      .eq("user_id", input.userId)
+      .eq("search_id", input.searchId);
+    for (const row of existing ?? []) existingByPosting.set(row.posting_id as string, { id: row.id as string, state: row.state as string });
+  }
+
   let shortlisted = 0;
   for (let i = 0; i < top.length; i++) {
     const { j, r } = top[i];
@@ -284,34 +312,47 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     }
     const posting_id = upsert.data.id;
 
-    const short = await supabase
-      .from("job_shortlist")
-      .upsert(
-        {
+    const rankingPayload = {
+      quality_score: r.quality,
+      match_to_search_score: r.match_to_search,
+      composite_rank: r.composite,
+      ranking_explanation: {
+        phase: "cheap-only",
+        note: "Match-to-search + quality + salary-fit. Match-to-you + career-fit come online next.",
+        match_to_search: r.match_to_search,
+        quality: r.quality,
+        salary_fit: r.salary_fit,
+        keyword_hits: r.hits,
+        quality_reasons: j.quality_reasons,
+        rank_position: i + 1,
+        of: top.length,
+      },
+    } as const;
+
+    const existing = existingByPosting.get(posting_id);
+    if (existing) {
+      // Preserve the user's decision (rejected/applied/interested/deleted).
+      // Just refresh ranking scores so re-runs update stale positions.
+      const short = await supabase
+        .from("job_shortlist")
+        .update(rankingPayload)
+        .eq("id", existing.id);
+      if (short.error) console.error("[runSearch] shortlist update failed", short.error);
+      else shortlisted++;
+    } else {
+      const short = await supabase
+        .from("job_shortlist")
+        .insert({
           user_id: input.userId,
           search_id: input.searchId,
           posting_id,
           state: "new",
-          quality_score: r.quality,
-          match_to_search_score: r.match_to_search,
-          composite_rank: r.composite,
-          ranking_explanation: {
-            phase: "cheap-only",
-            note: "Match-to-search + quality + salary-fit. Match-to-you + career-fit come online next.",
-            match_to_search: r.match_to_search,
-            quality: r.quality,
-            salary_fit: r.salary_fit,
-            keyword_hits: r.hits,
-            quality_reasons: j.quality_reasons,
-            rank_position: i + 1,
-            of: top.length,
-          },
-        },
-        { onConflict: "user_id,search_id,posting_id" }
-      )
-      .select("id");
-    if (short.error) console.error("[runSearch] shortlist upsert failed", short.error);
-    else shortlisted++;
+          ...rankingPayload,
+        })
+        .select("id");
+      if (short.error) console.error("[runSearch] shortlist insert failed", short.error);
+      else shortlisted++;
+    }
   }
 
   await supabase

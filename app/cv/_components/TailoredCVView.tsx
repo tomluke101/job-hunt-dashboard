@@ -15,6 +15,14 @@ interface Props {
   // your first Master?" so the CTA sits right next to the Profile it relates
   // to, not floating above the whole CV. print:hidden.
   profileBanner?: React.ReactNode;
+  // Optional footer rendered immediately BELOW the Profile paragraph (but
+  // INSIDE the CV card). Used for the ProfileStrengthCard so the honesty
+  // layer sits visually attached to the Profile it scores. print:hidden.
+  profileFooter?: React.ReactNode;
+  // Optional actions rendered inline on the Key Skills section heading —
+  // used to surface "Strengthen Skills" button so the user can run the
+  // JD-vs-FactBase audit + re-tailor with confirmed skills. print:hidden.
+  skillsActions?: React.ReactNode;
 }
 
 // Check whether a JD keyword surfaces verbatim (or as a clear stem) anywhere
@@ -37,14 +45,44 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// Generic trailing words that recruiters sometimes append to keywords but
+// which the body often omits ("ERP systems" vs body's bare "ERP"). When a
+// multi-word keyword ends with one of these tails, we also accept a
+// word-boundary match on the bare head term.
+const GENERIC_TRAILING_TAILS = new Set([
+  "system", "systems",
+  "tool", "tools", "tooling",
+  "software", "platform", "platforms",
+  "application", "applications", "apps",
+  "suite", "package",
+  "framework", "frameworks",
+  "skills", "skill",
+  "knowledge", "experience",
+]);
+
 function keywordPresent(body: string, keyword: string): boolean {
   const k = keyword.trim().toLowerCase();
   if (!k) return false;
-  // Word-boundary check for short terms; substring for multi-word phrases.
+  // Word-boundary check for short single-word terms.
   if (!k.includes(" ") && k.length < 5) {
     return new RegExp(`\\b${escapeRegex(k)}\\b`, "i").test(body);
   }
-  return body.includes(k);
+  // Multi-word: try the full phrase as substring first.
+  if (body.includes(k)) return true;
+  // Fallback for "X SUFFIX" patterns where SUFFIX is a generic trailing
+  // word ("ERP systems" → also accept "ERP" word-boundary match in body;
+  // "MRP tools" → "MRP"; "BI platforms" → "BI"; "Programming knowledge"
+  // → "Programming"). Without this, every "X systems"/"X tools" JD
+  // keyword falsely reads as missing whenever the body uses just "X".
+  const words = k.split(/\s+/);
+  if (words.length === 2 && GENERIC_TRAILING_TAILS.has(words[1])) {
+    const bareTerm = words[0];
+    // Bare term must be ≥2 chars to avoid noise; use word-boundary.
+    if (bareTerm.length >= 2) {
+      return new RegExp(`\\b${escapeRegex(bareTerm)}\\b`, "i").test(body);
+    }
+  }
+  return false;
 }
 
 const MONTH_NAMES = [
@@ -81,7 +119,13 @@ function dateRange(start: string, end: string | null, isCurrent: boolean): strin
 
 const cvFontStack = `"Calibri", "Arial", "Helvetica", sans-serif`;
 
-export default function TailoredCVView({ cv, profileActions, profileBanner }: Props) {
+export default function TailoredCVView({
+  cv,
+  profileActions,
+  profileBanner,
+  profileFooter,
+  skillsActions,
+}: Props) {
   const bodyText = buildBodyText(cv);
   const keywordChecks = cv.jdKeywords.map((k) => ({
     keyword: k,
@@ -94,24 +138,38 @@ export default function TailoredCVView({ cv, profileActions, profileBanner }: Pr
       {(cv.jdKeywords.length > 0 || cv.gaps.length > 0) && (
         <div className="grid gap-4 md:grid-cols-2">
           {cv.jdKeywords.length > 0 && (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
-              <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-emerald-800">
-                <Target size={12} /> Recruiter search terms ({presentCount}/{keywordChecks.length} surfaced)
+            <div className="rounded-xl border border-slate-200 bg-white p-3.5">
+              <div className="mb-2 flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-700">
+                  <Target size={11} className="text-slate-500" /> Recruiter search terms
+                </div>
+                <div className="text-[10px] font-medium text-slate-500">
+                  <span className="text-emerald-700 font-semibold">{presentCount}</span>
+                  <span className="text-slate-400"> of </span>
+                  <span className="font-semibold">{keywordChecks.length}</span>
+                  <span className="text-slate-400"> surfaced</span>
+                </div>
               </div>
-              <p className="mb-2 text-[11px] text-emerald-700/80">
-                Recruiters run boolean searches for these terms. Green = literal match in your CV body. Amber = missing — refine to add it (only if the FactBase supports it).
-              </p>
-              <div className="flex flex-wrap gap-1.5">
+              <div className="flex flex-wrap gap-1">
                 {keywordChecks.map((k, i) => (
                   <span
                     key={i}
-                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${
+                    className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
                       k.present
-                        ? "bg-emerald-600/10 text-emerald-900 border border-emerald-300"
-                        : "bg-amber-100/60 text-amber-900 border border-amber-300"
+                        ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
+                        : "bg-slate-50 text-slate-500 border border-slate-200"
                     }`}
+                    title={
+                      k.present
+                        ? `"${k.keyword}" appears in your CV body — recruiter boolean searches will hit.`
+                        : `"${k.keyword}" missing — strengthen via Skills audit or add evidence on your Profile.`
+                    }
                   >
-                    {k.present ? <Check size={10} /> : <X size={10} />}
+                    {k.present ? (
+                      <Check size={8} className="text-emerald-600" />
+                    ) : (
+                      <span className="text-slate-400">·</span>
+                    )}
                     {k.keyword}
                   </span>
                 ))}
@@ -119,21 +177,10 @@ export default function TailoredCVView({ cv, profileActions, profileBanner }: Pr
             </div>
           )}
 
-          {cv.gaps.length > 0 && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-4">
-              <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-amber-800">
-                <AlertTriangle size={12} /> Gaps — JD asks not in your profile ({cv.gaps.length})
-              </div>
-              <ul className="space-y-1 text-xs text-amber-900">
-                {cv.gaps.map((g, i) => (
-                  <li key={i}>• {g}</li>
-                ))}
-              </ul>
-              <p className="mt-2 text-[11px] text-amber-700">
-                Add evidence on your Profile to close these. We don&apos;t paper over them.
-              </p>
-            </div>
-          )}
+          {/* Gaps panel removed 2026-05-25 — Strengthen Skills (interactive
+              checklist next to Skills heading) replaces it. The read-only
+              passive list duplicated work and added visual noise without
+              giving the user a path to fix the gaps. */}
         </div>
       )}
 
@@ -159,12 +206,15 @@ export default function TailoredCVView({ cv, profileActions, profileBanner }: Pr
             )}
             <Section title="Profile" actions={profileActions}>
               <p className="text-justify">{cv.summary}</p>
+              {profileFooter && (
+                <div className="mt-3 print:hidden">{profileFooter}</div>
+              )}
             </Section>
           </>
         )}
 
         {cv.skills.length > 0 && (
-          <Section title="Key Skills">
+          <Section title="Key Skills" actions={skillsActions}>
             <div className="space-y-1">
               {cv.skills.map((g, i) => (
                 <p key={i} style={{ lineHeight: 1.55 }}>

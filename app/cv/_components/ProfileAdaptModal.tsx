@@ -116,7 +116,7 @@ export default function ProfileAdaptModal({
               <Sparkles size={16} className="text-blue-500" /> Adapt Profile to this JD
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Word-level vocabulary alignment with{" "}
+              JD-emphasis adaptation for{" "}
               {companyName || roleName ? (
                 <span className="font-medium text-slate-700">
                   {[roleName, companyName].filter(Boolean).join(" @ ")}
@@ -124,7 +124,7 @@ export default function ProfileAdaptModal({
               ) : (
                 "the job description"
               )}
-              . Every named claim from your Master is preserved.
+              . Universal anchors (employer brands, role titles, degree) preserved; S2 + S3 may surface different FactBase claims to match JD weight.
             </p>
           </div>
           <button
@@ -145,7 +145,7 @@ export default function ProfileAdaptModal({
                 Adapting your Master Profile to the JD…
               </p>
               <p className="text-xs text-slate-400 mt-1">
-                Vocabulary alignment only. Every named claim, system, and credential is preserved.
+                Scoring FactBase claims against JD weight, then re-emphasising S2 + S3 around the strongest matches. Universal anchors preserved.
               </p>
             </div>
           )}

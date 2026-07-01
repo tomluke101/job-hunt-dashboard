@@ -22,6 +22,16 @@ import {
 import { tailorCV, refineTailoredCV, saveTailoredCV, getMasterProfileById, scoreMastersForJD, saveMaster, type MasterProfile, type MasterFitResult } from "@/app/actions/cv-tailoring";
 import ProfileAdaptModal from "./ProfileAdaptModal";
 import ProfileEditModal from "./ProfileEditModal";
+import ProfileStrengthCard from "@/app/profile/_components/ProfileStrengthCard";
+import FactBaseGapModal from "@/app/profile/_components/FactBaseGapModal";
+import SkillsAuditModal from "./SkillsAuditModal";
+import {
+  detectMasterFactBaseGaps,
+  auditSkillsForJD,
+  saveGapAnswersAsSkills,
+  type FactBaseGapResult,
+  type SkillsMatchResult,
+} from "@/app/actions/cv-tailoring";
 import { updateApplication } from "@/app/actions/applications";
 import type { Application } from "@/app/actions/applications";
 import type { UserCV } from "@/app/actions/profile";
@@ -99,11 +109,58 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
   const [isScoringFit, setIsScoringFit] = useState(false);
   const [userOverrodeMaster, setUserOverrodeMaster] = useState(false);
 
-  // Save-as-first-Master state for users with no saved Masters.
+  // Save-as-Master state. Used both when the user has zero Masters (save the
+  // generated Profile as their first) and when the user explicitly bypassed
+  // their saved Masters for a cross-domain JD (save the result as a new
+  // Master for that role family).
   const [isSavingAsMaster, startSaveAsMaster] = useTransition();
   const [savedAsMasterFlash, setSavedAsMasterFlash] = useState(false);
   const [saveMasterName, setSaveMasterName] = useState("");
   const [saveMasterError, setSaveMasterError] = useState<string | null>(null);
+
+  // Bypass-Master mode. When true, tailorCV is called with no masterId, so
+  // the AI generates a Profile from the FactBase + JD only — same path as
+  // for users with zero Masters. Triggered explicitly by the user when their
+  // saved Masters all sit in a different role family from the JD.
+  const [bypassMaster, setBypassMaster] = useState(false);
+
+  // Gap-detection modal state for BYPASS-mode tailoring. Parity with the
+  // Master gen flow on /profile: when user bypasses and tries to tailor a
+  // JD whose family their FactBase doesn't directly support, we run a
+  // pre-flight gap detection and (if questions are returned) show a modal
+  // so the user can add credential / transferable-evidence answers BEFORE
+  // the Profile is generated. Without this the user has no way to
+  // strengthen their FactBase pre-generation — they get a 5/10 career-
+  // changer Profile and the strength card tells them after the fact.
+  // With this, they get a chance to lift the score upfront.
+  const [gapModalOpen, setGapModalOpen] = useState(false);
+  const [isDetectingGaps, setIsDetectingGaps] = useState(false);
+  const [gapResult, setGapResult] = useState<FactBaseGapResult | null>(null);
+
+  // Skills-audit modal state (Round 2 Phase 2). Runs after the Profile gap
+  // modal (bypass path) OR before tailoring (non-bypass path). Cross-references
+  // JD-required skills against the user's Skills Library + FactBase, surfaces
+  // missing items + vague items for fast tickbox confirmation.
+  const [skillsAuditOpen, setSkillsAuditOpen] = useState(false);
+  const [isAuditingSkills, setIsAuditingSkills] = useState(false);
+  const [skillsMatchResult, setSkillsMatchResult] = useState<SkillsMatchResult | null>(null);
+  // Carry-over: when the skills modal opens after the profile gap modal, we
+  // need to remember the profile-gap answers + fit so the tailor call has
+  // both sets of answers.
+  const [pendingProfileGapAnswers, setPendingProfileGapAnswers] = useState<
+    Array<{ question: string; answer: string }>
+  >([]);
+  const [pendingProfileGapFit, setPendingProfileGapFit] = useState<{
+    fit?: "strong" | "transferable" | "minimal";
+    angles?: string[];
+  }>({});
+
+  // Target role family for bypass-mode Profile generation. Auto-filled
+  // from fit-scoring's detectedRoleFamily so the user doesn't have to
+  // restate what the JD obviously is. Editable — user can override the
+  // AI's detection.
+  const [bypassTargetFamily, setBypassTargetFamily] = useState("");
+  const [bypassFamilyEditing, setBypassFamilyEditing] = useState(false);
 
   const outputRef = useRef<HTMLDivElement>(null);
   const jdTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -153,6 +210,12 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
       ) {
         setFitResult(r.result);
         if (!userOverrodeMaster) setSelectedMasterId(r.result.bestMasterId);
+        // Auto-fill the bypass target family from the JD's detected
+        // family. If the user enables bypass, this saves them from
+        // restating something the AI just inferred.
+        if (r.result.detectedRoleFamily && !bypassTargetFamily) {
+          setBypassTargetFamily(r.result.detectedRoleFamily);
+        }
       }
     }, 600);
     return () => {
@@ -186,38 +249,262 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
     ];
   }
 
-  // Single source of truth for tailor + regenerate. Always clears the previous
-  // tailored CV first so the spinner doesn't sit over a stale one (Tom flagged
-  // this as flicker).
-  function runTailor() {
+  // Core tailoring call. Optionally takes Profile gap-modal answers + Skills
+  // audit answers (both from pre-flight modals). Used by both bypass +
+  // non-bypass paths. Skills audit answers are passed through as truth-
+  // contract-grounded inputs the AI MUST surface in the Skills section.
+  async function runTailorWithAnswers(args?: {
+    wizardAnswers?: Array<{ question: string; answer: string }>;
+    factbaseFitForFamily?: "strong" | "transferable" | "minimal";
+    transferableAngles?: string[];
+    skillsAuditAnswers?: {
+      confirmedSkills?: string[];
+      vagueSpecifications?: Array<{ vagueItem: string; specifics: string[] }>;
+      additionalSkills?: string[];
+    };
+  }) {
     setError(null);
     setTailored(null);
     setWarnings([]);
     setSavedId(null);
     setSaveError(null);
     const stageTimers = startTailorStageCycle();
-    startTailor(async () => {
-      try {
-        const result = await tailorCV({
-          jdText: jobDescription,
-          cvId: selectedCvId || undefined,
-          companyName: companyName || undefined,
-          roleName: roleName || undefined,
-          masterId: selectedMasterId || undefined,
-        });
-        if (result.error) {
-          setError(result.error);
-          setWarnings(result.warnings ?? []);
-          return;
-        }
-        if (result.tailoredCV) {
-          setTailored(result.tailoredCV);
-          setWarnings(result.warnings ?? []);
-        }
-      } finally {
-        for (const t of stageTimers) clearTimeout(t);
-        setTailorStage(null);
+    try {
+      const result = await tailorCV({
+        jdText: jobDescription,
+        cvId: selectedCvId || undefined,
+        companyName: companyName || undefined,
+        roleName: roleName || undefined,
+        // Bypass mode forces the no-Master AI path even when the user has
+        // saved Masters — useful for cross-domain JDs. We pass an explicit
+        // bypassMaster flag because undefined masterId silently falls back
+        // to the default Master server-side.
+        masterId: bypassMaster ? undefined : selectedMasterId || undefined,
+        bypassMaster: bypassMaster || undefined,
+        // In bypass mode, the target role family frames the AI's Profile
+        // generation. Auto-filled from fit-scoring's detected family;
+        // user-editable. Lets a user with only Procurement Masters get a
+        // Data-Analytics-framed Profile for THIS JD without leaving the
+        // CV builder. Ignored when bypass is off (Master's own saved
+        // family is the source of truth).
+        targetRoleFamily:
+          bypassMaster && bypassTargetFamily.trim()
+            ? bypassTargetFamily.trim()
+            : undefined,
+        // Wizard answers + fit assessment from the bypass-mode gap modal,
+        // when present. Strengthens the Profile generation with user-
+        // supplied evidence + forces career-changer template when fit is
+        // transferable/minimal.
+        wizardAnswers: args?.wizardAnswers,
+        factbaseFitForFamily: args?.factbaseFitForFamily,
+        transferableAngles: args?.transferableAngles,
+        // Skills audit answers from the pre-flight checklist modal. These
+        // are user-confirmed, truth-contract-grounded skill additions the
+        // AI must surface in the Skills section.
+        skillsAuditAnswers: args?.skillsAuditAnswers,
+      });
+      if (result.error) {
+        setError(result.error);
+        setWarnings(result.warnings ?? []);
+        return;
       }
+      if (result.tailoredCV) {
+        setTailored(result.tailoredCV);
+        setWarnings(result.warnings ?? []);
+      }
+    } finally {
+      for (const t of stageTimers) clearTimeout(t);
+      setTailorStage(null);
+    }
+  }
+
+  // Post-generation Skills audit — USER-INITIATED via "Strengthen Skills"
+  // button next to the generated Skills section. NOT pre-flight. UX flow:
+  //   1. User clicks Tailor → CV generates with current FactBase
+  //   2. User views the result, sees their Skills section
+  //   3. (Optional) User clicks "Strengthen Skills" → audit runs in
+  //      background → modal opens with missing JD skills + vague items
+  //   4. User ticks what they actually have / specifies vague items / adds
+  //      free-text additions
+  //   5. Submit → re-tailor the full CV with the new skills baked in,
+  //      AND persist to user_skills Library for future generations
+  //
+  // Lower-friction than pre-flight modal: user sees value first, then opts
+  // in to strengthen.
+  async function handleStrengthenSkills() {
+    if (!tailored || !jobDescription.trim()) return;
+    setIsAuditingSkills(true);
+    setSkillsMatchResult(null);
+    setSkillsAuditOpen(true);
+    try {
+      // Pass current Skills items so the audit can identify vague ones
+      // worth specifying.
+      const currentSkillsItems = tailored.skills?.flatMap((g) => g.items) ?? [];
+      const audit = await auditSkillsForJD({
+        jdText: jobDescription,
+        cvId: selectedCvId || undefined,
+        currentSkillsItems: currentSkillsItems.length > 0 ? currentSkillsItems : undefined,
+      });
+      if (audit.error || !audit.result) {
+        setError(`Skills audit failed: ${audit.error ?? "unknown error"}`);
+        setSkillsAuditOpen(false);
+        setIsAuditingSkills(false);
+        return;
+      }
+      setSkillsMatchResult(audit.result);
+      setIsAuditingSkills(false);
+    } catch (e) {
+      console.error("[CVTailorClient] skills audit threw:", e);
+      setError(
+        `Skills audit threw: ${e instanceof Error ? e.message : "unknown error"}`
+      );
+      setSkillsAuditOpen(false);
+      setIsAuditingSkills(false);
+    }
+  }
+
+  // Skills audit modal submit handler. User has ticked confirmed-missing
+  // skills + vague specifications + free-text additions. Persist to
+  // user_skills Library (when toggle ticked) AND re-tailor the full CV
+  // with the new skills baked in as truth-contract-grounded inputs.
+  async function handleSkillsAuditSubmit(payload: {
+    confirmedSkills: string[];
+    vagueSpecifications: Array<{ vagueItem: string; specifics: string[] }>;
+    additionalSkills: string[];
+    persistToLibrary: boolean;
+  }) {
+    setSkillsAuditOpen(false);
+    // Persist to user_skills Library — fire-and-forget. Each confirmed
+    // skill becomes a saveGapAnswersAsSkills entry so it shows up on the
+    // /profile Skills section + feeds future FactBase extractions.
+    if (payload.persistToLibrary) {
+      const persistItems = [
+        ...payload.confirmedSkills,
+        ...payload.vagueSpecifications.flatMap((v) => v.specifics),
+        ...payload.additionalSkills,
+      ];
+      if (persistItems.length > 0) {
+        const persistAnswers = persistItems.map((item) => ({
+          question: `JD skill audit — confirmed user has`,
+          answer: item,
+        }));
+        saveGapAnswersAsSkills({ answers: persistAnswers }).catch((e) =>
+          console.warn("[CVTailorClient] saveGapAnswersAsSkills failed:", e)
+        );
+      }
+    }
+    // Re-tailor the full CV with the new skills baked in.
+    startTailor(async () => {
+      await runTailorWithAnswers({
+        skillsAuditAnswers: {
+          confirmedSkills:
+            payload.confirmedSkills.length > 0 ? payload.confirmedSkills : undefined,
+          vagueSpecifications:
+            payload.vagueSpecifications.length > 0 ? payload.vagueSpecifications : undefined,
+          additionalSkills:
+            payload.additionalSkills.length > 0 ? payload.additionalSkills : undefined,
+        },
+      });
+    });
+  }
+
+  // Single source of truth for tailor + regenerate.
+  // In bypass mode: runs pre-flight gap detection first. If the gap detector
+  // returns questions AND family-fit is transferable/minimal, the gap modal
+  // opens so the user can strengthen the FactBase BEFORE generation. Same
+  // pattern as /profile Master gen — parity matters for SaaS consistency.
+  // In non-bypass mode: tailors directly (Master's Adapt flow has its own
+  // adaptation modal already).
+  function runTailor() {
+    const familyForBypass =
+      bypassMaster && bypassTargetFamily.trim()
+        ? bypassTargetFamily.trim()
+        : "";
+
+    if (bypassMaster && familyForBypass) {
+      setError(null);
+      setIsDetectingGaps(true);
+      setGapModalOpen(true);
+      setGapResult(null);
+      // Pre-flight gap detection. The same detectMasterFactBaseGaps used by
+      // the /profile Master gen flow — assesses FactBase coverage for the
+      // target family, returns gap-filling questions + family-fit signal.
+      // The modal STAYS OPEN until the user explicitly submits or closes,
+      // even when 0 questions are returned. Rationale: user needs the
+      // family-fit visibility (transferable / minimal warning + angles)
+      // even if no questions are asked. Without this, the user wouldn't
+      // know the system assessed fit at all.
+      startTailor(async () => {
+        try {
+          console.log("[CVTailorClient] gap detection starting for family:", familyForBypass);
+          const r = await detectMasterFactBaseGaps({
+            cvId: selectedCvId || undefined,
+            targetRoleFamily: familyForBypass,
+          });
+          console.log("[CVTailorClient] gap detection result:", r);
+          if (r.error || !r.result) {
+            // Gap detection failed — close modal and proceed straight to
+            // tailoring; the strength card will catch any quality issues
+            // post-gen. Surface the error so the user knows.
+            if (r.error) {
+              console.error("[CVTailorClient] gap detection error:", r.error);
+              setError(`Gap detection failed: ${r.error}`);
+            }
+            setGapModalOpen(false);
+            setIsDetectingGaps(false);
+            await runTailorWithAnswers();
+            return;
+          }
+          // Modal stays open regardless of question count. User sees fit
+          // assessment + transferable angles + any questions. Submits or
+          // skips to trigger tailoring via handleGapSubmit.
+          setGapResult(r.result);
+          setIsDetectingGaps(false);
+        } catch (e) {
+          console.error("[CVTailorClient] gap detection threw:", e);
+          setError(
+            `Gap detection threw: ${e instanceof Error ? e.message : "unknown error"}`
+          );
+          setGapModalOpen(false);
+          setIsDetectingGaps(false);
+          await runTailorWithAnswers();
+        }
+      });
+      return;
+    }
+
+    // Non-bypass path: direct tailor with no pre-flight modal. Skills audit
+    // is now POST-generation (user-initiated via "Strengthen Skills" button
+    // next to the generated Skills section) — better UX, no friction wall
+    // before the user sees a CV.
+    startTailor(async () => {
+      await runTailorWithAnswers();
+    });
+  }
+
+  // Called when the Profile gap modal is submitted (user answered, or
+  // skipped all). Goes straight to tailor. Skills audit is now POST-
+  // generation (user-initiated via "Strengthen Skills" button next to the
+  // generated Skills section).
+  async function handleGapSubmit(payload: {
+    answers: Array<{ question: string; answer: string }>;
+    persistToSkills: boolean;
+  }) {
+    setGapModalOpen(false);
+    const fit = gapResult?.factbaseFitForFamily;
+    const angles = gapResult?.transferableAngles;
+    // Persist Profile gap answers to Skills Library — fire-and-forget.
+    if (payload.persistToSkills && payload.answers.length > 0) {
+      saveGapAnswersAsSkills({ answers: payload.answers }).catch((e) =>
+        console.warn("[CVTailorClient] saveGapAnswersAsSkills failed:", e)
+      );
+    }
+    startTailor(async () => {
+      await runTailorWithAnswers({
+        wizardAnswers: payload.answers.length > 0 ? payload.answers : undefined,
+        factbaseFitForFamily: fit,
+        transferableAngles: angles,
+      });
     });
   }
 
@@ -335,8 +622,10 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
     setTimeout(() => setProfileMessage(null), 2500);
   }
 
-  // Save the AI-generated Profile from this tailor as the user's first Master.
-  // Only relevant when masters.length === 0 — see the post-tailor banner.
+  // Save the AI-generated Profile from this tailor as a Master. Used in two
+  // cases: the user has zero Masters (save as their first, becomes default),
+  // or the user has Masters but bypassed them for a cross-domain JD (save as
+  // a new Master alongside existing — does NOT become default).
   function handleSaveAsFirstMaster() {
     if (!tailored?.summary?.trim()) return;
     const name =
@@ -344,13 +633,22 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
       fitResult?.detectedRoleFamily?.trim() ||
       roleName?.trim() ||
       "My Master";
+    const isFirstMaster = usableMasters.length === 0;
+    // Persist the target family alongside the new Master so future Adapts
+    // / generations are family-aware. Prefer the explicit bypass-bar value
+    // (user-confirmed); fall back to fit-scoring's detected family.
+    const familyToSave =
+      (bypassMaster ? bypassTargetFamily : "") ||
+      fitResult?.detectedRoleFamily ||
+      "";
     setSaveMasterError(null);
     startSaveAsMaster(async () => {
       const r = await saveMaster({
         name,
         summary: tailored.summary,
         source: "generated",
-        isDefault: true,
+        isDefault: isFirstMaster,
+        targetRoleFamily: familyToSave.trim() || null,
       });
       if (r.error) {
         setSaveMasterError(r.error);
@@ -577,88 +875,217 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
 
         {/* Master picker — auto-defaults to user's default Master, can be
             switched per CV. Fit-scoring auto-picks the best Master once the
-            JD is chosen. Banner below shows fit level. */}
+            JD is chosen. Banner below shows fit level.
+
+            Bypass mode (user clicked "Generate without my Master") swaps in
+            a different state: no picker, a warning, and a button to switch
+            back to the saved Master. */}
         {usableMasters.length > 0 ? (
-          <div className="border-t border-slate-100 bg-white px-6 py-3 space-y-2">
-            <div className="flex items-center justify-between gap-3 flex-wrap">
-              <div className="text-xs text-slate-500 inline-flex items-center gap-1.5">
-                <Sparkles size={11} className="text-blue-500" />
-                <span>
-                  Master Profile:{" "}
-                  <span className="font-semibold text-slate-900">
-                    {selectedMaster?.name ?? "—"}
-                  </span>
-                  {selectedMaster?.is_default && (
-                    <span className="ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded bg-blue-50 border border-blue-100 text-blue-700">
-                      default
-                    </span>
-                  )}
-                  {fitResult && fitResult.bestMasterId === selectedMasterId && (
-                    <span
-                      className={`ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded border ${
-                        fitResult.fitScore === "high"
-                          ? "bg-emerald-50 border-emerald-200 text-emerald-700"
-                          : fitResult.fitScore === "medium"
-                            ? "bg-amber-50 border-amber-200 text-amber-700"
-                            : "bg-rose-50 border-rose-200 text-rose-700"
-                      }`}
-                      title={fitResult.reason}
-                    >
-                      {fitResult.fitScore} fit
-                    </span>
-                  )}
-                  {isScoringFit && (
-                    <span className="ml-1.5 text-[10px] text-slate-400 inline-flex items-center gap-1">
-                      <Loader2 size={9} className="animate-spin" /> matching…
-                    </span>
-                  )}
-                </span>
+          bypassMaster ? (
+            <div className="border-t border-slate-100 bg-amber-50/40 px-6 py-3 space-y-2">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div className="flex items-start gap-2 text-xs text-amber-900 leading-relaxed flex-1 min-w-0">
+                  <Sparkles size={12} className="mt-0.5 shrink-0 text-amber-600" />
+                  <div>
+                    <div className="font-semibold">
+                      Bypassing your saved Master — generating from CV + JD only.
+                    </div>
+                    <div className="text-amber-800 mt-0.5">
+                      The AI will draft a one-off Profile from your FactBase, framed for{" "}
+                      <span className="font-medium">
+                        {bypassTargetFamily || "this role"}
+                      </span>
+                      . Once generated, you can save the result as a new Master so future
+                      similar JDs reuse it.
+                    </div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setBypassMaster(false)}
+                  className="text-[11px] font-medium inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors shrink-0"
+                  title={`Use ${selectedMaster?.name ?? "your saved Master"} instead`}
+                >
+                  <RotateCcw size={11} /> Use {selectedMaster?.name ?? "saved Master"} instead
+                </button>
               </div>
-              {usableMasters.length > 1 && (
-                <div className="relative">
-                  <select
-                    value={selectedMasterId}
-                    onChange={(e) => handleMasterSwitch(e.target.value)}
-                    className="text-xs border border-slate-200 rounded-lg px-3 py-1.5 pr-8 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 appearance-none bg-white text-slate-800"
+
+              {/* Family picker — auto-filled from fit-scoring's detection,
+                  user-editable. Empty value = sector-agnostic generation. */}
+              <div className="flex items-center gap-2 flex-wrap pt-1">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-amber-800">
+                  Target role family
+                </div>
+                {bypassFamilyEditing ? (
+                  <>
+                    <input
+                      type="text"
+                      value={bypassTargetFamily}
+                      onChange={(e) => setBypassTargetFamily(e.target.value)}
+                      placeholder="e.g. Data / Analytics, Consulting, Investment Banking"
+                      className="flex-1 min-w-[200px] text-xs border border-amber-300 bg-white rounded-md px-2.5 py-1 focus:outline-none focus:ring-2 focus:ring-amber-400/40 focus:border-amber-400 placeholder-slate-400"
+                      autoFocus
+                    />
+                    <button
+                      onClick={() => setBypassFamilyEditing(false)}
+                      className="text-[11px] font-medium px-2 py-1 rounded-md border border-amber-300 bg-white text-amber-800 hover:bg-amber-100 transition-colors"
+                    >
+                      Done
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span
+                      className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border border-amber-300 bg-white text-amber-900"
+                      title={
+                        bypassTargetFamily
+                          ? fitResult?.detectedRoleFamily === bypassTargetFamily
+                            ? "Auto-detected from the JD — click Change to override"
+                            : "Set by you — click Change to edit"
+                          : "Not set — bypass will generate sector-agnostic. Click Change to set."
+                      }
+                    >
+                      {bypassTargetFamily || "Not set (sector-agnostic)"}
+                      {fitResult?.detectedRoleFamily === bypassTargetFamily && bypassTargetFamily && (
+                        <span className="text-amber-600 text-[10px] ml-0.5">· auto</span>
+                      )}
+                    </span>
+                    <button
+                      onClick={() => setBypassFamilyEditing(true)}
+                      className="text-[11px] font-medium text-amber-700 hover:text-amber-900 underline-offset-2 hover:underline"
+                    >
+                      Change
+                    </button>
+                    {bypassTargetFamily && (
+                      <button
+                        onClick={() => setBypassTargetFamily("")}
+                        className="text-[11px] text-amber-700 hover:text-amber-900 underline-offset-2 hover:underline"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="border-t border-slate-100 bg-white px-6 py-3 space-y-2">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div className="text-xs text-slate-500 inline-flex items-center gap-1.5">
+                  <Sparkles size={11} className="text-blue-500" />
+                  <span>
+                    Master Profile:{" "}
+                    <span className="font-semibold text-slate-900">
+                      {selectedMaster?.name ?? "—"}
+                    </span>
+                    {selectedMaster?.is_default && (
+                      <span className="ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded bg-blue-50 border border-blue-100 text-blue-700">
+                        default
+                      </span>
+                    )}
+                    {fitResult && fitResult.bestMasterId === selectedMasterId && (
+                      <span
+                        className={`ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded border ${
+                          fitResult.fitScore === "high"
+                            ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                            : fitResult.fitScore === "medium"
+                              ? "bg-amber-50 border-amber-200 text-amber-700"
+                              : "bg-rose-50 border-rose-200 text-rose-700"
+                        }`}
+                        title={fitResult.reason}
+                      >
+                        {fitResult.fitScore} fit
+                      </span>
+                    )}
+                    {isScoringFit && (
+                      <span className="ml-1.5 text-[10px] text-slate-400 inline-flex items-center gap-1">
+                        <Loader2 size={9} className="animate-spin" /> matching…
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {usableMasters.length > 1 && (
+                    <div className="relative">
+                      <select
+                        value={selectedMasterId}
+                        onChange={(e) => handleMasterSwitch(e.target.value)}
+                        className="text-xs border border-slate-200 rounded-lg px-3 py-1.5 pr-8 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 appearance-none bg-white text-slate-800"
+                      >
+                        {usableMasters.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name}
+                            {m.is_default ? " · default" : ""}
+                            {fitResult?.bestMasterId === m.id ? " · best fit" : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown
+                        size={12}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
+                      />
+                    </div>
+                  )}
+                  <button
+                    onClick={() => {
+                      if (fitResult?.detectedRoleFamily && !bypassTargetFamily) {
+                        setBypassTargetFamily(fitResult.detectedRoleFamily);
+                      }
+                      setBypassMaster(true);
+                    }}
+                    className="text-[11px] font-medium text-slate-500 hover:text-slate-900 underline-offset-2 hover:underline"
+                    title="Generate a Profile straight from your CV + JD, ignoring your saved Master"
                   >
-                    {usableMasters.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name}
-                        {m.is_default ? " · default" : ""}
-                        {fitResult?.bestMasterId === m.id ? " · best fit" : ""}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown
-                    size={12}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
-                  />
+                    Generate without my Master
+                  </button>
+                </div>
+              </div>
+
+              {/* Fit warning when no saved Master matches the JD's role family.
+                  Clicking the bypass CTA pre-fills the detected family so the
+                  Profile is generated framed for THAT family — not a generic
+                  bypass output. */}
+              {fitResult && fitResult.fitScore === "low" && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-2.5 text-[11px] text-amber-900 leading-relaxed flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-semibold mb-0.5">
+                      This JD looks like a {fitResult.detectedRoleFamily || "different role family"}.
+                    </div>
+                    <div className="text-amber-800">
+                      None of your saved Masters fit it well. Either generate a fresh
+                      Profile framed for{" "}
+                      <span className="font-medium">
+                        {fitResult.detectedRoleFamily || "this role"}
+                      </span>
+                      , or stick with{" "}
+                      <span className="font-medium">{selectedMaster?.name}</span>{" "}
+                      as the closest match.
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      // Pre-fill the bypass family from the JD's detection
+                      // so the user doesn't have to retype it. Editable in
+                      // the bypass bar.
+                      if (fitResult.detectedRoleFamily) {
+                        setBypassTargetFamily(fitResult.detectedRoleFamily);
+                      }
+                      setBypassMaster(true);
+                    }}
+                    className="text-[11px] font-semibold inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-amber-300 bg-white text-amber-800 hover:bg-amber-100 transition-colors shrink-0"
+                  >
+                    <Sparkles size={11} /> Generate a {fitResult.detectedRoleFamily || "fresh"} Profile
+                  </button>
+                </div>
+              )}
+              {fitResult && fitResult.fitScore === "medium" && (
+                <div className="text-[11px] text-amber-800 leading-relaxed">
+                  Detected role family: <span className="font-medium">{fitResult.detectedRoleFamily}</span>.{" "}
+                  <span className="font-medium">{selectedMaster?.name}</span> is a partial match —
+                  click <span className="font-semibold">Adapt to this JD</span> on the Profile after tailoring for vocabulary tweaks.
                 </div>
               )}
             </div>
-
-            {/* Fit warning when no saved Master matches the JD's role family. */}
-            {fitResult && fitResult.fitScore === "low" && (
-              <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-2.5 text-[11px] text-amber-900 leading-relaxed">
-                <div className="font-semibold mb-0.5">
-                  This JD looks like a {fitResult.detectedRoleFamily || "different role family"}.
-                </div>
-                <div className="text-amber-800">
-                  None of your saved Masters fit it well. The CV will use{" "}
-                  <span className="font-medium">{selectedMaster?.name}</span>{" "}
-                  as the closest match — but consider creating a Master for this
-                  role family on the Profile page.
-                </div>
-              </div>
-            )}
-            {fitResult && fitResult.fitScore === "medium" && (
-              <div className="text-[11px] text-amber-800 leading-relaxed">
-                Detected role family: <span className="font-medium">{fitResult.detectedRoleFamily}</span>.{" "}
-                <span className="font-medium">{selectedMaster?.name}</span> is a partial match —
-                click <span className="font-semibold">Adapt to this JD</span> on the Profile after tailoring for vocabulary tweaks.
-              </div>
-            )}
-          </div>
+          )
         ) : (
           <div className="border-t border-slate-100 bg-amber-50/50 px-6 py-3">
             <div className="text-xs text-amber-900 leading-relaxed">
@@ -802,22 +1229,73 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
 
           <TailoredCVView
             cv={tailored}
+            skillsActions={
+              // "Strengthen Skills" — runs JD-vs-FactBase audit on demand
+              // and opens the SkillsAuditModal so the user can tick missing
+              // JD skills they actually have. Submit re-tailors the full CV
+              // with confirmed skills baked in.
+              <button
+                onClick={handleStrengthenSkills}
+                disabled={isTailoring || isAuditingSkills || !jobDescription.trim()}
+                className="text-[11px] font-semibold inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors disabled:opacity-40"
+                title="Run a JD-vs-FactBase Skills audit and quickly tick any JD-required skills you actually have. The CV will re-tailor with these added."
+              >
+                {isAuditingSkills ? (
+                  <>
+                    <Loader2 size={11} className="animate-spin" /> Auditing…
+                  </>
+                ) : (
+                  <>
+                    <Sparkles size={11} /> Strengthen Skills
+                  </>
+                )}
+              </button>
+            }
+            profileFooter={
+              // Honesty layer: same ProfileStrengthCard the /profile page
+              // shows under each Master, now also under the CV Builder's
+              // generated Profile. Auto-runs once after generation, scores
+              // the Profile against the detected role family + FactBase,
+              // surfaces realistic conversion ceiling + improvements.
+              tailored.summary ? (
+                <ProfileStrengthCard
+                  profile={tailored.summary}
+                  targetRoleFamily={
+                    bypassTargetFamily ||
+                    fitResult?.detectedRoleFamily ||
+                    null
+                  }
+                  cvId={selectedCvId || undefined}
+                  autoRun
+                />
+              ) : null
+            }
             profileBanner={
-              // No-Master onboarding banner — sits IMMEDIATELY above the
-              // Profile section heading inside the rendered CV. Visually
-              // attached to the Profile, not floating above the whole CV.
-              usableMasters.length === 0 && tailored.summary ? (
+              // Save-as-Master banner — sits IMMEDIATELY above the Profile
+              // section heading inside the rendered CV, visually attached to
+              // the Profile. Appears in two cases:
+              //   (a) user has zero Masters — this is their first
+              //   (b) user has Masters but bypassed them for cross-domain JD
+              //       — offer to save the result as a new Master for that
+              //       role family so future similar JDs reuse it
+              (usableMasters.length === 0 || bypassMaster) && tailored.summary ? (
                 <div className="rounded-xl border border-blue-200 bg-blue-50/60 px-4 py-3 space-y-2.5">
                   <div className="flex items-start gap-2 text-xs text-blue-900 leading-relaxed">
                     <Sparkles size={13} className="mt-0.5 shrink-0 text-blue-500" />
                     <div className="flex-1">
                       <div className="font-semibold mb-0.5">
-                        This Profile was generated one-off from your CV + JD.
+                        {usableMasters.length === 0
+                          ? "This Profile was generated one-off from your CV + JD."
+                          : `Save this as a new Master${
+                              fitResult?.detectedRoleFamily
+                                ? ` for ${fitResult.detectedRoleFamily}`
+                                : ""
+                            }?`}
                       </div>
                       <div className="text-blue-800">
-                        Save it as your first Master and it&apos;ll be reused
-                        (and tailorable) for every future CV. You can edit it
-                        later on the Profile page.
+                        {usableMasters.length === 0
+                          ? "Save it as your first Master and it'll be reused (and tailorable) for every future CV. You can edit it later on the Profile page."
+                          : "Saving this as a new Master means future JDs in this role family auto-pick it via fit-scoring — no need to bypass again. You can edit it later on the Profile page."}
                       </div>
                     </div>
                   </div>
@@ -851,11 +1329,13 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
                         </>
                       ) : savedAsMasterFlash ? (
                         <>
-                          <Check size={11} /> Saved as your first Master
+                          <Check size={11} />{" "}
+                          {usableMasters.length === 0 ? "Saved as your first Master" : "Saved as new Master"}
                         </>
                       ) : (
                         <>
-                          <Save size={11} /> Save as my first Master
+                          <Save size={11} />{" "}
+                          {usableMasters.length === 0 ? "Save as my first Master" : "Save as new Master"}
                         </>
                       )}
                     </button>
@@ -878,30 +1358,59 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
                 >
                   <Pencil size={11} /> Edit
                 </button>
-                <button
-                  onClick={() => setProfileAdaptOpen(true)}
-                  disabled={isTailoring || isRefining || isResettingProfile || !jobDescription.trim()}
-                  className="text-[11px] font-semibold inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors disabled:opacity-40"
-                  title="AI adapts your saved Master Profile to this JD's vocabulary. Every named claim is preserved."
-                >
-                  <Wand2 size={11} /> Adapt to this JD
-                </button>
-                <button
-                  onClick={handleResetProfileToMaster}
-                  disabled={isTailoring || isRefining || isResettingProfile}
-                  className="text-[11px] font-medium inline-flex items-center gap-1 px-2 py-1 rounded-md border border-slate-200 bg-white text-slate-500 hover:text-slate-900 hover:bg-slate-50 transition-colors disabled:opacity-40"
-                  title="Restore the Profile to your saved Master verbatim"
-                >
-                  {isResettingProfile ? (
-                    <>
-                      <Loader2 size={11} className="animate-spin" /> Resetting…
-                    </>
-                  ) : (
-                    <>
-                      <RotateCcw size={11} /> Master
-                    </>
-                  )}
-                </button>
+                {/* Regenerate Profile (bypass / zero-Master mode). In Adapt
+                    mode, "Adapt to this JD" + "Master" already cover this.
+                    In bypass mode the user otherwise has no way to ask for
+                    a fresh draft. Re-runs the full tailor pipeline. */}
+                {(usableMasters.length === 0 || bypassMaster) && (
+                  <button
+                    onClick={handleRegenerate}
+                    disabled={isTailoring || isRefining || isResettingProfile || !jobDescription.trim()}
+                    className="text-[11px] font-semibold inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors disabled:opacity-40"
+                    title="Generate a fresh Profile draft from your CV + JD"
+                  >
+                    {isTailoring ? (
+                      <>
+                        <Loader2 size={11} className="animate-spin" /> Regenerating…
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw size={11} /> Regenerate
+                      </>
+                    )}
+                  </button>
+                )}
+                {/* Adapt + Reset only make sense when a saved Master backs the
+                    Profile. In bypass mode (or zero-Master) there's nothing
+                    to adapt from or reset to. */}
+                {usableMasters.length > 0 && !bypassMaster && (
+                  <>
+                    <button
+                      onClick={() => setProfileAdaptOpen(true)}
+                      disabled={isTailoring || isRefining || isResettingProfile || !jobDescription.trim()}
+                      className="text-[11px] font-semibold inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors disabled:opacity-40"
+                      title="AI adapts your saved Master Profile to this JD's vocabulary. Every named claim is preserved."
+                    >
+                      <Wand2 size={11} /> Adapt to this JD
+                    </button>
+                    <button
+                      onClick={handleResetProfileToMaster}
+                      disabled={isTailoring || isRefining || isResettingProfile}
+                      className="text-[11px] font-medium inline-flex items-center gap-1 px-2 py-1 rounded-md border border-slate-200 bg-white text-slate-500 hover:text-slate-900 hover:bg-slate-50 transition-colors disabled:opacity-40"
+                      title="Restore the Profile to your saved Master verbatim"
+                    >
+                      {isResettingProfile ? (
+                        <>
+                          <Loader2 size={11} className="animate-spin" /> Resetting…
+                        </>
+                      ) : (
+                        <>
+                          <RotateCcw size={11} /> Master
+                        </>
+                      )}
+                    </button>
+                  </>
+                )}
               </>
             }
           />
@@ -963,6 +1472,75 @@ export default function CVTailorClient({ applications, cvs, savedCVByApp = {}, m
             </div>
           </div>
         </div>
+      )}
+
+      {/* Pre-flight gap-detection modal for BYPASS-mode tailoring.
+          Rendered at TOP LEVEL (outside the {tailored && (...)} block) so
+          it appears the moment the user clicks Tailor — before any tailored
+          CV exists. Parity with /profile Master gen: when the user bypasses
+          for a JD whose family their FactBase doesn't directly support,
+          this asks credential / transferable-evidence questions BEFORE
+          generating. User answers strengthen the FactBase upfront so the
+          Profile doesn't ship at 5/10 with the user only learning after
+          the fact via the strength card. */}
+      {gapModalOpen && (
+        <FactBaseGapModal
+          gapResult={
+            gapResult ?? {
+              coverageScore: "medium",
+              reason: "",
+              gaps: [],
+              questions: [],
+              factbaseFitForFamily: "strong",
+              transferableAngles: [],
+            }
+          }
+          isDetecting={isDetectingGaps}
+          isGenerating={isTailoring}
+          targetRoleFamily={
+            (bypassTargetFamily ||
+              fitResult?.detectedRoleFamily ||
+              "").trim() || undefined
+          }
+          cvId={selectedCvId || undefined}
+          onSubmit={handleGapSubmit}
+          onClose={() => {
+            // User dismissed the modal without submitting — abandon
+            // tailoring entirely. They can re-click Tailor when ready.
+            if (!isTailoring) {
+              setGapModalOpen(false);
+              setGapResult(null);
+              setIsDetectingGaps(false);
+            }
+          }}
+        />
+      )}
+
+      {/* Pre-flight Skills audit modal (Phase 2 Round 2). Fires when the
+          JD-vs-FactBase Skills match-quality is medium or low — gives the
+          user a fast tickbox checklist to confirm missing JD-required
+          skills they have (with evidence) + specify vague items + add
+          free-text. Truth-contract-grounded — only ticked items reach the
+          final Skills section. Persists to user_skills Library by default
+          so future CVs compound the user's evidence base. */}
+      {skillsAuditOpen && skillsMatchResult && (
+        <SkillsAuditModal
+          matchResult={skillsMatchResult}
+          isAuditing={isAuditingSkills}
+          isGenerating={isTailoring}
+          onSubmit={handleSkillsAuditSubmit}
+          onClose={() => {
+            // User dismissed without submitting — abandon tailoring. They
+            // can re-click Tailor when ready.
+            if (!isTailoring) {
+              setSkillsAuditOpen(false);
+              setSkillsMatchResult(null);
+              setIsAuditingSkills(false);
+              setPendingProfileGapAnswers([]);
+              setPendingProfileGapFit({});
+            }
+          }}
+        />
       )}
     </div>
   );

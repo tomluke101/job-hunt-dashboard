@@ -23,12 +23,27 @@ interface Props {
   onSaved: (saved: Search, isNew: boolean) => void;
 }
 
+// Split on comma / slash / newline / " and " and trim each piece. Forgives
+// any of the ways a real user might separate a list.
+function splitList(raw: string): string[] {
+  return raw
+    .split(/[,\/\n]|\band\b/i)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export default function SearchEditor({ mode, initial, onClose, onSaved }: Props) {
   const [name, setName] = useState(initial?.name ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [criteria, setCriteria] = useState<SearchCriteria>(mergeCriteria(initial?.criteria));
   const [weights, setWeights] = useState<CriteriaWeights>({ ...DEFAULT_WEIGHTS, ...(initial?.weights ?? {}) });
   const [jobsPerRun, setJobsPerRun] = useState<number>(initial?.jobs_per_run ?? 10);
+  // Raw text state for list-typed fields — never parsed on keystroke so users
+  // can type spaces and mid-word without losing characters. Parsed on save.
+  const [targetTitlesRaw, setTargetTitlesRaw] = useState(mergeCriteria(initial?.criteria).target_titles.join(", "));
+  const [industriesExcludeRaw, setIndustriesExcludeRaw] = useState(mergeCriteria(initial?.criteria).industries_exclude.join(", "));
+  const parsedTargetTitles = useMemo(() => splitList(targetTitlesRaw), [targetTitlesRaw]);
+  const parsedIndustriesExclude = useMemo(() => splitList(industriesExcludeRaw), [industriesExcludeRaw]);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, startSave] = useTransition();
 
@@ -49,12 +64,19 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
       return;
     }
     setError(null);
+    // Parse raw list-input strings into structured criteria on save (never
+    // on every keystroke). See feedback_input_tolerance_saas.
+    const finalCriteria: SearchCriteria = {
+      ...criteria,
+      target_titles: parsedTargetTitles,
+      industries_exclude: parsedIndustriesExclude,
+    };
     startSave(async () => {
       if (mode === "create") {
         const res = await createSearch({
           name: name.trim(),
           description: description.trim() || undefined,
-          criteria,
+          criteria: finalCriteria,
           weights,
           jobs_per_run: jobsPerRun,
         });
@@ -68,7 +90,7 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
         const res = await updateSearch(initial.id, {
           name: name.trim(),
           description: description.trim() || null,
-          criteria,
+          criteria: finalCriteria,
           weights,
           jobs_per_run: jobsPerRun,
         });
@@ -136,22 +158,15 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
 
           <Field
             label="Job titles to accept"
-            hint='Comma-separated. Only jobs whose title matches ONE of these role types will be shortlisted. e.g. "Supply Chain Analyst, Procurement Analyst, Buyer" — accepts jobs titled Analyst OR Buyer, drops drivers.'
+            hint={'Only jobs whose title matches ONE of these role types will be shortlisted. Separate with commas, slashes or new lines. Case doesn\'t matter, plurals are handled. e.g. "Supply Chain Analyst, Procurement Analyst, Buyer" accepts Analyst OR Buyer titles, drops drivers.'}
           >
             <input
-              value={criteria.target_titles.join(", ")}
-              onChange={(e) =>
-                setCriteria({
-                  ...criteria,
-                  target_titles: e.target.value
-                    .split(",")
-                    .map((s) => s.trim())
-                    .filter(Boolean),
-                })
-              }
+              value={targetTitlesRaw}
+              onChange={(e) => setTargetTitlesRaw(e.target.value)}
               className="w-full text-sm rounded-md border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="Supply Chain Analyst, Procurement Analyst, Buyer"
             />
+            <ChipPreview items={parsedTargetTitles} emptyHint="No titles yet — we'll fall back to your keywords." />
           </Field>
 
           <div className="grid grid-cols-2 gap-4">
@@ -264,21 +279,14 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
             Strict mode: drop jobs that don't list salary
           </label>
 
-          <Field label="Exclude industries" hint="Comma-separated. Any JD containing these is dropped.">
+          <Field label="Exclude industries" hint="Any JD containing these words is dropped. Separate with commas, slashes or new lines.">
             <input
-              value={criteria.industries_exclude.join(", ")}
-              onChange={(e) =>
-                setCriteria({
-                  ...criteria,
-                  industries_exclude: e.target.value
-                    .split(",")
-                    .map((s) => s.trim())
-                    .filter(Boolean),
-                })
-              }
+              value={industriesExcludeRaw}
+              onChange={(e) => setIndustriesExcludeRaw(e.target.value)}
               className="w-full text-sm rounded-md border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="defense, gambling, tobacco"
             />
+            <ChipPreview items={parsedIndustriesExclude} emptyHint="Nothing excluded." />
           </Field>
 
           <Field label="Jobs per run" hint="Max to shortlist each run. Cap 100.">
@@ -321,6 +329,26 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">{label}</label>
       {children}
       {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
+    </div>
+  );
+}
+
+// Shows the parsed list as chips so the user can SEE how the system read
+// their input. If parsing dropped something they meant to keep, they see it.
+function ChipPreview({ items, emptyHint }: { items: string[]; emptyHint: string }) {
+  if (items.length === 0) {
+    return <p className="mt-2 text-xs text-slate-400 italic">{emptyHint}</p>;
+  }
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {items.map((item, i) => (
+        <span
+          key={`${item}-${i}`}
+          className="inline-flex items-center rounded-md bg-blue-50 border border-blue-200 text-blue-700 text-xs px-2 py-0.5"
+        >
+          {item}
+        </span>
+      ))}
     </div>
   );
 }

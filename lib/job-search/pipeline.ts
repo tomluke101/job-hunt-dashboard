@@ -56,13 +56,43 @@ function coreRoleNoun(askWords: string[]): string | null {
   return askWords[askWords.length - 1] ?? null;
 }
 
+// Light stemmer for job-title matching. Strips common English plural and
+// gerund suffixes so "Analysts" ~ "Analyst", "Buyers" ~ "Buyer",
+// "Managing" ~ "Manage". Keeps short words untouched.
+// See feedback_input_tolerance_saas — every match is case-insensitive
+// and stem-normalised, otherwise real users get zero results from a plural.
+function stemWord(w: string): string {
+  const s = w.toLowerCase();
+  if (s.length < 5) return s;
+  if (s.endsWith("ies") && s.length > 5) return s.slice(0, -3) + "y";
+  if (s.endsWith("sses")) return s.slice(0, -2);
+  if (s.endsWith("s") && !s.endsWith("ss") && !s.endsWith("us") && !s.endsWith("is")) return s.slice(0, -1);
+  if (s.endsWith("ing") && s.length > 6) return s.slice(0, -3);
+  if (s.endsWith("ed") && s.length > 5) return s.slice(0, -2);
+  return s;
+}
+
+// Does the title contain `word` (or its stem)? Both sides are stem-compared,
+// so "Analysts"/"Analyst" and "Buyers"/"Buyer" match either way.
+function titleContainsStem(titleLower: string, word: string): boolean {
+  const wordStem = stemWord(word);
+  // Whole-word regex; then stem-compare each hit / miss.
+  if (new RegExp(`\\b${word}\\b`, "i").test(titleLower)) return true;
+  // Search stems of each title word.
+  for (const t of titleLower.split(/[^a-z0-9]+/)) {
+    if (t && stemWord(t) === wordStem) return true;
+  }
+  return false;
+}
+
 // True if the job title is relevant to a specific target phrase.
+// Case-insensitive, plural-tolerant.
 function titleRelevantOne(title: string, phrase: string, askWords: string[]): boolean {
   const t = title.toLowerCase();
   if (phrase && t.includes(phrase)) return true;
   if (!askWords.length) return true;
   const core = coreRoleNoun(askWords);
-  if (core && new RegExp(`\\b${core}\\b`, "i").test(t)) return true;
+  if (core && titleContainsStem(t, core)) return true;
   return false;
 }
 

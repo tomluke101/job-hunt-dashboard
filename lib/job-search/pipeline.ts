@@ -39,6 +39,21 @@ const STOPWORDS = new Set([
   "job","role","position","company","team","work","working","experience","looking","looking",
 ]);
 
+// Stopwords used specifically for TITLE-relevance filtering. Kept short —
+// don't strip content words we care about (analyst, driver, engineer, etc.).
+const TITLE_STOP = new Set(["the","a","an","and","or","of","to","in","for","with","on","at","by","from","-"]);
+
+// True if the job title is relevant to the search phrase. Accepts if:
+//   * the title contains the exact search phrase, OR
+//   * the title contains at least half of the search's content words.
+function titleRelevant(title: string, phrase: string, askWords: string[]): boolean {
+  const t = title.toLowerCase();
+  if (phrase && t.includes(phrase)) return true;
+  if (!askWords.length) return true;
+  const hits = askWords.filter((w) => new RegExp(`\\b${w}\\b`, "i").test(t)).length;
+  return hits / askWords.length >= 0.5;
+}
+
 function tokens(s: string): string[] {
   return s.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 2 && !STOPWORDS.has(w));
 }
@@ -173,9 +188,21 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
   const includeUnknownWM = input.criteria.working_model.include_unknown;
   const excludes = input.criteria.industries_exclude.map((s) => s.toLowerCase());
 
+  // Title-relevance hard filter. Prevents "supply chain" seeping into HGV
+  // driver JDs the moment we OR-match keywords.
+  const askPhrase = (input.criteria.keywords || input.name).trim().toLowerCase();
+  const askWords = askPhrase
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !TITLE_STOP.has(w));
+  filterDrops.title_irrelevant = 0;
+
   for (const j of deduped) {
     if (j.expires_at && new Date(j.expires_at).getTime() < now) {
       filterDrops.expired++;
+      continue;
+    }
+    if (askWords.length && !titleRelevant(j.title, askPhrase, askWords)) {
+      filterDrops.title_irrelevant++;
       continue;
     }
     if (input.criteria.salary.floor && j.salary_max !== null && j.salary_max < input.criteria.salary.floor) {

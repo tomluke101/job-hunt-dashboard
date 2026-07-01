@@ -12,6 +12,22 @@ import {
   type ShortlistState,
 } from "@/lib/job-search/types";
 import { runSearch } from "@/lib/job-search/pipeline";
+import { htmlToText, tidyText } from "@/lib/job-search/html-to-text";
+
+// Old shortlist rows were saved with jd_text that hadn't been HTML-decoded or
+// paragraph-broken. Re-derive from jd_html at read-time so every existing row
+// self-heals without a migration.
+function jdLooksBad(text: string): boolean {
+  if (!text) return true;
+  if (/&#\d+;|&[a-z]+;/i.test(text)) return true;
+  if (text.length > 400 && !text.includes("\n")) return true;
+  return false;
+}
+function repairJd(jd_text: string | null | undefined, jd_html: string | null | undefined): string {
+  const text = jd_text ?? "";
+  if (jd_html && jdLooksBad(text)) return htmlToText(jd_html);
+  return tidyText(text);
+}
 
 export interface Search {
   id: string;
@@ -235,7 +251,7 @@ export async function listShortlist(
       posting:job_postings (
         id, company, title, location_raw, working_model,
         salary_min, salary_max, salary_currency, salary_listed,
-        jd_text, source, source_url, posted_at
+        jd_text, jd_html, source, source_url, posted_at
       )
     `
     )
@@ -248,7 +264,18 @@ export async function listShortlist(
     console.error("[listShortlist]", error);
     return [];
   }
-  return (data ?? []) as unknown as ShortlistEntry[];
+  const rows = (data ?? []) as unknown as ShortlistEntry[];
+  // Self-heal: re-derive JD text from jd_html for any row still holding
+  // stale entity-encoded / paragraphless text. Also strip jd_html from the
+  // returned payload to keep responses small.
+  for (const r of rows) {
+    if (r.posting) {
+      const p = r.posting as ShortlistPosting & { jd_html?: string | null };
+      r.posting.jd_text = repairJd(p.jd_text, p.jd_html);
+      delete p.jd_html;
+    }
+  }
+  return rows;
 }
 
 export async function decideShortlist(

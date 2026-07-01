@@ -96,7 +96,7 @@ export default function JobCard({ entry, onInterested, onReject, onApplied, onDe
         className="mt-3 flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
       >
         {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-        {expanded ? "Hide" : "Show"} description &amp; ranking
+        <span>{expanded ? "Hide description & ranking" : "Show description & ranking"}</span>
       </button>
 
       {expanded && (

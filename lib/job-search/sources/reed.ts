@@ -64,13 +64,35 @@ async function fetchFullDetail(jobId: number, headers: HeadersInit): Promise<Ree
   }
 }
 
+// Reed's canonical direct-job URL. Construct it ourselves rather than trust
+// s.jobUrl (which sometimes returns a search URL).
+function reedJobUrl(jobId: number | string, title: string): string {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 100) || "job";
+  return `https://www.reed.co.uk/jobs/${slug}/${jobId}`;
+}
+
+// Quote multi-word keywords so Reed treats them as a phrase, not OR-match on
+// each word. Prevents "supply chain analyst" from hitting driver JDs that
+// happen to mention "supply".
+function phraseQuote(keywords: string): string {
+  const k = keywords.trim();
+  if (!k) return "";
+  if (k.startsWith('"') && k.endsWith('"')) return k;
+  if (/\s/.test(k)) return `"${k}"`;
+  return k;
+}
+
 export const reedAdapter: JobSourceAdapter = {
   type: "reed",
   async pull(input: PullInput): Promise<PullResult> {
     const headers = { Authorization: auth() };
 
     const params = new URLSearchParams();
-    if (input.keywords) params.set("keywords", input.keywords);
+    if (input.keywords) params.set("keywords", phraseQuote(input.keywords));
     const loc = input.locationText || input.postcode;
     if (loc) params.set("locationName", loc);
     if (input.radiusMiles) params.set("distanceFromLocation", String(input.radiusMiles));
@@ -103,7 +125,7 @@ export const reedAdapter: JobSourceAdapter = {
       return {
         source: "reed",
         source_id: String(s.jobId),
-        source_url: s.jobUrl ?? `https://www.reed.co.uk/jobs/details/${s.jobId}`,
+        source_url: reedJobUrl(s.jobId, s.jobTitle ?? ""),
         company: s.employerName ?? "",
         title: s.jobTitle ?? "",
         location_raw: s.locationName ?? null,

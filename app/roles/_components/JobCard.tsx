@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ExternalLink,
   Heart,
@@ -38,6 +38,9 @@ export default function JobCard({ entry, onInterested, onReject, onApplied, onDe
       ? "bg-blue-50 text-blue-700 border-blue-200"
       : "bg-slate-50 text-slate-600 border-slate-200";
 
+  const sourceLabel = p.source === "reed" ? "Reed" : p.source.charAt(0).toUpperCase() + p.source.slice(1);
+  const openOnSourceLabel = `Open on ${sourceLabel}`;
+
   return (
     <article className="rounded-xl border border-slate-200 bg-white p-5 hover:border-slate-300 transition-colors">
       <div className="flex items-start justify-between gap-4">
@@ -46,10 +49,21 @@ export default function JobCard({ entry, onInterested, onReject, onApplied, onDe
             <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold tabular-nums ${rankColor}`}>
               {entry.composite_rank ?? "—"}
             </span>
-            <p className="text-xs text-slate-500 uppercase tracking-wider">{p.source}</p>
+            <p className="text-xs text-slate-500 uppercase tracking-wider">{sourceLabel}</p>
             {p.posted_at && <p className="text-xs text-slate-400">· {postedAgo(p.posted_at)}</p>}
           </div>
-          <h3 className="text-base font-semibold text-slate-900 leading-snug">{p.title}</h3>
+          {p.source_url ? (
+            <a
+              href={p.source_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-base font-semibold text-slate-900 leading-snug hover:text-blue-700 hover:underline decoration-blue-300 underline-offset-4"
+            >
+              {p.title}
+            </a>
+          ) : (
+            <h3 className="text-base font-semibold text-slate-900 leading-snug">{p.title}</h3>
+          )}
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-600">
             <span className="flex items-center gap-1"><Building2 size={13} className="text-slate-400" />{p.company}</span>
             {p.location_raw && <span className="flex items-center gap-1"><MapPin size={13} className="text-slate-400" />{p.location_raw}</span>}
@@ -57,18 +71,18 @@ export default function JobCard({ entry, onInterested, onReject, onApplied, onDe
             <SalaryBadge min={p.salary_min} max={p.salary_max} currency={p.salary_currency} listed={p.salary_listed} />
           </div>
         </div>
-        <div className="flex flex-col items-end gap-2 shrink-0">
-          {p.source_url && (
-            <a
-              href={p.source_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1 text-xs text-slate-500 hover:text-blue-700"
-            >
-              View source <ExternalLink size={11} />
-            </a>
-          )}
-        </div>
+        {p.source_url && (
+          <a
+            href={p.source_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="shrink-0 flex items-center gap-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-sm font-medium px-3 py-1.5"
+            title={openOnSourceLabel}
+          >
+            {openOnSourceLabel}
+            <ExternalLink size={13} />
+          </a>
+        )}
       </div>
 
       {entry.jd_fit_summary && (
@@ -86,14 +100,14 @@ export default function JobCard({ entry, onInterested, onReject, onApplied, onDe
       </button>
 
       {expanded && (
-        <div className="mt-3 space-y-3">
+        <div className="mt-3 space-y-4">
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Why it ranked here</p>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Why it ranked here</p>
             <RankingExplanation entry={entry} />
           </div>
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Description</p>
-            <p className="text-sm text-slate-700 whitespace-pre-line line-clamp-[20]">{p.jd_text}</p>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Description</p>
+            <JdParagraphs text={p.jd_text} />
           </div>
         </div>
       )}
@@ -185,28 +199,92 @@ function SalaryBadge({ min, max, currency, listed }: { min: number | null; max: 
   );
 }
 
+// Render the JD as clean paragraphs. `\n\n` = paragraph, `\n- ` = bullet list.
+function JdParagraphs({ text }: { text: string }) {
+  const blocks = useMemo(() => splitBlocks(text), [text]);
+  return (
+    <div className="text-sm text-slate-700 leading-relaxed space-y-3 max-h-[36rem] overflow-y-auto pr-1">
+      {blocks.map((b, i) =>
+        b.kind === "list" ? (
+          <ul key={i} className="list-disc pl-5 space-y-1">
+            {b.items.map((item, j) => (
+              <li key={j}>{item}</li>
+            ))}
+          </ul>
+        ) : (
+          <p key={i}>{b.text}</p>
+        )
+      )}
+    </div>
+  );
+}
+
+type Block = { kind: "para"; text: string } | { kind: "list"; items: string[] };
+
+function splitBlocks(text: string): Block[] {
+  const paras = text.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+  const out: Block[] = [];
+  for (const para of paras) {
+    const lines = para.split(/\n/).map((l) => l.trim()).filter(Boolean);
+    const bullets = lines.every((l) => /^[-•]\s+/.test(l));
+    if (bullets && lines.length > 1) {
+      out.push({ kind: "list", items: lines.map((l) => l.replace(/^[-•]\s+/, "")) });
+    } else {
+      out.push({ kind: "para", text: lines.join(" ") });
+    }
+  }
+  return out;
+}
+
 function RankingExplanation({ entry }: { entry: ShortlistEntry }) {
   const scores = [
-    { label: "Job quality", value: entry.quality_score },
     { label: "Match to search", value: entry.match_to_search_score },
-    { label: "Match to you", value: entry.match_to_user_score },
-    { label: "Career fit", value: entry.career_fit_score },
+    { label: "Job quality", value: entry.quality_score },
+    { label: "Match to you", value: entry.match_to_user_score, comingSoon: true },
+    { label: "Career fit", value: entry.career_fit_score, comingSoon: true },
   ];
   const explanation = entry.ranking_explanation as Record<string, unknown> | null;
   const note = explanation?.note as string | undefined;
+  const keywordHits = explanation?.keyword_hits as string[] | undefined;
+  const qualityReasons = explanation?.quality_reasons as string[] | undefined;
+  const salaryFit = explanation?.salary_fit as number | undefined;
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       <div className="grid grid-cols-4 gap-2">
         {scores.map((s) => (
           <div key={s.label} className="rounded-md border border-slate-200 bg-slate-50 p-2">
             <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">{s.label}</p>
             <p className="text-sm font-semibold text-slate-800 tabular-nums">
-              {s.value ?? <span className="text-slate-400">—</span>}
+              {s.value ?? <span className="text-slate-400">{s.comingSoon ? "next" : "—"}</span>}
             </p>
           </div>
         ))}
       </div>
+      {(keywordHits?.length || qualityReasons?.length || salaryFit !== undefined) && (
+        <div className="rounded-md border border-slate-200 bg-slate-50/60 p-3 space-y-2">
+          {keywordHits && keywordHits.length > 0 && (
+            <p className="text-xs text-slate-700">
+              <span className="font-semibold text-slate-500 uppercase tracking-wider mr-2 text-[10px]">Keyword hits</span>
+              {keywordHits.map((k) => (
+                <span key={k} className="inline-block bg-white border border-slate-200 rounded px-1.5 py-0.5 text-xs text-slate-700 mr-1 mb-1">{k}</span>
+              ))}
+            </p>
+          )}
+          {qualityReasons && qualityReasons.length > 0 && (
+            <p className="text-xs text-slate-600">
+              <span className="font-semibold text-slate-500 uppercase tracking-wider mr-2 text-[10px]">Quality</span>
+              {qualityReasons.join(" · ")}
+            </p>
+          )}
+          {salaryFit !== undefined && (
+            <p className="text-xs text-slate-600">
+              <span className="font-semibold text-slate-500 uppercase tracking-wider mr-2 text-[10px]">Salary fit</span>
+              {salaryFit}/100
+            </p>
+          )}
+        </div>
+      )}
       {note && <p className="text-xs text-slate-500 italic">{note}</p>}
     </div>
   );

@@ -3,6 +3,7 @@
 // Free tier: ~500 calls/day. Search returns TRUNCATED JD; /jobs/{id} returns full.
 
 import type { JobSourceAdapter, PullInput, PullResult, RawJob } from "../types";
+import { htmlToText } from "../html-to-text";
 
 const REED_BASE = "https://www.reed.co.uk/api/1.0";
 
@@ -52,10 +53,6 @@ function parseReedDate(v: string | undefined): string | null {
   return isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-function stripHtml(html: string | undefined): string {
-  if (!html) return "";
-  return html.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\s+/g, " ").trim();
-}
 
 async function fetchFullDetail(jobId: number, headers: HeadersInit): Promise<ReedJobDetail | null> {
   try {
@@ -110,7 +107,7 @@ export const reedAdapter: JobSourceAdapter = {
         company: s.employerName ?? "",
         title: s.jobTitle ?? "",
         location_raw: s.locationName ?? null,
-        jd_text: stripHtml(fullJd),
+        jd_text: htmlToText(fullJd),
         jd_html: fullJd,
         posted_at: parseReedDate(s.date),
         expires_at: parseReedDate(s.expirationDate),

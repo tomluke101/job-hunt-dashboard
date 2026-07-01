@@ -31,21 +31,83 @@ function commuteMinutesToRadiusMiles(mins: number | null, fallback: number | nul
   return fallback;
 }
 
-// Rank by cheap composite: quality (60%) + salary-fit-to-target (40%).
-function cheapRankScore(j: NormalisedJob, criteria: SearchCriteria): number {
-  const q = j.quality_score ?? 50;
-  let salaryFit = 50;
+// Tokenise a free-text field into content words. Cheap, no dependencies.
+const STOPWORDS = new Set([
+  "the","a","an","and","or","of","to","in","for","with","on","at","by","from","as","is","are",
+  "be","been","being","this","that","these","those","i","you","we","they","it","my","our","your",
+  "will","would","should","can","have","has","had","do","does","did","not","but","if","then","so",
+  "job","role","position","company","team","work","working","experience","looking","looking",
+]);
+
+function tokens(s: string): string[] {
+  return s.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 2 && !STOPWORDS.has(w));
+}
+
+// Cheap keyword-based match-to-search axis: how well does this job match what
+// the user asked for? Title hits weighted heavier than JD hits; description
+// terms weighted heavier than the raw keywords string.
+function matchToSearchScore(
+  j: NormalisedJob,
+  criteria: SearchCriteria,
+  searchName: string,
+  description: string | null | undefined
+): { score: number; hits: string[] } {
+  const askTerms = new Set([
+    ...tokens(criteria.keywords || ""),
+    ...tokens(searchName || ""),
+    ...tokens(description || ""),
+  ]);
+  if (askTerms.size === 0) return { score: 50, hits: [] };
+
+  const titleTokens = new Set(tokens(j.title));
+  const jdTokens = new Set(tokens(j.jd_text));
+
+  const titleHits: string[] = [];
+  const jdHits: string[] = [];
+  for (const t of askTerms) {
+    if (titleTokens.has(t)) titleHits.push(t);
+    else if (jdTokens.has(t)) jdHits.push(t);
+  }
+
+  const titleCoverage = titleHits.length / askTerms.size;
+  const jdCoverage = jdHits.length / askTerms.size;
+  // Weight title matches 3x JD matches. Full title coverage caps at 100.
+  const raw = titleCoverage * 75 + jdCoverage * 40;
+  const score = Math.max(0, Math.min(100, Math.round(raw)));
+  return { score, hits: [...titleHits, ...jdHits].slice(0, 8) };
+}
+
+// Salary vs target — used as a soft signal, not a hard rank axis.
+function salaryFitScore(j: NormalisedJob, criteria: SearchCriteria): number {
   const target = criteria.salary.target;
   const salaryMid = j.salary_min && j.salary_max
     ? (j.salary_min + j.salary_max) / 2
     : (j.salary_min ?? j.salary_max ?? null);
-  if (target && salaryMid) {
-    if (salaryMid >= target) salaryFit = 100;
-    else salaryFit = Math.max(0, Math.round((salaryMid / target) * 100));
-  } else if (!j.salary_listed) {
-    salaryFit = 40;
-  }
-  return Math.round(q * 0.6 + salaryFit * 0.4);
+  if (!target || !salaryMid) return j.salary_listed ? 60 : 40;
+  if (salaryMid >= target) return 100;
+  return Math.max(20, Math.round((salaryMid / target) * 100));
+}
+
+// Composite: match-to-search 45% + quality 35% + salary-fit 20%.
+// (match-to-user + career-fit come online in the next step and take share
+// from quality + salary-fit.)
+function cheapRankScore(
+  j: NormalisedJob,
+  criteria: SearchCriteria,
+  searchName: string,
+  description: string | null | undefined
+): { composite: number; match_to_search: number; quality: number; salary_fit: number; hits: string[] } {
+  const mts = matchToSearchScore(j, criteria, searchName, description);
+  const q = j.quality_score ?? 50;
+  const sf = salaryFitScore(j, criteria);
+  const composite = Math.round(mts.score * 0.45 + q * 0.35 + sf * 0.20);
+  return {
+    composite,
+    match_to_search: mts.score,
+    quality: q,
+    salary_fit: sf,
+    hits: mts.hits,
+  };
 }
 
 export async function runSearch(input: RunSearchInput): Promise<RunSearchResult> {
@@ -144,15 +206,23 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
   }
 
   // ---- Cheap ranking ----
+  // Look up the search description once for match-to-search axis.
+  const { data: searchRow } = await supabase
+    .from("job_searches")
+    .select("description")
+    .eq("id", input.searchId)
+    .single();
+  const description = (searchRow?.description as string | null | undefined) ?? null;
+
   const ranked = kept
-    .map((j) => ({ j, score: cheapRankScore(j, input.criteria) }))
-    .sort((a, b) => b.score - a.score);
+    .map((j) => ({ j, r: cheapRankScore(j, input.criteria, input.name, description) }))
+    .sort((a, b) => b.r.composite - a.r.composite);
   const top = ranked.slice(0, input.jobsPerRun);
 
   // ---- Upsert postings + shortlist ----
   let shortlisted = 0;
   for (let i = 0; i < top.length; i++) {
-    const { j, score } = top[i];
+    const { j, r } = top[i];
     const upsert = await supabase
       .from("job_postings")
       .upsert(
@@ -195,12 +265,17 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
           search_id: input.searchId,
           posting_id,
           state: "new",
-          quality_score: j.quality_score,
-          composite_rank: score,
+          quality_score: r.quality,
+          match_to_search_score: r.match_to_search,
+          composite_rank: r.composite,
           ranking_explanation: {
             phase: "cheap-only",
-            note: "Quality + salary-fit. Match-to-user + career-fit come online next.",
-            quality_score: j.quality_score,
+            note: "Match-to-search + quality + salary-fit. Match-to-you + career-fit come online next.",
+            match_to_search: r.match_to_search,
+            quality: r.quality,
+            salary_fit: r.salary_fit,
+            keyword_hits: r.hits,
+            quality_reasons: j.quality_reasons,
             rank_position: i + 1,
             of: top.length,
           },

@@ -75,24 +75,16 @@ function reedJobUrl(jobId: number | string, title: string): string {
   return `https://www.reed.co.uk/jobs/${slug}/${jobId}`;
 }
 
-// Quote multi-word keywords so Reed treats them as a phrase, not OR-match on
-// each word. Prevents "supply chain analyst" from hitting driver JDs that
-// happen to mention "supply".
-function phraseQuote(keywords: string): string {
-  const k = keywords.trim();
-  if (!k) return "";
-  if (k.startsWith('"') && k.endsWith('"')) return k;
-  if (/\s/.test(k)) return `"${k}"`;
-  return k;
-}
-
 export const reedAdapter: JobSourceAdapter = {
   type: "reed",
   async pull(input: PullInput): Promise<PullResult> {
     const headers = { Authorization: auth() };
 
+    // Reed's `keywords` param is a plain space-separated string. It does NOT
+    // support quoted phrases (`"supply chain analyst"` returns 0 results).
+    // We fetch broadly and precision-filter on job title downstream.
     const params = new URLSearchParams();
-    if (input.keywords) params.set("keywords", phraseQuote(input.keywords));
+    if (input.keywords) params.set("keywords", input.keywords.trim());
     const loc = input.locationText || input.postcode;
     if (loc) params.set("locationName", loc);
     if (input.radiusMiles) params.set("distanceFromLocation", String(input.radiusMiles));

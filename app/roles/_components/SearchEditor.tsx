@@ -125,12 +125,32 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
             />
           </Field>
 
-          <Field label="Keywords" hint="These get sent to the job APIs.">
+          <Field label="Keywords" hint="Broad terms sent to the job APIs. Loose OR-match to cast a wide net.">
             <input
               value={criteria.keywords}
               onChange={(e) => setCriteria({ ...criteria, keywords: e.target.value })}
               className="w-full text-sm rounded-md border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="supply chain analyst"
+            />
+          </Field>
+
+          <Field
+            label="Job titles to accept"
+            hint='Comma-separated. Only jobs whose title matches ONE of these role types will be shortlisted. e.g. "Supply Chain Analyst, Procurement Analyst, Buyer" — accepts jobs titled Analyst OR Buyer, drops drivers.'
+          >
+            <input
+              value={criteria.target_titles.join(", ")}
+              onChange={(e) =>
+                setCriteria({
+                  ...criteria,
+                  target_titles: e.target.value
+                    .split(",")
+                    .map((s) => s.trim())
+                    .filter(Boolean),
+                })
+              }
+              className="w-full text-sm rounded-md border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Supply Chain Analyst, Procurement Analyst, Buyer"
             />
           </Field>
 
@@ -313,5 +333,6 @@ function mergeCriteria(persisted: unknown): SearchCriteria {
     location: { ...DEFAULT_CRITERIA.location, ...(p.location ?? {}) },
     working_model: { ...DEFAULT_CRITERIA.working_model, ...(p.working_model ?? {}) },
     salary: { ...DEFAULT_CRITERIA.salary, ...(p.salary ?? {}) },
+    target_titles: p.target_titles ?? [],
   };
 }

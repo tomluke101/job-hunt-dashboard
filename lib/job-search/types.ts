@@ -84,6 +84,11 @@ export interface SearchCriteria {
   seniority: string[];
   industries_include: string[];
   industries_exclude: string[];
+  // Explicit role types the user is hunting for, e.g. ["supply chain analyst",
+  // "procurement analyst", "buyer"]. A job passes the title-relevance filter
+  // if its title matches the CORE NOUN of ANY entry here. Empty = fall back
+  // to core-noun of `keywords`/search-name.
+  target_titles: string[];
   keywords: string;
   extra: string | null;
 }
@@ -122,6 +127,7 @@ export const DEFAULT_CRITERIA: SearchCriteria = {
   seniority: [],
   industries_include: [],
   industries_exclude: [],
+  target_titles: [],
   keywords: "",
   extra: null,
 };

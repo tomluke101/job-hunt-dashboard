@@ -56,17 +56,20 @@ function coreRoleNoun(askWords: string[]): string | null {
   return askWords[askWords.length - 1] ?? null;
 }
 
-// True if the job title is relevant to the search phrase. Accepts if:
-//   * the title contains the exact search phrase, OR
-//   * the title contains the search's CORE ROLE NOUN (last content word).
-// Loose by design: precision is handled by ranking + LLM match-to-you.
-function titleRelevant(title: string, phrase: string, askWords: string[]): boolean {
+// True if the job title is relevant to a specific target phrase.
+function titleRelevantOne(title: string, phrase: string, askWords: string[]): boolean {
   const t = title.toLowerCase();
   if (phrase && t.includes(phrase)) return true;
   if (!askWords.length) return true;
   const core = coreRoleNoun(askWords);
   if (core && new RegExp(`\\b${core}\\b`, "i").test(t)) return true;
   return false;
+}
+
+// True if the job title matches ANY of the user's target phrases. Multi-role
+// search — e.g. accept jobs matching "supply chain analyst" OR "buyer".
+function titleRelevantAny(title: string, targets: Array<{ phrase: string; words: string[] }>): boolean {
+  return targets.some((t) => titleRelevantOne(title, t.phrase, t.words));
 }
 
 function tokens(s: string): string[] {
@@ -203,12 +206,20 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
   const includeUnknownWM = input.criteria.working_model.include_unknown;
   const excludes = input.criteria.industries_exclude.map((s) => s.toLowerCase());
 
-  // Title-relevance hard filter. Prevents "supply chain" seeping into HGV
-  // driver JDs the moment we OR-match keywords.
-  const askPhrase = (input.criteria.keywords || input.name).trim().toLowerCase();
-  const askWords = askPhrase
-    .split(/\s+/)
-    .filter((w) => w.length > 2 && !TITLE_STOP.has(w));
+  // Title-relevance hard filter. Uses the explicit `target_titles` list when
+  // the user set one (supports multi-role searches like
+  // ["supply chain analyst", "procurement analyst", "buyer"]) and falls back
+  // to the core noun of the keywords/search-name.
+  const rawTargets = input.criteria.target_titles?.length
+    ? input.criteria.target_titles
+    : [input.criteria.keywords || input.name];
+  const targetSets = rawTargets
+    .map((t) => t.trim().toLowerCase())
+    .filter(Boolean)
+    .map((phrase) => ({
+      phrase,
+      words: phrase.split(/\s+/).filter((w) => w.length > 2 && !TITLE_STOP.has(w)),
+    }));
   filterDrops.title_irrelevant = 0;
 
   for (const j of deduped) {
@@ -216,7 +227,7 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       filterDrops.expired++;
       continue;
     }
-    if (askWords.length && !titleRelevant(j.title, askPhrase, askWords)) {
+    if (targetSets.length && !titleRelevantAny(j.title, targetSets)) {
       filterDrops.title_irrelevant++;
       continue;
     }

@@ -8,7 +8,17 @@ import { callAI } from "@/lib/ai-router";
 import type { Provider } from "@/lib/ai-providers";
 import { extractFactBase } from "./extract";
 import { factsOfKind, type FactBase } from "./factbase";
-import { scanProfile, buildFixGuidance, type BannedHit } from "./tailor";
+import {
+  scanProfile,
+  scanBannedPhrases,
+  scanProfileCareerChangerMode,
+  scanProfileSoleClaimVsFactBase,
+  scanProfileScopeAnchorVsFactBase,
+  killEmDashesDeterministic,
+  killAbsorbingDeterministic,
+  buildFixGuidance,
+  type BannedHit,
+} from "./tailor";
 import type { TailoredCV } from "./tailored-cv";
 
 // ── Sector-invention scanner (Master-only, FactBase-aware) ────────────────────
@@ -117,10 +127,61 @@ function extractSectorDescriptors(s1: string): string[] {
   return out;
 }
 
-// Deterministic exclusion enforcement. Exclusions are passed as a HARD rule
-// in the system prompt, but AI compliance with HARD rules is not 100%. This
-// scanner catches any excluded phrase that slipped through — substring match,
-// case-insensitive — so the rewrite loop or fallback can take it back out.
+// Deterministic exclusion enforcement.
+//
+// Exclusions are passed as a HARD rule in the system prompt, but AI compliance
+// is not 100%. This scanner catches any excluded phrase that slipped through,
+// AND variants the AI paraphrased around. Two layers:
+//
+//   (a) Exact substring match — catches the literal exclusion verbatim.
+//   (b) Token-proximity stem match — catches concept-level variants. If the
+//       user excludes "supplier performance tracker", we want to catch
+//       "supplier performance tracking system", "supplier performance
+//       dashboard", "tracker for supplier performance", etc. We tokenise,
+//       drop stop words, take 5-char prefix as a naive stem, and check if
+//       all stems appear within an 8-word window of the Profile.
+//
+// Single-word exclusions only use (a) — proximity matching on one token is
+// just substring matching of a prefix, which would over-flag.
+const EXCLUSION_STOP_WORDS = new Set([
+  "a", "an", "the", "of", "in", "on", "for", "and", "or", "to", "by", "with",
+  "from", "at", "as", "is", "are", "was", "were", "be", "been",
+]);
+
+function exclusionStems(phrase: string): string[] {
+  const stems = phrase
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t && !EXCLUSION_STOP_WORDS.has(t))
+    .map((t) => t.slice(0, Math.min(5, t.length)));
+  return stems;
+}
+
+function proximityStemsPresent(
+  text: string,
+  stems: string[],
+  windowSize: number
+): boolean {
+  if (stems.length === 0) return false;
+  const words = text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  // Slide a window of size `windowSize` across the text; if every stem appears
+  // as a prefix of any word inside the window, flag as a match.
+  for (let start = 0; start < words.length; start++) {
+    const end = Math.min(start + windowSize, words.length);
+    const window = words.slice(start, end);
+    const allFound = stems.every((s) =>
+      s.length >= 3 && window.some((w) => w.startsWith(s))
+    );
+    if (allFound) return true;
+  }
+  return false;
+}
+
 export function scanExcludedPhrases(args: {
   summary: string;
   exclusions: string[];
@@ -131,10 +192,24 @@ export function scanExcludedPhrases(args: {
   for (const e of args.exclusions) {
     const needle = e.trim().toLowerCase();
     if (!needle) continue;
+
+    // (a) Exact substring match.
     if (summaryLower.includes(needle)) {
       hits.push({
         section: "Profile",
         phrase: `Profile contains the excluded phrase "${e}". Remove it entirely. The user has explicitly forbidden this in any Profile generation, regardless of JD relevance.`,
+      });
+      continue;
+    }
+
+    // (b) Variant match — token-proximity stem check. Only for multi-word
+    // exclusions; single-word exclusions are handled by exact match alone.
+    const stems = exclusionStems(needle);
+    if (stems.length < 2) continue;
+    if (proximityStemsPresent(args.summary, stems, 8)) {
+      hits.push({
+        section: "Profile",
+        phrase: `Profile contains a concept-level variant of the excluded phrase "${e}" — the model paraphrased around the literal text but the underlying concept is still present. Remove ALL near-paraphrases of "${e}" (e.g. variants that swap one word but keep the underlying claim).`,
       });
     }
   }
@@ -208,6 +283,92 @@ export interface WizardContextLib {
   anythingElse?: string;
 }
 
+// Server-side automatic FactBase-fit assessment for a target role family.
+// Used by generateMasterProfileFromFactBase when the caller didn't supply a
+// fit value (typical on regenerate — the gap modal only ran on first
+// generation, so the fit assessment from there isn't available).
+//
+// Without this, regenerated Masters for irrelevant role families silently
+// drop back to non-career-changer mode and the pivot / bridge / named-
+// target scanners don't fire. With this, every Master generation for a
+// target-family Master runs through proper career-changer mode (or
+// confirms "strong" fit and uses the standard prompt).
+//
+// Cost: one extra AI call (~3-5s) per generation when target family is
+// set. Worth it for correctness.
+async function assessFactBaseFitForFamily(args: {
+  factbaseText: string;
+  targetRoleFamily: string;
+  targetSector?: string;
+  connectedProviders: Partial<Record<Provider, string>>;
+}): Promise<{
+  fit: "strong" | "transferable" | "minimal";
+  transferableAngles: string[];
+} | null> {
+  const { factbaseText, targetRoleFamily, targetSector, connectedProviders } = args;
+  if (!targetRoleFamily.trim()) return null;
+
+  const systemPrompt = `You assess how well a candidate's FactBase supports a target role family.
+
+Output a single JSON object:
+{
+  "fit": "strong" | "transferable" | "minimal",
+  "transferableAngles": ["<short noun-phrase>", ...]
+}
+
+FIT LEVELS:
+- "strong" — Direct evidence of ${targetRoleFamily} work in the candidate's roles, achievements, or skills. The candidate has DONE this kind of work.
+- "transferable" — NO direct evidence for ${targetRoleFamily}, but multiple reframable transferable skills exist (analytical structure, stakeholder communication, project delivery, data work, written reasoning, etc.). The candidate is a career-changer pivoting in.
+- "minimal" — Essentially zero overlap. No direct evidence AND limited transferable signal.
+
+TRANSFERABLE-ANGLES (when fit is "transferable" or "minimal"):
+List 2-4 short noun-phrase angles the candidate has that DO carry transferable signal for ${targetRoleFamily}. Examples for Supply Chain → Legal: ["analytical structure from supplier-performance work", "contract handling via supplier negotiation", "stakeholder reporting at director level", "First-Class academic record"].
+
+For "strong" fit, return transferableAngles: [].
+
+Output ONLY the JSON object.`;
+
+  const userPrompt = `=== CANDIDATE FACTBASE ===
+${factbaseText || "(empty FactBase)"}
+
+=== TARGET ROLE FAMILY ===
+${targetRoleFamily.trim()}${targetSector?.trim() ? ` (sector: ${targetSector.trim()})` : ""}
+
+=== TASK ===
+Assess FactBase fit for the target family. Return ONLY the JSON object.`;
+
+  try {
+    const result = await callAI({
+      task: "cv-tailor",
+      connectedProviders,
+      systemPrompt,
+      prompt: userPrompt,
+    });
+    const trimmed = result.text.trim();
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start === -1 || end === -1) return null;
+    const parsed = JSON.parse(trimmed.slice(start, end + 1)) as {
+      fit?: unknown;
+      transferableAngles?: unknown;
+    };
+    const fit: "strong" | "transferable" | "minimal" =
+      parsed.fit === "strong" || parsed.fit === "transferable" || parsed.fit === "minimal"
+        ? parsed.fit
+        : "strong";
+    const transferableAngles: string[] = Array.isArray(parsed.transferableAngles)
+      ? parsed.transferableAngles
+          .filter((a): a is string => typeof a === "string" && a.trim().length > 0)
+          .map((a) => a.trim())
+          .slice(0, 6)
+      : [];
+    return { fit, transferableAngles };
+  } catch (e) {
+    console.error("[assessFactBaseFitForFamily] error:", e);
+    return null;
+  }
+}
+
 // Build a sector-agnostic Profile from the FactBase. No JD — produces the user's
 // strongest unconditional version of themselves, applying all the same rules
 // (implied first person, scope-anchor in S2, distinctive S3, fact close).
@@ -216,7 +377,32 @@ export async function generateMasterProfileFromFactBase(opts: {
   connectedProviders: Partial<Record<Provider, string>>;
   wizardContext?: WizardContextLib;
   exclusions?: string[];
+  // Optional — when provided, the Profile is tailored to this JD instead of
+  // sector-agnostic. Used by the full-CV bypass / no-Master path so the
+  // generated Profile gets the Master-grade prompt + critic loop AND the JD
+  // context for vocabulary alignment. The sector-agnostic Master generator
+  // (Profile page) omits this.
+  targetJdText?: string;
+  // Optional — target role family for this Master (e.g. "Procurement",
+  // "Consulting", "Product Management"). When set, the AI surfaces FactBase
+  // evidence relevant to this family and reframes vocabulary. Different
+  // from targetJdText: this is a sector-level intent that persists with the
+  // Master, not a JD-specific tailoring.
+  targetRoleFamily?: string;
+  targetSector?: string;
+  // Optional — FactBase fit assessment for the target family. When
+  // "transferable" or "minimal", the prompt FORCES the CAREER-CHANGER
+  // template — no risk of the model accidentally producing achievement-led
+  // framing for a candidate whose FactBase doesn't actually support direct
+  // claims in the target family. Defaults to "strong" (normal generation).
+  factbaseFitForFamily?: "strong" | "transferable" | "minimal";
+  // Optional — transferable-angle hints surfaced by the gap detector. Fed
+  // into the prompt as guidance on what to lead with when the career-
+  // changer template fires.
+  transferableAngles?: string[];
 }): Promise<MasterProfileGenerationResult> {
+  // (function body continues below — assessFactBaseFitForFamily helper is
+  // defined just above this in the file for use during generation.)
   const warnings: string[] = [];
 
   const fbResult = await extractFactBase({ cvId: opts.cvId });
@@ -245,12 +431,77 @@ export async function generateMasterProfileFromFactBase(opts: {
   // treated as canonical for the sector-invention scanner so wizard-provided
   // sectors / employers don't get flagged as inventions.
   const groundedText = `${factbaseText}\n\n${wizardText}`.trim();
-  const systemPrompt = buildMasterSystemPrompt(opts.exclusions ?? []);
+  const trimmedRoleFamily = opts.targetRoleFamily?.trim() ?? "";
+  const trimmedSector = opts.targetSector?.trim() ?? "";
+
+  // FACT-BASE FIT ASSESSMENT — CRITICAL FOR CAREER-CHANGER MODE.
+  //
+  // The career-changer scanners (pivot signal in S1, S2 bridge to family,
+  // named-target close in S4) only fire when factbaseFitForFamily is
+  // "transferable" or "minimal". The caller (e.g. MasterCard) sometimes
+  // passes this value when the gap modal ran, but on REGENERATE the gap
+  // modal is skipped and the caller has no fit value to pass — which
+  // silently drops back to "strong" and the career-changer scanners
+  // don't fire. The result: regenerated Masters for irrelevant role
+  // families lose pivot framing, family bridge, named target close.
+  //
+  // FIX: when a target family IS set but the caller didn't provide
+  // factbaseFitForFamily, run a silent fit assessment server-side. This
+  // costs one extra ~5s AI call per regenerate but guarantees the
+  // career-changer scanners fire correctly on every generation, not just
+  // the first one after the gap modal.
+  let fit: "strong" | "transferable" | "minimal" = opts.factbaseFitForFamily ?? "strong";
+  let transferableAngles = (opts.transferableAngles ?? [])
+    .map((a) => a.trim())
+    .filter(Boolean);
+  if (trimmedRoleFamily && opts.factbaseFitForFamily === undefined) {
+    try {
+      const assessment = await assessFactBaseFitForFamily({
+        factbaseText,
+        targetRoleFamily: trimmedRoleFamily,
+        targetSector: trimmedSector,
+        connectedProviders: opts.connectedProviders,
+      });
+      if (assessment) {
+        fit = assessment.fit;
+        transferableAngles = assessment.transferableAngles;
+      }
+    } catch (e) {
+      console.warn(
+        "[generateMasterProfileFromFactBase] silent fit assessment failed — defaulting to 'strong':",
+        e
+      );
+    }
+  }
+
+  const systemPrompt = buildMasterSystemPrompt(
+    opts.exclusions ?? [],
+    trimmedRoleFamily,
+    trimmedSector,
+    fit,
+    transferableAngles
+  );
+  const trimmedJd = opts.targetJdText?.trim() ?? "";
+  const jdBlock = trimmedJd
+    ? `\n=== TARGET JOB DESCRIPTION (tailor Profile vocabulary to this — but never invent claims to match it) ===\n${trimmedJd}\n`
+    : "";
+  // Target-family block — sits in the user prompt as well as in the system
+  // prompt so the model has TWO independent reminders. The system-prompt
+  // version has the rules; the user-prompt version makes the target salient
+  // alongside the FactBase content.
+  const targetBlock = trimmedRoleFamily
+    ? `\n=== TARGET ROLE FAMILY ===\nThis Master is being drafted for someone targeting **${trimmedRoleFamily}** roles${trimmedSector ? ` in **${trimmedSector}**` : ""}. Surface FactBase claims that map onto ${trimmedRoleFamily} capabilities; reframe vocabulary using terms recognised in that field. The Truth Contract still holds — never invent ${trimmedRoleFamily}-specific experience the FactBase doesn't support; if evidence is thin, use the strongest reframable claims you DO have.\n`
+    : "";
+  const taskLine = trimmedJd
+    ? "Produce the candidate's Profile for the JD above. Surface FactBase claims that align with the JD's vocabulary and emphasis; never invent claims to match the JD. Apply ALL Profile rules. Return ONLY the JSON object: { \"summary\": string }."
+    : trimmedRoleFamily
+    ? `Produce the candidate's Master Profile, framed for ${trimmedRoleFamily} roles. Lead with the FactBase evidence most relevant to that family. Apply ALL Profile rules. Return ONLY the JSON object: { "summary": string }.`
+    : "Produce the candidate's Master Profile — the strongest, sector-agnostic version of themselves. No specific job description to tailor to. Apply ALL Profile rules. Return ONLY the JSON object: { \"summary\": string }.";
   const userPrompt = `=== CANDIDATE FACTBASE ===
 ${factbaseText || "(empty — use the wizard answers below as primary input)"}
 
-${wizardText ? `=== USER-PROVIDED CONTEXT (wizard answers — treat as truth) ===\n${wizardText}\n\n` : ""}=== TASK ===
-Produce the candidate's Master Profile — the strongest, sector-agnostic version of themselves. No specific job description to tailor to. Apply ALL Profile rules. Return ONLY the JSON object: { "summary": string }.`;
+${wizardText ? `=== USER-PROVIDED CONTEXT (wizard answers — treat as truth) ===\n${wizardText}\n\n` : ""}${targetBlock}${jdBlock}=== TASK ===
+${taskLine}`;
 
   let summary: string | null = null;
   try {
@@ -284,16 +535,27 @@ Produce the candidate's Master Profile — the strongest, sector-agnostic versio
     factbaseFromFactBase: fb,
     connectedProviders: opts.connectedProviders,
     systemPrompt,
-    isMaster: true,
+    // isMaster gates a couple of scanner behaviours; pass false when this is
+    // a JD-tailored generation so the critic treats it as a JD Profile, not
+    // a sector-agnostic Master.
+    isMaster: !trimmedJd,
+    jdText: trimmedJd || undefined,
     exclusions: opts.exclusions ?? [],
+    // Pass career-changer mode context so the critic loop runs the pivot-
+    // signal / S2-bridge / named-target-close scanners when applicable.
+    targetRoleFamily: trimmedRoleFamily || undefined,
+    factbaseFitForFamily: fit,
   });
 
   return { summary, warnings };
 }
 
-// Adapt an existing Master Profile to a specific JD. Preserves the user's
-// voice + structure where possible; rewrites emphasis to surface JD-relevant
-// signals from the FactBase.
+// Adapt an existing Master Profile to a specific JD. Emphasis-aware:
+// rewrites the Profile to lead with the FactBase claims that match the JD's
+// weight, while preserving universal anchors (brand-tier prior employer,
+// degree + classification + university, current role title). The Adapt path
+// can pull in FactBase claims that aren't in the Master and drop Master
+// claims that aren't JD-relevant — both within Truth Contract limits.
 export interface TailorMasterResult {
   tailored?: string;
   warnings: string[];
@@ -308,6 +570,11 @@ export async function tailorMasterToJD(opts: {
   roleName?: string;
   exclusions?: string[];
   connectedProviders: Partial<Record<Provider, string>>;
+  // Optional target role family for this Master. When set, Adapt uses it as
+  // additional context for selecting which FactBase claims to emphasise.
+  // The JD is still the primary tailoring signal; the family adds register.
+  targetRoleFamily?: string | null;
+  targetSector?: string | null;
 }): Promise<TailorMasterResult> {
   const warnings: string[] = [];
 
@@ -327,23 +594,51 @@ export async function tailorMasterToJD(opts: {
     };
   }
 
-  // Run a CONSTRAINED adaptation. The model is forbidden from rewriting,
-  // restructuring, or substituting any claim. Allowed changes are word-level
-  // vocabulary swaps only, and only where the JD has clear domain-vocabulary
-  // preference. After the AI runs, a deterministic entity-preservation check
-  // verifies every named entity, credential, number, and acronym from the
-  // Master survived — if any went missing, we drop the adaptation and return
-  // the verbatim Master.
-  const systemPrompt = buildAdaptSystemPrompt(opts.exclusions ?? []);
+  // Load FactBase so the AI can pull JD-relevant claims that aren't yet in
+  // the Master. Without this, Adapt is stuck rephrasing only what the Master
+  // already mentions — which is the entire reason emphasis didn't shift on
+  // the GS test (the candidate's most JD-relevant evidence sat in FactBase
+  // but never in Master).
+  const fbResult = await extractFactBase({ cvId: opts.cvId });
+  if (fbResult.error || !fbResult.factBase) {
+    warnings.push(
+      "Could not load your FactBase — Adapt will work from the Master alone."
+    );
+  }
+  const factbaseText = fbResult.factBase
+    ? serialiseFactBaseForMaster(fbResult.factBase)
+    : "(unavailable)";
+
+  // Extract universal anchors from the Master deterministically. These are
+  // credibility signals that DON'T change per JD — brand-tier prior
+  // employers and the education close. The AI is told to preserve them; if
+  // any go missing in the output, we fall back to verbatim Master.
+  const universalAnchors = extractUniversalAnchors(opts.master);
+
+  const trimmedFamily = opts.targetRoleFamily?.trim() ?? "";
+  const trimmedSector = opts.targetSector?.trim() ?? "";
+
+  const systemPrompt = buildAdaptEmphasisSystemPrompt({
+    exclusions: opts.exclusions ?? [],
+    universalAnchors,
+    targetRoleFamily: trimmedFamily,
+    targetSector: trimmedSector,
+  });
+  const familyContextBlock = trimmedFamily
+    ? `\n=== MASTER'S TARGET ROLE FAMILY ===\nThis Master is framed for **${trimmedFamily}** roles${trimmedSector ? ` in **${trimmedSector}**` : ""}. Treat this as the family register for the Adapt: vocabulary and emphasis should match ${trimmedFamily}, narrowed further by the JD.\n`
+    : "";
   const userPrompt = `=== JOB DESCRIPTION ===
 ${opts.jdText.trim()}
-
-=== CANDIDATE'S MASTER PROFILE (preserve nearly verbatim — see system rules) ===
+${familyContextBlock}
+=== CANDIDATE'S MASTER PROFILE (their best universal version — re-emphasise per the JD; preserve universal anchors) ===
 ${opts.master}
+
+=== CANDIDATE FACTBASE (every claim they have evidence for — pull JD-aligned claims from here into the Profile) ===
+${factbaseText}
 
 ${opts.companyName ? `Target company: ${opts.companyName}\n` : ""}${opts.roleName ? `Target role: ${opts.roleName}\n` : ""}
 === TASK ===
-Identify if any words in the Master Profile have a JD-vocabulary equivalent that means the SAME thing. Produce a minimally-modified Profile. If no swaps are warranted, return the Master VERBATIM. Return ONLY the JSON object: { "summary": string }.`;
+Produce a JD-tailored Profile for this candidate. Pick the 2-3 claims (from Master OR FactBase) that best match the JD's weight, restructure S1-S3 around them, and preserve the universal anchors listed in the system prompt. Apply ALL Profile rules. Return ONLY the JSON object: { "summary": string }.`;
 
   let tailored: string | null = null;
   try {
@@ -367,21 +662,45 @@ Identify if any words in the Master Profile have a JD-vocabulary equivalent that
     return { tailored: opts.master, warnings };
   }
 
-  // Deterministic entity-preservation check. If the AI removed any named
-  // entity / credential / number from the Master, reject the adaptation and
-  // fall back to verbatim Master. Better to skip a JD-emphasis tweak than
-  // to drop the user's chosen claims.
-  const entityCheck = verifyEntitiesPreserved(opts.master, tailored);
-  if (!entityCheck.preserved) {
+  // Run the full Profile critic loop on the adapted text — same rules and
+  // rewrite pipeline used by the dedicated Master generator. JD context lets
+  // the critic apply JD-aware scanners.
+  if (fbResult.factBase) {
+    tailored = await runProfileScannersAndRewrite({
+      summary: tailored,
+      factbaseText,
+      factbaseFromFactBase: fbResult.factBase,
+      connectedProviders: opts.connectedProviders,
+      systemPrompt,
+      isMaster: false,
+      jdText: opts.jdText,
+      exclusions: opts.exclusions ?? [],
+      // Adapt does NOT have a factbaseFitForFamily signal (that's a Master-
+      // generation concept). Pass the Master's target family for completeness
+      // but leave fit as "strong" — Adapt operates on an existing Master
+      // that already has the user's chosen framing baked in.
+      targetRoleFamily: trimmedFamily || undefined,
+      factbaseFitForFamily: "strong",
+    });
+  }
+
+  // Universal-anchor preservation check (lighter than full entity check).
+  // If the Master named a brand-tier prior employer, the adapted Profile
+  // must keep it. If the Master had a degree close, the adapted Profile
+  // must keep degree + uni. These don't change per JD.
+  const missingAnchors = universalAnchors.filter(
+    (a) => !tailored!.toLowerCase().includes(a.toLowerCase())
+  );
+  if (missingAnchors.length > 0) {
     warnings.push(
-      `Adaptation dropped ${entityCheck.missing.length} named claim${entityCheck.missing.length === 1 ? "" : "s"} from your Master — using your Master verbatim. Missing: ${entityCheck.missing.slice(0, 5).join(", ")}${entityCheck.missing.length > 5 ? "…" : ""}`
+      `Adapt dropped universal anchor${missingAnchors.length === 1 ? "" : "s"} (${missingAnchors.slice(0, 3).map((a) => `"${a}"`).join(", ")}) — using your Master verbatim instead.`
     );
     return { tailored: opts.master, warnings };
   }
 
-  // Deterministic exclusion-rule enforcement. If the AI introduced any phrase
-  // the user has excluded (whether it was in the original Master or not —
-  // user might have JUST added a new exclusion), reject the adaptation.
+  // Deterministic exclusion-rule enforcement. Run AFTER the critic in case
+  // an excluded phrase slipped past the rewrite loop (defensive — the loop
+  // already enforces this via scanExcludedPhrases).
   const exclusionViolations = scanExcludedPhrases({
     summary: tailored,
     exclusions: opts.exclusions ?? [],
@@ -396,192 +715,192 @@ Identify if any words in the Master Profile have a JD-vocabulary equivalent that
     return { tailored: opts.master, warnings };
   }
 
-  // Adaptation passed entity preservation. Return it.
-  // Note: we deliberately DO NOT run the full scanner-rewrite loop here —
-  // adaptations are meant to be minimal, and re-running 15 scanners on a
-  // near-verbatim variant of an already-clean Master tends to push it
-  // further from the user's saved wording than necessary.
   return { tailored, warnings };
 }
 
-// ── Constrained-adapt system prompt ─────────────────────────────────────────
-// Used by the per-CV "Adapt to this JD" button. Hard rules forbid any
-// rewriting beyond word-level vocabulary alignment.
-function buildAdaptSystemPrompt(exclusions: string[]): string {
-  const exclusionsBlock = exclusions.length > 0
-    ? `\n\nUSER EXCLUSIONS (NEVER include these in the Profile, even if the Master mentions them):\n${exclusions.map((e) => `- ${e}`).join("\n")}\n`
-    : "";
+// Extract anchors from the Master that don't change per JD: brand-tier
+// prior employers, role titles (the user's actual past/current titles), and
+// the degree close. The Adapt critic uses these as the minimum survival bar
+// — Adapt may restructure S2/S3 freely, but must keep these credibility
+// signals because they're truth-grounded facts.
+//
+// Returns short substrings (e.g. "Siemens DISW", "Birmingham City University",
+// "First-Class", "Project Coordinator") that must each appear in the adapted
+// output. Substring matching is case-insensitive.
+function extractUniversalAnchors(master: string): string[] {
+  const anchors = new Set<string>();
 
-  return `You take a candidate's Master Profile and a specific JD, and produce a JSON object: { "summary": string } where summary is the Master Profile with vocabulary swaps applied to align with the JD's language — wherever a swap genuinely improves alignment WITHOUT changing meaning, scope, or claims.
-
-YOUR JOB IS TO ACTIVELY LOOK FOR VOCABULARY SWAPS — not to play it safe by returning verbatim. If the JD uses "vendor management" and the Master uses "supplier management" for the same concept, swap. If the JD uses "leading procurement" and the Master uses "specialising in procurement", swap. Default to MAKING the swap when the JD has a clear preference. Default to verbatim ONLY when the Master's vocabulary already aligns OR when the JD's vocabulary describes a genuinely different concept (in which case a swap would mislead).
-
-PROCESS (follow exactly):
-1. Read the Master Profile carefully.
-2. Read the JD. Identify its key vocabulary: action verbs, field terminology, role-descriptor language.
-3. For EACH content word in the Master, ask: does the JD use a different word for the SAME concept? If yes → swap. If the concept differs → keep the Master's word.
-4. Apply every justified swap. Then return the modified Profile.
-
-ABSOLUTE RULES (every rule is hard — violation means the adaptation is rejected and the user's verbatim Master is used):
-
-1. KEEP every named entity verbatim. This includes:
-   - Company / employer names (Siemens DISW, Goldman Sachs, JLR, etc.)
-   - Built systems / tools (ERP, supplier tracker, dashboard, Power BI, Airtable, etc.)
-   - Institutions / universities (Birmingham City University, LSE, etc.)
-   - Credentials and degree types (First-Class, BA, BSc, MA, MEng, MSc, MBA, PhD, etc.)
-   - Numerical claims (2x revenue growth, 80%+, £40k, 12 suppliers, etc.)
-   - Acronyms (3+ uppercase letters: ERP, BCU, DISW, MRP, SRM, etc.)
-   - Hyphenated compound terms (First-Class, end-to-end, cross-functional, etc.)
-
-2. KEEP every clause and sentence structure:
-   - No reordering sentences
-   - No merging clauses
-   - No splitting sentences
-   - No adding clauses
-   - No removing clauses
-
-3. KEEP every claim. Every distinct fact in the Master must appear in the adapted output, in the same sentence it lived in.
-
-4. DO NOT add new claims, even if the JD asks for skills the candidate has elsewhere.
-5. DO NOT remove claims, even if the JD doesn't care about them.
-6. DO NOT substitute one named system for another (NEVER swap "ERP" for "supplier tracker", NEVER swap "Siemens" for "JLR").
-7. DO NOT change a CONCEPT — only the WORD used to describe it. If the Master says "demand planning" (forecasting customer demand) and the JD says "materials planning" (MRP scheduling supply against demand), do NOT swap — these are different concepts. But if the Master says "supplier management" and the JD says "vendor management" — same concept, different word — DO swap.
-
-CONCRETE SWAP EXAMPLES (you SHOULD apply these and equivalents when the JD uses one of the alternatives):
-
-Action verbs (same concept, different word):
-- "managing" ↔ "running" / "owning" / "leading" / "directing"
-- "specialising in" ↔ "leading" / "owning" / "running"
-- "co-designing" ↔ "co-developing" / "co-building" / "partnering on"
-- "absorbing" → "managing" / "handling" (always swap "absorbing" — banned)
-- "scaling" ↔ "growing" / "expanding"
-
-Field vocabulary (same concept, different word):
-- "supplier" ↔ "vendor" (when JD prefers one consistently)
-- "supplier management" ↔ "vendor management" / "supplier relationships"
-- "supplier performance" ↔ "vendor performance"
-- "overseas supply base" ↔ "international supplier network" / "global suppliers"
-- "purchase order" ↔ "PO" (when JD uses the abbreviation throughout)
-- "purchasing" ↔ "procurement" (when JD prefers one)
-- "inventory planning" ↔ "stock planning" (if JD uses "stock")
-- "stakeholder reporting" ↔ "stakeholder engagement" (if same activity described differently)
-
-Forbidden pseudo-swaps (different concept — DO NOT swap):
-- "demand planning" ≠ "materials planning" (forecasting demand vs MRP scheduling supply)
-- "demand planning" ≠ "inventory planning" (different functions)
-- "supplier scorecard" ≠ "vendor risk assessment" (different artefacts)
-- "ERP" ≠ "MRP" (different systems)
-- "co-designed" ≠ "designed" (collaborative vs sole)
-
-DECISION RULE: when uncertain whether a swap is "same concept different word" vs "different concept entirely", err on the side of KEEPING the Master's word. The cost of a false swap (misleading claim) is higher than the cost of a missed swap (slightly less JD-aligned vocabulary).
-
-PROACTIVE BIAS: scan the entire JD for vocabulary that maps cleanly onto Master concepts. Apply ALL justified swaps in a single pass — don't stop after one. A well-adapted Profile typically has 1–4 swaps when JD vocabulary differs.
-
-If after this analysis the Master's vocabulary truly already aligns (no JD word is a clearly-preferred alternative), return the Master VERBATIM. Be honest, not lazy.
-
-UK ENGLISH: British spellings throughout (organise, specialise, analyse, optimise, programme, colour, etc.). Never American.
-
-NO BANNED VOCABULARY: spearhead, leverage, orchestrate, championed, drove, pioneered, synergise, utilise, streamline, robust, seamless, cutting-edge, results-driven, passionate, dynamic, proven, demonstrated, hands-on, forward-thinking, fast-paced, world-class, best-in-class, value-add, absorbing.
-
-NO em-dashes (—). NO tricolons. NO new banned phrases of any kind.${exclusionsBlock}
-
-Return ONLY the JSON object: { "summary": string }.`;
-}
-
-// ── Deterministic entity-preservation check ────────────────────────────────
-// Extracts every named entity / credential / acronym / numerical claim from
-// the original Master and verifies all of them appear in the adapted text.
-// If any are missing, the adaptation has dropped a claim and must be rejected.
-
-function extractNamedEntities(text: string): string[] {
-  const out = new Set<string>();
-
-  // Multi-word capitalised phrases (2+ caps in sequence, 3+ chars per word).
-  // Catches: "Siemens DISW", "Birmingham City University", "Project Coordinator",
-  // "First-Class Business with Marketing BA" (each multi-word run separately).
-  // Skip sentence-initial caps where they aren't proper nouns by requiring 2+ words.
-  for (const m of text.matchAll(/\b[A-Z][a-zA-Z]{2,}(?:\s+[A-Z][a-zA-Z']{1,}){1,}\b/g)) {
-    out.add(m[0]);
-  }
-
-  // Acronyms (3+ uppercase letters) — ERP, BCU, DISW, MRP, JLR, etc.
-  for (const m of text.matchAll(/\b[A-Z]{3,}\b/g)) {
-    out.add(m[0]);
-  }
-
-  // Common 2-letter credential abbreviations — BA, BSc, MA, MSc, MBA, etc.
-  // Match only when used as a credential (followed by " from " / " in " / etc.,
-  // or preceded by a degree class / subject).
-  for (const m of text.matchAll(/\b(?:BA|BSc|BEng|MA|MSc|MEng|MBA|MFin|MPhil|PhD|ACA|ACCA|CFA|CIM|MRICS|FRICS)\b/g)) {
-    out.add(m[0]);
-  }
-
-  // Numerical claims with units. 2x, 80%, £40k, 3 years, 12 suppliers, etc.
-  // Capture the number+unit/word so it can be verified as a unit.
-  for (const m of text.matchAll(/\b\d+(?:\.\d+)?\s*(?:x|%|\+|years?|months?|weeks?|days?|k|m|bn|million|billion)\b/gi)) {
-    out.add(m[0].toLowerCase().replace(/\s+/g, " "));
-  }
-  // Currency-led numerical claims. £3.25, $40k, €1.2m, etc.
-  for (const m of text.matchAll(/[£$€]\s*\d+(?:\.\d+)?\s*[a-z]?\b/gi)) {
-    out.add(m[0].toLowerCase().replace(/\s+/g, ""));
-  }
-
-  // Hyphenated compound terms with a leading capital — "First-Class",
-  // "End-to-End", "Top-of-Cohort". Catches credentials and named compounds.
-  for (const m of text.matchAll(/\b[A-Z][a-z]+(?:-[A-Za-z]+)+\b/g)) {
-    out.add(m[0]);
-  }
-
-  // CamelCase / mIxedCase tokens (uppercase letter not at position 0). Catches
-  // tool/brand names like PowerBI, GitHub, OpenAI, eXtensible, BigQuery.
-  for (const m of text.matchAll(/\b[A-Za-z]*[a-z][A-Z][A-Za-z]*\b/g)) {
-    if (m[0].length >= 3) out.add(m[0]);
-  }
-
-  // Single-word brand allowlist. Common SaaS/tools that users mention by name
-  // and the AI might quietly drop. Case-insensitive match against original.
-  const SINGLE_WORD_BRANDS = [
-    "Airtable", "Excel", "Salesforce", "Anthropic", "OpenAI", "Snowflake",
-    "Tableau", "Figma", "Notion", "Slack", "Zoom", "GitHub", "GitLab",
-    "Atlassian", "Coupa", "Ariba", "Jaegger", "Workday", "NetSuite",
-    "HubSpot", "Stripe", "Shopify", "Mailchimp", "Substack", "Asana",
-    "Monday", "Linear", "Looker", "Databricks", "Segment", "Mixpanel",
-    "Amplitude", "Heap", "Hotjar", "Pendo", "Intercom", "Zendesk",
-    "Mongo", "Postgres", "Redis", "Kafka", "Spark", "Hadoop",
-    "Kubernetes", "Docker", "Terraform", "Ansible", "Jenkins",
-    "Tally", "Xero", "QuickBooks", "Sage", "Pipedrive", "Klaviyo",
-    "AWS", "Azure", "GCP", "Vercel", "Netlify", "Cloudflare",
-    "Google", "Microsoft", "Oracle", "Adobe", "SAP", "Siemens",
+  // Brand-tier prior employers — small explicit list. Match anywhere in the
+  // Master; if found, must survive into the Adapted Profile.
+  const BRAND_TIER = [
+    "Siemens", "Goldman Sachs", "McKinsey", "BCG", "Bain", "Apple", "Google",
+    "Meta", "Amazon", "Netflix", "Microsoft", "Stripe", "Anthropic", "OpenAI",
+    "JLR", "Jaguar Land Rover", "Unilever", "Diageo", "Innocent Drinks",
+    "PwC", "Deloitte", "EY", "KPMG", "JPMorgan", "Morgan Stanley", "Barclays",
+    "HSBC", "Lloyds", "NatWest", "BP", "Shell", "Rolls-Royce", "BAE",
+    "Bloomberg", "Refinitiv", "ICE", "Citi", "Citigroup", "UBS", "Credit Suisse",
+    "Linklaters", "Clifford Chance", "Slaughter and May", "Allen & Overy",
+    "Freshfields", "Herbert Smith Freehills",
   ];
-  const textLower = text.toLowerCase();
-  for (const brand of SINGLE_WORD_BRANDS) {
-    const idx = textLower.indexOf(brand.toLowerCase());
-    if (idx !== -1) {
-      // Confirm word boundary on both sides.
-      const before = idx === 0 || /\W/.test(text[idx - 1]);
-      const after =
-        idx + brand.length === text.length ||
-        /\W/.test(text[idx + brand.length]);
-      if (before && after) out.add(text.slice(idx, idx + brand.length));
+  for (const brand of BRAND_TIER) {
+    if (master.toLowerCase().includes(brand.toLowerCase())) {
+      // Preserve the exact substring as written in the Master (e.g. "Siemens DISW").
+      const idx = master.toLowerCase().indexOf(brand.toLowerCase());
+      // Try to grab the brand + 1-2 trailing capitalised tokens (e.g. "DISW").
+      const slice = master.slice(idx);
+      const m = slice.match(/^[\w&-]+(?:\s+[A-Z][\w&-]*){0,2}/);
+      anchors.add(m ? m[0] : brand);
     }
   }
 
-  return Array.from(out);
+  // Role titles. The user's actual title is a TRUTH-CONTRACT fact — Adapt
+  // must not soften "Project Coordinator" into "programme coordination" or
+  // "Marketing Manager" into "marketing leadership". Extract capitalised
+  // phrases ending in a role-title noun and pin them as anchors.
+  const ROLE_TITLE_ENDINGS = [
+    "Coordinator", "Analyst", "Engineer", "Manager", "Director", "Lead",
+    "Officer", "Specialist", "Consultant", "Advisor", "Adviser", "Strategist",
+    "Designer", "Developer", "Architect", "Owner", "Founder", "Editor",
+    "Writer", "Planner", "Buyer", "Researcher", "Scientist", "Marketer",
+    "Accountant", "Auditor", "Banker", "Trader", "Broker", "Lawyer",
+    "Solicitor", "Barrister", "Paralegal", "Nurse", "Teacher", "Tutor",
+    "Therapist", "Pharmacist", "Programmer", "Tester", "Surveyor",
+    "Controller", "Treasurer", "Secretary", "Operator", "Technician",
+    "Coordinator", "Associate", "Assistant", "Partner", "Principal",
+    "Executive", "Apprentice", "Intern", "Graduate",
+  ];
+  const titleRegex = new RegExp(
+    `\\b([A-Z][a-z]+(?:\\s+[A-Z][a-z]+){0,3}\\s+(?:${ROLE_TITLE_ENDINGS.join("|")}))\\b`,
+    "g"
+  );
+  for (const m of master.matchAll(titleRegex)) {
+    anchors.add(m[1]);
+  }
+
+  // Degree close: degree class + degree type + university.
+  // Degree class: "First-Class", "Upper Second", "2:1", "2.1", "First", etc.
+  // We pin the strongest discriminators: classification phrase and university name.
+  const classMatch = master.match(
+    /\b(First[- ]Class|Upper Second|Lower Second|Distinction|Merit|2[:.][12]|First|Second[- ]Class)\b/i
+  );
+  if (classMatch) anchors.add(classMatch[0]);
+
+  // University / institution: "X University", "University of Y", "City University".
+  const uniMatch =
+    master.match(/\b(?:University of [A-Z][\w]+(?:\s+[A-Z][\w]+){0,3})\b/) ||
+    master.match(/\b([A-Z][\w]+(?:\s+[A-Z][\w]+){0,3}\s+(?:University|College|School|Institute))\b/);
+  if (uniMatch) anchors.add(uniMatch[0]);
+
+  // Degree type — BA, BSc, MA, MSc, MBA, etc.
+  const degMatch = master.match(
+    /\b(BA|BSc|BEng|MA|MSc|MEng|MBA|MFin|MPhil|PhD|ACA|ACCA|CFA|MRICS|FRICS)\b/
+  );
+  if (degMatch) anchors.add(degMatch[0]);
+
+  return Array.from(anchors);
 }
 
-export function verifyEntitiesPreserved(
-  original: string,
-  adapted: string
-): { preserved: boolean; missing: string[] } {
-  const entities = extractNamedEntities(original);
-  if (entities.length === 0) return { preserved: true, missing: [] };
-  const adaptedLower = adapted.toLowerCase().replace(/\s+/g, " ");
-  const missing: string[] = [];
-  for (const e of entities) {
-    const needle = e.toLowerCase().replace(/\s+/g, " ");
-    if (!adaptedLower.includes(needle)) missing.push(e);
-  }
-  return { preserved: missing.length === 0, missing };
+// ── Emphasis-aware Adapt system prompt ──────────────────────────────────────
+// Used by the per-CV "Adapt to this JD" button. The model is given BOTH the
+// Master (the user's universal best) AND the FactBase (every claim they have
+// evidence for) and asked to RE-EMPHASISE the Profile around the JD's
+// weight. Universal anchors (brand-tier prior employer, degree close) MUST
+// survive. S2 scope anchor and S3 distinctive claim can shift between
+// FactBase claims to better fit the JD.
+function buildAdaptEmphasisSystemPrompt(opts: {
+  exclusions: string[];
+  universalAnchors: string[];
+  targetRoleFamily?: string;
+  targetSector?: string;
+}): string {
+  const { exclusions, universalAnchors, targetRoleFamily = "", targetSector = "" } = opts;
+
+  const exclusionsBlock = exclusions.length > 0
+    ? `\n\nUSER EXCLUSIONS (HARDEST RULE — never include any of these phrases OR concept-level paraphrases of them in the Profile, regardless of JD relevance):
+${exclusions.map((e) => `- ${e}`).join("\n")}
+
+CONCEPT-LEVEL EXCLUSION (CRITICAL): the user is excluding the CONCEPT each phrase represents, not just the literal text. If "supplier performance tracker" is excluded, you must also avoid:
+- "supplier performance tracking system"
+- "supplier performance dashboard"
+- "tracker for supplier performance"
+- "system to track supplier performance"
+- any other phrasing that captures the same underlying claim.
+Paraphrasing around the literal text to dodge the exclusion is NOT compliance. If the underlying concept is excluded, drop the claim entirely and pick a different one from the FactBase.
+`
+    : "";
+
+  const anchorsBlock = universalAnchors.length > 0
+    ? `\n\nUNIVERSAL ANCHORS — these EXACT substrings must appear verbatim in the output Profile (they're credibility signals that travel across applications):\n${universalAnchors.map((a) => `- "${a}"`).join("\n")}\n`
+    : "";
+
+  const familyBlock = targetRoleFamily
+    ? `\n\nMASTER'S TARGET ROLE FAMILY: ${targetRoleFamily}${targetSector ? ` (sector: ${targetSector})` : ""}.
+The candidate has explicitly framed this Master for ${targetRoleFamily} roles. The JD is the primary tailoring signal, but the family adds register: vocabulary, framing, and emphasis should match ${targetRoleFamily} expectations. If the JD points the other way (different family from the Master), prefer the JD signal — but flag implicitly that the Master may be a poor fit by surfacing only the most transferable claims.
+
+If ${targetRoleFamily} is a niche or custom family (not a household-name profession), treat it as authoritative — use your general knowledge of that field's CV-writing register, vocabulary, and recruiter expectations. Don't second-guess the user's chosen target.
+`
+    : "";
+
+  return `You take a candidate's Master Profile + their FactBase + a specific JD, and produce a JSON object: { "summary": string } — a Profile RE-EMPHASISED around the JD's weight.
+
+YOUR JOB IS TO RE-EMPHASISE. The Master is the candidate's universally strongest Profile. For a specific JD, a different subset of their FactBase claims may carry more weight. Pick the 2-3 claims (from Master OR FactBase) that best match the JD's priorities, and structure the Profile around them.
+
+PROCESS (follow exactly):
+1. Read the JD. List its top 3-5 requirements / themes / vocabulary.
+2. Read the Master AND the FactBase. The Master shows the user's curated best wording; the FactBase shows ALL claims they have evidence for — including ones not yet in the Master.
+3. Score each FactBase claim against JD weight:
+   (a) Direct keyword/concept match against JD
+   (b) Concrete outcome / scope / quantified anchor
+   (c) Distinctiveness — how uncommon is this claim?
+   (d) Reframability — how cleanly does it map onto JD vocabulary?
+4. Pick the top 2-3 claims for the Profile body (S2 + S3). These may differ from the Master's S2/S3 if the JD demands different emphasis. It is EXPECTED and CORRECT for the Adapt output to differ structurally from the Master when the JD calls for it.
+5. Use JD vocabulary wherever it accurately describes the candidate's claim. Don't change the underlying concept, just the word.
+6. Build the Profile around the picked claims, applying all standard Profile rules.
+
+WHAT CAN CHANGE FROM THE MASTER:
+- Which scope anchor lives in S2 (the Master may say "2x revenue growth"; for a JD about supplier risk you might pick "12 overseas suppliers" or "£X recovered" instead — if those are in the FactBase).
+- Which distinctive claim lives in S3 (e.g. ERP co-design in the Master, swapped for supplier scorecard or weekly senior reporting if the JD asks for those).
+- Sector context in S1.
+- Vocabulary throughout — use JD terminology when it matches the candidate's actual work.
+- You MAY drop a Master claim to make room for a stronger JD-aligned FactBase claim.
+- You MAY pull in a FactBase claim that wasn't in the Master.
+
+WHAT MUST NOT CHANGE:
+- Universal anchors (listed below) — these are credibility signals that travel across every application and must appear verbatim.
+- Truth Contract — every claim must trace to the Master OR the FactBase. Never invent.
+- Named entities — when you USE them, preserve verbatim. Don't swap "ERP" for "supplier tracker" or "Siemens" for "JLR". (You can choose to use a different entity in a different sentence, but each entity's spelling and meaning must match the FactBase.)
+- Numerical claims — preserve scale exactly. "2x growth" stays "2x growth", never "3x" or "significant".
+- Current role identity — the Master's role title (e.g. "Supply Chain Analyst") must lead S1.
+- ROLE TITLES (HARDEST): if the Master names a specific role title (e.g. "Project Coordinator", "Marketing Manager", "Software Engineer"), preserve that EXACT title verbatim. NEVER soften "Project Coordinator placement" into "programme coordination" or "Marketing Manager" into "marketing leadership". Role titles are truth-grounded facts — soften the title and you mis-represent the candidate. If the Master mentions a "placement", "internship", "secondment", "scheme", or "rotation", preserve that word too — it's part of the role description.
+
+EMPLOYER-NAME RULE (HARD):
+- Brand-tier employers (FTSE 100, S&P 500, FAANG, MBB, Magic Circle, Big 4, household-name) MAY appear in S1 or S4 — they're credibility signals.
+- Non-brand-tier employers (small businesses, scale-ups, niche firms) MUST NOT appear in the Profile body. They live in the Experience section. Writing "Scaled [SmallBusinessName]'s supply chain through 2x growth" is WRONG — write "Scaled the supply chain through 2x growth" instead. The recruiter learns the employer name from the Experience section heading; repeating it in the Profile wastes precious words and reads clunky.
+- Possessive employer constructions ("X's supply chain", "Y's procurement function") are particularly bad — drop the possessive and refer to the function generically ("the supply chain", "the function").${anchorsBlock}${familyBlock}
+
+PROFILE RULES (HARD — same as Master generation):
+
+LENGTH: 60-100 words, 3-5 sentences, paragraph not bullets. Each sentence must be readable in one breath (≤22 words). If you need 5 short tight sentences instead of 3 long compound ones, use 5. Total word count matters more than sentence count; tight readability matters more than either.
+
+VOICE — IMPLIED FIRST PERSON: never "I/my/me"; never third-person -s verbs about the candidate at sentence start ("Produces", "Holds", "Manages"). State actions directly.
+
+STRUCTURE — STRICT SENTENCE-ROLE SEPARATION:
+S1 = role + work breadth + sector context. NO scope anchor. NO sole/ownership claim.
+S2 = dominant scope anchor PAIRED with ONE specific named action. Single-signal S2 is insufficient. Pick ONE action — never jam multiple actions into S2.
+S3 = ONE distinctive claim with ONE specific named item. Pick the strongest signal for this JD: ownership ("Sole [role]"), named system ("ERP", "supplier scorecard"), or named outcome ("recovered £40k of refunds"). DO NOT chain two distinct actions into S3 (e.g. "switched logistics partners AND recovered refunds" is two actions — pick one). Two-action S3 is multi-action jam and reads as muddled.
+S4 = fact-anchored close (degree+classification+university) OR named target. Never generic aspiration.
+
+ANCHORS-APPEAR-ONCE: scope anchor in S2 only; sole/ownership in S3 only; role title in S1 only.
+
+NO TRICOLONS (no "X, Y, and Z" lists). NO em-dashes. NO opening adjective stack. NO closing aspiration ("seeking to leverage…"). NO defensive hedge openings ("Outside a formal X,", "Despite no formal Y,", "Without formal Z," — the action stands as evidence; the hedge signals deficit instead of strength).
+
+BANNED VOCABULARY: spearhead, leverage, orchestrate, championed, drove, pioneered, synergise, utilise, streamline, robust, seamless, cutting-edge, results-driven, passionate, dynamic, proven, demonstrated, hands-on, forward-thinking, fast-paced, world-class, best-in-class, value-add, absorbing.
+
+UK ENGLISH throughout: organise, specialise, analyse, optimise, programme, colour. Never American spellings.
+
+CRITICAL — DO NOT default to "the Master is already good, return it verbatim". The Master was generated WITHOUT this JD in context. With the JD now in context, the right Profile may emphasise different claims. Be honest about which FactBase claims best match THIS JD's weight, and structure the Profile around them. Only return the Master verbatim if you've genuinely audited the FactBase and the Master's existing emphasis is already optimal for this JD.${exclusionsBlock}
+
+Return ONLY the JSON object: { "summary": string }.`;
 }
 
 // ── Verify-after-rewrite loop for Master / Master-tailored output ────────────
@@ -598,8 +917,29 @@ async function runProfileScannersAndRewrite(args: {
   isMaster: boolean;
   jdText?: string;
   exclusions?: string[];
+  // Career-changer mode context. When targetRoleFamily is set AND
+  // factbaseFitForFamily is "transferable" or "minimal", the critic
+  // additionally runs the career-changer scanners (pivot signal in S1,
+  // S2 bridge to family, named-target close in S4). These are deterministic
+  // enforcement of rules the prompt alone doesn't reliably hold.
+  targetRoleFamily?: string;
+  factbaseFitForFamily?: "strong" | "transferable" | "minimal";
 }): Promise<string> {
-  const { summary, factbaseText, factbaseFromFactBase, connectedProviders, systemPrompt, isMaster, jdText, exclusions = [] } = args;
+  const {
+    summary,
+    factbaseText,
+    factbaseFromFactBase,
+    connectedProviders,
+    systemPrompt,
+    isMaster,
+    jdText,
+    exclusions = [],
+    targetRoleFamily = "",
+    factbaseFitForFamily = "strong",
+  } = args;
+  const careerChangerActive =
+    !!targetRoleFamily.trim() &&
+    (factbaseFitForFamily === "transferable" || factbaseFitForFamily === "minimal");
 
   // Build a minimal TailoredCV stub for the scanners. Scanners only read
   // .summary and .roles[0].company for the brand-tier check. Everything else
@@ -644,10 +984,40 @@ async function runProfileScannersAndRewrite(args: {
     const stub = buildStub(current);
     const flagged = [
       ...scanProfile(stub),
+      // scanBannedPhrases catches AI-tell vocabulary the structural Profile
+      // scanners don't cover: "actionable [X]", "spearhead", "leverage",
+      // "delve", "robust", etc. Without this, banned phrases sail through
+      // the Adapt + Master Profile critic loops untouched.
+      ...scanBannedPhrases(stub),
       ...scanProfileSectorInvention({ summary: current, factbaseText }),
       ...scanExcludedPhrases({ summary: current, exclusions }),
+      // Career-changer scanners — deterministic enforcement of pivot
+      // signal in S1, family-bridge clause in S2, and named-target close
+      // in S4. Only run when career-changer mode is active (target family
+      // set AND FactBase fit is transferable/minimal). The prompt alone
+      // doesn't reliably hold these rules — the scanner does.
+      ...(careerChangerActive
+        ? scanProfileCareerChangerMode(stub, targetRoleFamily)
+        : []),
+      // Sole-vs-FactBase: catches "Built from scratch" / "Sole builder" /
+      // "single-handedly" claims when the FactBase contains collaborative
+      // wording. Truth Contract enforcement — model can't inflate shared
+      // work into solo authorship to make claims sound stronger.
+      ...scanProfileSoleClaimVsFactBase(stub, factbaseText),
+      // Scope-anchor enforcer: if the FactBase contains a quantified scope
+      // anchor (Nx growth, £X, N suppliers, N%, etc.) and the Profile body
+      // surfaces none of them, flag and force rewrite. Catches the recurring
+      // career-changer regression where the model drops the scope anchor
+      // to make room for the bridge clause.
+      ...scanProfileScopeAnchorVsFactBase(stub, factbaseText),
     ];
-    if (flagged.length === 0) return current;
+    if (flagged.length === 0) {
+      // Final safety net — even if no flags, run deterministic em-dash kill
+      // to catch any em-dash variant that snuck past the scanner edge cases
+      // (the scanner is regex-based and we'd rather guarantee no em-dash
+      // ships than rely on perfect scanner coverage).
+      return killAbsorbingDeterministic(killEmDashesDeterministic(current));
+    }
 
     // Bucket recurrences so we know which rule is being stubborn.
     for (const f of flagged) {
@@ -713,8 +1083,12 @@ Return ONLY a JSON object: { "summary": string }.`;
     }
   }
   // After all attempts, return whatever we have — better than blocking.
+  // Final deterministic kills guarantee neither em-dash variants NOR
+  // "absorbing/absorbed" ship even when the model couldn't fix across
+  // MAX_ATTEMPTS rewrites. These are the absolute backstops for the two
+  // most persistent Claude tells in CV generation.
   void isMaster;
-  return current;
+  return killAbsorbingDeterministic(killEmDashesDeterministic(current));
 }
 
 // Bucket an issue phrase into a short stable key so we can count recurrences
@@ -736,6 +1110,25 @@ function bucketIssue(phrase: string): string {
   if (/no specific named item|s3 contains no named/.test(p)) return "s3-strength";
   if (/length is/.test(p)) return "length";
   if (/uniform length/.test(p)) return "variance";
+  // High-frequency banned verbs that the model keeps producing despite the
+  // critic — these get their own buckets so the single-rule fallback at
+  // attempt 3+ specifically targets them with concrete restructuring guidance
+  // (see buildFixGuidance).
+  if (/\babsorb(?:ing|ed|s)?\b/.test(p)) return "absorbing";
+  if (/\bactionable\b/.test(p)) return "actionable";
+  if (/sector descriptor .* no scale or position signal/.test(p)) return "descriptor-without-scale";
+  // Career-changer scanner buckets — when these recur across attempts the
+  // focused-rule fallback can apply each rule individually rather than
+  // overwhelming the model with the full multi-rule prompt.
+  if (/lacks an explicit pivot signal/.test(p)) return "pivot-signal";
+  if (/s2 does not bridge/.test(p)) return "s2-bridge";
+  if (/lacks a named-target close/.test(p)) return "named-target-close";
+  if (/self-contradiction.*sole/.test(p)) return "sole-vs-co";
+  if (/profile claims sole authorship.*factbase contains collaborative/i.test(p)) return "sole-vs-factbase";
+  if (/profile body has no quantified scope anchor/i.test(p)) return "scope-anchor-missing";
+  if (/possessive non-brand-tier employer/i.test(p)) return "possessive-employer";
+  if (/passive 'exposure to'|familiarity with|working knowledge of/i.test(p)) return "passive-exposure";
+  if (/abstract noun stack/i.test(p)) return "abstract-noun-stack";
   return "other";
 }
 
@@ -870,32 +1263,174 @@ function serialiseWizardContext(wc: WizardContextLib): string {
 // Master Profile system prompt — same Profile rules as the JD-tailored version
 // but written for the canonical version. We import the rules text from tailor.ts
 // to keep them in sync.
-function buildMasterSystemPrompt(exclusions: string[] = []): string {
+function buildMasterSystemPrompt(
+  exclusions: string[] = [],
+  targetRoleFamily: string = "",
+  targetSector: string = "",
+  factbaseFitForFamily: "strong" | "transferable" | "minimal" = "strong",
+  transferableAngles: string[] = []
+): string {
   const exclusionsBlock = exclusions.length > 0
     ? `\n\nUSER EXCLUSIONS (HARDEST RULE — never include these in the Profile, regardless of FactBase content or how relevant they seem):\n${exclusions.map((e) => `- ${e}`).join("\n")}\n`
     : "";
 
+  // Target-family block. When the user has declared a target role family,
+  // the Master is framed for that family — surfacing FactBase evidence
+  // that maps onto it and using its vocabulary. The Truth Contract still
+  // holds: never fabricate experience to fit the target. If FactBase
+  // evidence is thin for the target family, use the strongest reframable
+  // claims that DO exist.
+  const targetFamilyBlock = targetRoleFamily
+    ? `
+
+TARGET ROLE FAMILY (CRITICAL — shapes EVERY structural choice):
+This Master is being drafted for someone targeting **${targetRoleFamily}** roles${targetSector ? ` in the **${targetSector}** sector` : ""}.
+
+How to apply this target:
+1. EMPHASIS: surface the FactBase claims most relevant to ${targetRoleFamily}. If the candidate has supply-chain experience but is targeting consulting, lead with the analytical + stakeholder-reporting + structured-problem-solving angles, not the operational procurement angles. Different family = different emphasis on the same FactBase.
+2. VOCABULARY: use ${targetRoleFamily}-recognised terms wherever they accurately describe the candidate's actual work. NEVER substitute a ${targetRoleFamily} term for something the candidate didn't actually do.
+3. TRUTH CONTRACT (HARDEST): you may REFRAME existing claims; you may NOT INVENT ${targetRoleFamily}-specific experience. If the FactBase doesn't support a specific ${targetRoleFamily} capability, do not claim it. Use the strongest reframable evidence the candidate DOES have.
+4. REFRAMING EXAMPLES (illustrative — apply the same logic to the candidate's real claims):
+   - Supply Chain → Consulting: "managed supplier relationships across 12 overseas markets" → "structured stakeholder coordination across 12 international counterparties"
+   - Marketing → Product Management: "led a brand launch campaign" → "led a cross-functional launch from positioning to GTM execution"
+   - Teaching → Data Analytics: "designed and delivered a 6-month curriculum" → "designed and delivered a structured 6-month analytical programme"
+5. CREDIBILITY ANCHORS: brand-tier prior employers (Siemens, McKinsey, Goldman, etc.) and First-Class degrees travel across families — always surface them.
+6. NO FALSE CONFIDENCE: if the candidate has zero ${targetRoleFamily}-relevant experience, the honest Profile reflects that — lead with transferable skills + clear career-changer framing (template B below). Do NOT pretend the candidate has done ${targetRoleFamily} work they haven't.
+7. CUSTOM / NICHE FAMILY HANDLING: if ${targetRoleFamily} isn't a household-name family (e.g. "Investment Banking", "Marketing" are well-known; "Underwater Welding Inspection", "Equestrian Sports Management" are niche), treat the candidate's chosen target as AUTHORITATIVE. Use your general knowledge of that field's CV-writing register — what recruiters in that field scan for, what vocabulary they use, what credentials matter — and apply it. Don't second-guess the user's chosen target or default to a generic Profile.
+`
+    : "";
+
+  // FORCED CAREER-CHANGER block. When the upstream gap detector classifies
+  // the FactBase fit for the target family as "transferable" or "minimal",
+  // we explicitly REQUIRE the Career-Changer template — no risk of the
+  // model accidentally picking Achievement-Led and producing a confident-
+  // sounding Profile for a role the candidate hasn't actually done. This is
+  // the "Supply Chain → Law" honest-pivot handling.
+  const careerChangerBlock =
+    targetRoleFamily && (factbaseFitForFamily === "transferable" || factbaseFitForFamily === "minimal")
+      ? `
+
+CAREER-CHANGER MODE (FORCED — gap detector classified FactBase fit for ${targetRoleFamily} as "${factbaseFitForFamily}"):
+The candidate does NOT have direct ${targetRoleFamily} experience in their FactBase. They are PIVOTING into ${targetRoleFamily}. You MUST use the CAREER-CHANGER template (template B below), not Achievement-Led. Failing to do so produces a Profile that misrepresents the candidate.
+
+Mandatory career-changer structure:
+- S1 = current role + EXPLICIT PIVOT signal toward ${targetRoleFamily}, AND surface the brand-tier prior-employer bridge where one exists. Example: "Supply Chain Analyst pivoting to ${targetRoleFamily}, building on a placement at Siemens DISW." (Siemens DISW is the credibility bridge — keep it.) Without brand-tier prior employer: "Marketing Manager moving into ${targetRoleFamily}, with [transferable angle] from current role."
+- S2 = transferable skills with the candidate's scope anchor, phrased AS THE BRIDGE from current work to ${targetRoleFamily}. The scope anchor (2x growth, £40M, 12 suppliers) stays, but the ACTION paired with it must explicitly frame what transfers to ${targetRoleFamily}. The recruiter must see in S2 WHY the candidate's existing work makes them credible for ${targetRoleFamily}.
+
+  NOT acceptable (pure operational — doesn't bridge): "Scaled the supply chain through 2x revenue growth, managing higher PO volumes."
+
+  Acceptable shapes for S2 (DO NOT COPY THESE PHRASINGS VERBATIM — they are structural illustrations only; write your own naturally-phrased version using the candidate's actual FactBase):
+  • Scope anchor + active-verb work clause with ${targetRoleFamily}-relevant terms drawn from the FactBase (contracts, compliance, regulatory, etc. for Legal targets).
+  • Scope anchor as one short sentence, ${targetRoleFamily}-bridge clause as a second short sentence.
+
+  CRITICAL: do NOT write phrases like "the operational counterpart of [family] practice" or other tagline-style summaries. These read as model-tells. Frame the bridge as concrete work the candidate does, in natural English.
+- S3 = ONE distinctive transferable claim with a NAMED specific item — built system, named brand collaborator, recovered amount, specific deliverable. This is the candidate's proof of CAPABILITY (which transfers) even though they lack DOMAIN expertise (which doesn't).
+- S4 = fact-anchored close (degree + classification + uni + sub-details) PLUS named target: "Targeting a [specific ${targetRoleFamily} role] at [employer-type appropriate to the candidate's level]." Example: "First-Class Business with Marketing BA from Birmingham City University, averaging over 80% in the final year and finishing top of the cohort. Targeting a graduate solicitor training contract."
+
+HARD RULES IN CAREER-CHANGER MODE:
+- NEVER claim domain expertise the candidate doesn't have. No "experienced in legal practice", "with ${targetRoleFamily} background", etc.
+- ALWAYS explicitly frame the pivot in S1 — the recruiter MUST be able to tell within the first sentence that this is a career-changer Profile, not a confused domain-expert one. Pivot signals: "pivoting to", "moving into", "transitioning to", "career-changing into", "applying [current skills] to ${targetRoleFamily}".
+- BRAND-TIER PRIOR EMPLOYER (STRONG PREFERENCE — same rule as non-career-changer Profiles): if the FactBase contains a brand-tier prior employer (Siemens, McKinsey, Goldman, FAANG, Big 4, Magic Circle, etc.), prefer to surface it as a career-narrative bridge in S1 or as part of the S4 close. Career-changer mode does NOT suppress this — a brand-tier prior employer is even more valuable in a pivot Profile because it tells the recruiter the candidate is hireable across orgs. You may still omit it if including it creates a structural problem (word count overflow, sentence-role conflict), but the default is INCLUDE.
+- S2 BRIDGE-FRAMING (HARD): S2 must NOT be the standard non-career-changer S2. The action paired with the scope anchor must explicitly frame the bridge to ${targetRoleFamily}. If you produce an S2 that reads as pure current-domain operational work with no bridge to ${targetRoleFamily}, the Profile reverts to looking confused — like the candidate doesn't know they're pivoting. The bridge can be a single clause ("with daily exposure to [X relevant to ${targetRoleFamily}]") but it must be there.
+- Use the transferable angles below as your guide — these are the strongest bridges from the candidate's FactBase to ${targetRoleFamily}.
+${
+  transferableAngles.length > 0
+    ? `\nTRANSFERABLE ANGLES (from gap detector — lead with these):\n${transferableAngles.map((a) => `- ${a}`).join("\n")}\n`
+    : ""
+}
+The CAREER-CHANGER template is HONEST positioning, not weakness. It tells the recruiter: "I haven't done ${targetRoleFamily} yet, but here's why my actual experience prepares me for it." That framing converts when it's true — and never converts when it's hidden behind fake confidence.
+`
+      : "";
+
   return `You produce a UK CV "Profile" section — the 3-4 sentence summary at the top of a CV. The output is a JSON object: { "summary": string }.
 
-Apply ALL of these rules. Every rule is hard.${exclusionsBlock}
+Apply ALL of these rules. Every rule is hard.${exclusionsBlock}${targetFamilyBlock}${careerChangerBlock}
+
+USER-WIZARD-CONTEXT HANDLING (CRITICAL for SaaS UX):
+When wizard / gap-question answers appear in the user prompt (under "USER-PROVIDED CONTEXT"), the user's answers may be terse, fragmentary, mis-capitalised, or written in casual register — e.g. "i deal with supplier contracts sometimes", "no", "commercial law", "yeah at uni i did a module on it". These are NORMAL real-world inputs, not failures.
+
+RULES:
+- TREAT every user answer as authoritative TRUTH, even when it's short.
+- EXTRACT maximum signal from terse input. "i deal with supplier contracts" → surface "supplier contract review and negotiation" as a real claim in the Profile. "commercial law" as a target preference → frame the close as "Targeting a commercial law role".
+- NEVER reject user input as "too short" or "unclear". If the user wrote anything, USE it — that's their answer.
+- ELABORATE the user's terse phrasing into proper CV register in the Profile. Their answer is signal; your job is to convert signal into polished CV language without losing or inverting the meaning.
+- DO NOT add details the user didn't provide. If they wrote "i deal with supplier contracts sometimes", DON'T expand to "I review and negotiate supplier contracts across 12 international counterparties weekly" — only "supplier contract review" is grounded. Stay within the user's actual signal; just polish the language.
+- If the user answered "no" or "n/a" or skipped a question, that's also data — don't surface a claim about that dimension.
 
 UK ENGLISH (NON-NEGOTIABLE):
 - British spelling throughout: organise, specialise, analyse, optimise, programme, colour, behaviour, fulfil, recognise, centre, favourite, labour.
 - UK conventions: "First-Class" (degree class), "BA / BSc / MEng / MSc" (post-nominal letters), pound sterling for money.
 - Never use American spellings like organize, specialize, analyze, color, behavior, etc.
 
-LENGTH: 60-100 words, 3-4 sentences, paragraph not bullets.
+LENGTH: 60-100 words, 3-5 sentences, paragraph not bullets. Each sentence must be readable in one breath (≤22 words). If you need 5 short tight sentences instead of 3 long compound ones, use 5. Total word count matters more than sentence count; tight readability matters more than either.
 
 VOICE — IMPLIED FIRST PERSON (NON-NEGOTIABLE):
 - Never use "I", "I'm", "I've", "my", "me".
 - Never use third-person verbs about the candidate at sentence start: "Produces…", "Holds…", "Brings…", "Manages…", "Owns…", "Runs…", "Analyses…", "Leads…", "Designs…", "Builds…" etc.
 - Implied first person — state actions and facts directly.
 
+HUMAN-READABILITY (HARD — write like a human, not like a system):
+
+1. ONE-BREATH SENTENCE TEST: every sentence in the body must be readable IN ONE BREATH by a recruiter scanning the Profile. If the sentence needs a comma, em-dash, semicolon, or parenthetical aside to keep going, IT IS TOO LONG. Split into two sentences. Hard cap is 22 words per body sentence; aim for 12-18.
+
+   BAD (45-word run-on): "Daily review of supplier contracts covering delivery performance and liability terms, revisiting contract language when disputes or shipment discrepancies arise and recovering refunds on damaged stock through that process, scaling these responsibilities through a period of 2x revenue growth as supplier and order complexity increased."
+   GOOD (two sentences, ~16 words each): "Reviews supplier contracts daily for delivery and liability terms, recovering refunds on damaged stock during disputes. Scaled this work through 2x revenue growth as supplier complexity increased."
+
+2. NO NOMINALISATIONS — prefer the active verb / active gerund over the noun-form of the verb. The candidate DOES things; describe the doing with verbs, not noun phrases. THIS RULE ALSO APPLIES INSIDE COMPOUND SENTENCES, not just at sentence start.
+
+   BAD: "with daily review of supplier contracts for delivery and liability terms" (nominalised — "review" as noun, hidden inside "with daily X of Y" construction)
+   GOOD: "reviewing supplier contracts daily for delivery and liability terms" (active gerund)
+   GOOD: "with supplier contracts reviewed daily for delivery and liability terms" (also acceptable — passive but still verb-form)
+
+   BAD: "Daily review of supplier contracts" (sentence-start nominalisation)
+   GOOD: "Reviews supplier contracts daily" (active verb)
+
+   BAD: "Ongoing management of overseas suppliers"
+   GOOD: "Manages overseas suppliers" / "Managing overseas suppliers"
+
+   BAD: "Continuous oversight of procurement workflows"
+   GOOD: "Oversees procurement workflows" (or restructure entirely)
+
+   THE DEAD GIVEAWAY PATTERNS to find-and-replace in your output:
+   - "with [adv] [noun-form] of X" → "with X [verb-formed-from-noun-form]" (e.g. "with daily review of contracts" → "with contracts reviewed daily" OR full restructure to "reviewing contracts daily")
+   - "[Adverb] [noun-form] of X" at sentence start → "[Verb-form] X [adverb]"
+   - "[Adjective] [noun-form] of X" → restructure to verb-led claim
+
+3. NO PARENTHETICAL ASIDES via em-dash, semicolon, or stacked subordinate clauses. If you find yourself reaching for "— scaling these responsibilities through…" or "; covering all of…", the structure is wrong. Make the parenthetical content its own sentence, or drop it.
+
+4. NO "X-ING THESE Y AS Z" patterns ("scaling these responsibilities through 2x revenue growth as supplier complexity increased"). Stiff and over-engineered. Restructure as a separate clean sentence with subject + verb + object.
+
+5. CONVERSATIONAL REGISTER — imagine reading the Profile aloud at a job interview. If a sentence sounds stilted, stiff, or over-engineered when read aloud, rewrite it until it sounds like something a human would actually say. Test: would the candidate themselves say this in conversation? If no, rewrite.
+
+6. PREFER VERBS OVER NOUN STACKS — three abstract nouns in a row is always wrong. "Primary operational data structure" is three nouns; "the team's main system for stock reconciliation" is concrete. Replace abstract-noun stacks with concrete descriptions.
+
 STRUCTURE — STRICT SENTENCE-ROLE SEPARATION:
 S1 = role + work breadth + sector context. NO scope anchor. NO sole/ownership claim.
 S2 = the dominant scope anchor PAIRED with a specific named action that delivered it. The number/scale lives HERE only. Single-signal S2 is insufficient.
 S3 = ONE distinctive ownership/breadth claim with a NAMED specific item (system/brand/project/tool/outcome/count). Generic scope phrases like "from X through to Y" or "end-to-end ownership" are insufficient.
 S4 = close. Fact-anchored (degree+classification+university) OR named target. Never generic forward-looking aspiration.
+
+SCOPE-ANCHOR PRESERVATION (HARD — common AI failure):
+When the FactBase contains a quantified scope anchor — Nx revenue growth, £X spend / revenue / saved / recovered, N suppliers / countries / sites / staff managed, N% delta — the Profile body (S2 specifically) MUST surface it. Quantified scope is the single most credible recruiter signal at any candidate level; dropping it to make room for sector reframing or bridge clauses is a generator weakness.
+
+Examples:
+- FactBase has "scaled supply chain through 2x revenue growth" → S2 MUST include "2x revenue growth" (or equivalent number-bearing phrasing). NOT acceptable: an S2 that describes the work without the 2x.
+- FactBase has "recovered £40k in supplier refunds" → S2 or S3 MUST include "£40k" (or "tens of thousands in supplier refunds" if exact figure isn't certain).
+- FactBase has "12 overseas suppliers" → S2 or S3 MUST name the count, not just "overseas suppliers".
+
+When generating a career-changer Profile (target family differs from current), the scope anchor STILL appears in S2, paired with a bridge clause to the target family. Both at once. Example: "Scaled the supply chain through 2x revenue growth, with daily review of supplier contracts for delivery and liability terms." The scope anchor (2x) AND the bridge (contract review) coexist. Dropping the scope anchor to make room for the bridge is a generator error.
+
+If a scope number is in the FactBase but absent from the Profile body, the post-generation assessor will flag it as a high-impact missing surface — the generator should pre-empt this by including the number from the first pass.
+
+S4 DEGREE-DETAIL PRESERVATION (HARD):
+When the FactBase contains degree-detail items beyond the bare "First-Class BA from [Uni]" — such as average percentage ("averaging over 80% in the final year"), cohort position ("finishing top of the cohort"), Dean's list, distinction-in-thesis, scholarship — SURFACE THEM in S4. These are credibility multipliers that travel across every application and cost only 6-10 words. Word count is rarely the constraint at 60-100 words; trim S1-S3 filler before dropping a degree sub-detail.
+
+EXAMPLES:
+- FactBase has "First-Class BA, BCU, avg 80%, top of cohort" → S4 should be: "First-Class Business with Marketing BA from Birmingham City University, averaging over 80% in the final year and finishing top of the cohort." (NOT: "First-Class Business with Marketing BA from Birmingham City University." — that drops 14 words of credibility detail.)
+- FactBase has "Distinction MSc, LSE, dissertation top 5%" → S4 should be: "Distinction MSc Economics from LSE, dissertation graded in the top 5% of the cohort."
+- FactBase has only "First-Class BA, BCU" (no extra detail) → S4 is the short form: "First-Class Business with Marketing BA from Birmingham City University."
+
+The rule: if the detail exists in the FactBase, it belongs in S4 unless including it would force the Profile over 100 words AFTER trimming non-credibility filler from S1-S3.
 
 ANCHORS-APPEAR-ONCE:
 - Scope anchor (numbers/scale) lives in S2 only — NOT in S1, NOT in S3.
@@ -904,7 +1439,45 @@ ANCHORS-APPEAR-ONCE:
 
 EMPLOYER-NAME RULE: include current employer name in S1 only if brand-tier (FTSE 100, S&P 500, FAANG, MBB, Magic Circle, Big 4, household-name). Otherwise omit — employer lives in Experience section.
 
-BRAND-TIER PRIOR-EMPLOYER RULE (NON-NEGOTIABLE): if the FactBase contains ANY brand-tier prior employer (FTSE 100, S&P 500, FAANG, MBB, Magic Circle, Big 4, household-name unicorn — e.g. Siemens, Goldman Sachs, McKinsey, JLR, PwC, Apple, Google, Stripe, Anthropic), you MUST surface that employer in the Profile. This is non-optional credibility signal that travels across applications. Place it where it fits — as a career-narrative bridge in S1 ("…building on a Project Coordinator placement at Siemens DISW") or as the close in S4 — but include it. Dropping a brand-tier prior employer for any reason is a critical omission.
+EMPLOYER-SECTOR-DESCRIPTOR RULE (HARD — common AI failure mode):
+If the current employer is NOT brand-tier, you MAY include a sector descriptor in S1 ("at a [descriptor]") ONLY IF the descriptor carries a REAL SIGNAL — meaning at least one of:
+- £/$/€-figure scale: "at a £10M D2C consumer-goods business"
+- Counted entities: "at a 200-person SaaS scale-up", "at a 12-country FMCG operator"
+- Top-N market position: "at a top-3 UK home-decor retailer", "at the UK's largest pet-food brand"
+- Named geographic market context: "at an FMCG export business serving EU and US"
+- FTSE/listed / brand-adjacent signal: "at a FTSE-listed insurer", "at a private-equity-backed scale-up"
+
+Decorative descriptors are BANNED — even if grounded in FactBase:
+- "at a D2C eyewear brand" — BANNED (no scale, no position, no named market)
+- "at a growing / innovative / leading / dynamic / best-in-class / forward-thinking [sector]" — BANNED (adjective filler)
+- "at an independent / boutique / established [sector]" — BANNED (descriptor without signal)
+- "at a [sector] company" — BANNED (no signal at all)
+
+If you don't have a real scale / position / market signal in the FactBase, OMIT the descriptor entirely. Lead S1 with role + work scope only ("Supply Chain Analyst working across procurement and demand planning across an overseas supply base…"). Adding a decorative descriptor to "round out" S1 is a known AI tell and burns words without adding recruiter signal.
+
+BRAND-TIER PRIOR-EMPLOYER RULE (STRONG PREFERENCE): if the FactBase contains a brand-tier prior employer (FTSE 100, S&P 500, FAANG, MBB, Magic Circle, Big 4, household-name unicorn — e.g. Siemens, Goldman Sachs, McKinsey, JLR, PwC, Apple, Google, Stripe, Anthropic), prefer to surface it in the Profile — typically as a career-narrative bridge in S1 ("…building on a placement at Siemens DISW") or as part of the close in S4. It's a credibility signal that travels across applications. You may omit it ONLY when including it would create a structural problem (e.g. forced word-count overflow, breaking sentence-role separation) — not as a default choice.
+
+PRIOR-EMPLOYER ROLE-TITLE PRESERVATION (HARD): when surfacing a brand-tier prior employer, preserve the specific role title from the FactBase. Adds credibility specificity at minimal word cost.
+
+GOOD: "building on a Project Coordinator placement at Siemens DISW" (preserves role title)
+BAD: "building on a placement at Siemens DISW" (lost the role title — reads as anonymous association with the brand, weaker signal)
+
+If the FactBase records "Project Coordinator placement at Siemens DISW" or "Summer Analyst internship at Goldman Sachs" or "Spring Week at McKinsey", the Profile must use the same role-title wording. Don't drop the role to save 2 words — the role is half the signal.
+
+PRIOR-EMPLOYER REFRAMING (HARD — Truth Contract):
+When surfacing a prior employer (especially placements, internships, sandwich years, brief rotations), describe the role using WORDS THAT APPEAR IN THE FACTBASE. Do NOT upgrade the role into a sophisticated deliverable to make it fit the target family.
+
+Concrete examples of what's BANNED:
+- FactBase says "Project Coordinator placement at Siemens DISW" + target family is Data → BANNED to write "analysing programme engagement data for senior stakeholders at Siemens DISW" (this invents a specific Data deliverable that may not be in the FactBase).
+- FactBase says "Summer internship at McKinsey" + target family is Product Management → BANNED to write "led cross-functional product launches at McKinsey".
+- FactBase says "Spring week at Goldman Sachs" + target family is Trading → BANNED to write "executed live trades on the desk at Goldman Sachs".
+
+What IS allowed:
+- Preserve the FactBase's wording for the role: "Project Coordinator placement at Siemens DISW" stays as "Project Coordinator placement at Siemens DISW" (or "placement at Siemens DISW").
+- If the FactBase EXPLICITLY says the candidate did X at the prior employer, you may surface that X using the same words.
+- Use the prior employer as a NAMED brand anchor without re-describing the activities ("building on a placement at Siemens DISW. …").
+
+When in doubt, name the employer and leave the role activities at the FactBase wording — the recruiter understands a Siemens placement carries weight regardless of how you frame the day-to-day.
 
 S2 PAIRING RULE: S2 must contain BOTH (i) a scope anchor (£/$/€-figure, growth multiple, count of named entities, before/after delta) AND (ii) a specific named action (built/designed/launched a NAMED system, recovered a NAMED amount, switched a NAMED provider).
 
@@ -916,6 +1489,11 @@ NO TRICOLONS in any sentence (no "X, Y, and Z" lists). Use 2 items max.
 NO em-dashes. Use commas, full stops, or restructure.
 NO opening adjective stack ("Dedicated, organised…").
 NO closing aspiration ("seeking to leverage…", "in a dynamic environment…").
+
+NO DEFINITE-ARTICLE AI-Y PHRASINGS — when the candidate's specific employer is not in the Profile, refer to the function generically using indefinite or possessive constructions, NEVER "the [adj] [noun]" generic phrasings that read as AI-generated:
+- BANNED: "the overseas supply base" / "the wider supplier base" / "the business" (as standalone noun phrase) / "the function" (as standalone subject).
+- GOOD alternatives: "an overseas supplier base" / "overseas suppliers" / "wider supplier base" (no definite article) / "supplier and order data across overseas suppliers" / restructure to attach the noun to a specific verb / count.
+- The rule: "the X base" / "the wider X" reads AI-generic because there's no antecedent. Either name the specific count ("12 overseas suppliers"), use indefinite article ("an overseas supplier base"), or drop the article entirely ("across overseas suppliers").
 
 BANNED VOCABULARY: spearhead, leverage, orchestrate, championed, drove, pioneered, synergise, utilise, streamline, robust, seamless, cutting-edge, delve, embark, results-driven, passionate, dynamic, proven, demonstrated, hands-on, end-to-end (as adjective in S3), forward-thinking, fast-paced, fast-moving, innovative-environment, world-class, best-in-class, hit the ground running, value-add, in today's [X] world.
 

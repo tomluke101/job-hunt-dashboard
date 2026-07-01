@@ -1,12 +1,14 @@
 "use client";
 
 // Multi-Master list. Renders one MasterCard per saved Master, plus an
-// "Add new Master" CTA at the bottom that opens the wizard pre-loaded for
-// new-Master mode. New users (no Masters yet) see an empty-state CTA.
+// "Add new Master" CTA at the bottom that opens the NewMasterModal — where
+// the user picks a target role family before the Master is created. The
+// family is persisted alongside the Master and drives every AI path
+// (generation, gap detection, Adapt) to surface family-relevant evidence.
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Wand2, Loader2, AlertCircle } from "lucide-react";
+import { Plus, Wand2, AlertCircle } from "lucide-react";
 import {
   saveMaster,
   generateMasterProfile,
@@ -14,6 +16,7 @@ import {
 } from "@/app/actions/cv-tailoring";
 import MasterCard from "./MasterCard";
 import ProfileBuilderWizard, { type WizardAnswers } from "./ProfileBuilderWizard";
+import NewMasterModal from "./NewMasterModal";
 
 interface Props {
   initial: MasterProfile[];
@@ -25,34 +28,39 @@ export default function MastersListSection({ initial }: Props) {
   // a mutation; we propagate via router.refresh() and the parent server
   // component re-renders with fresh data. No local list state, no sync bugs.
   const masters: MasterProfile[] = initial;
-  const [isAddingBlank, startAddBlank] = useTransition();
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [newMasterModalOpen, setNewMasterModalOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   function refresh() {
     router.refresh();
   }
 
-  function handleAddBlank() {
+  // Handle submission from NewMasterModal: create an empty Master with the
+  // chosen name + target family. Generation is intentionally deferred —
+  // the user can click "Generate" on the new card and pre-flight gap
+  // detection will fire with the target family in context, producing the
+  // right gap questions for that career direction.
+  async function handleNewMasterSubmit(payload: {
+    name: string;
+    targetRoleFamily: string | null;
+    targetSector: string | null;
+  }): Promise<void> {
     setError(null);
-    startAddBlank(async () => {
-      // Truly empty summary — placeholder is shown as a UI hint inside the
-      // textarea, NOT saved as content. The tailor flow detects empty Master
-      // summary and falls back to AI-generated Profile, so a blank Master
-      // doesn't break a CV until the user fills it in.
-      const r = await saveMaster({
-        name: `Master ${masters.length + 1}`,
-        summary: "",
-        source: "manual",
-        isDefault: masters.length === 0,
-        allowEmpty: true,
-      });
-      if (r.error) {
-        setError(r.error);
-        return;
-      }
-      router.refresh();
+    const r = await saveMaster({
+      name: payload.name,
+      summary: "",
+      source: "manual",
+      isDefault: masters.length === 0,
+      allowEmpty: true,
+      targetRoleFamily: payload.targetRoleFamily,
+      targetSector: payload.targetSector,
     });
+    if (r.error) {
+      throw new Error(r.error);
+    }
+    setNewMasterModalOpen(false);
+    router.refresh();
   }
 
   async function handleWizardSubmit(answers: WizardAnswers): Promise<{ ok: boolean; error?: string }> {
@@ -101,25 +109,15 @@ export default function MastersListSection({ initial }: Props) {
           <div className="flex items-center justify-center gap-2 flex-wrap pt-1">
             <button
               onClick={() => setWizardOpen(true)}
-              disabled={isAddingBlank}
               className="text-xs font-semibold inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-40"
             >
               <Wand2 size={13} /> Build with help
             </button>
             <button
-              onClick={handleAddBlank}
-              disabled={isAddingBlank}
+              onClick={() => setNewMasterModalOpen(true)}
               className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-40"
             >
-              {isAddingBlank ? (
-                <>
-                  <Loader2 size={12} className="animate-spin" /> Adding…
-                </>
-              ) : (
-                <>
-                  <Plus size={12} /> Start blank
-                </>
-              )}
+              <Plus size={12} /> Start blank
             </button>
           </div>
         </div>
@@ -133,6 +131,13 @@ export default function MastersListSection({ initial }: Props) {
           <ProfileBuilderWizard
             onClose={() => setWizardOpen(false)}
             onSubmit={handleWizardSubmit}
+          />
+        )}
+        {newMasterModalOpen && (
+          <NewMasterModal
+            existingNames={masters.map((m) => m.name)}
+            onSubmit={handleNewMasterSubmit}
+            onClose={() => setNewMasterModalOpen(false)}
           />
         )}
       </div>
@@ -156,25 +161,15 @@ export default function MastersListSection({ initial }: Props) {
       <div className="flex items-center gap-2 flex-wrap pt-2">
         <button
           onClick={() => setWizardOpen(true)}
-          disabled={isAddingBlank}
           className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors disabled:opacity-40"
         >
           <Wand2 size={12} /> Build a new Master with help
         </button>
         <button
-          onClick={handleAddBlank}
-          disabled={isAddingBlank}
+          onClick={() => setNewMasterModalOpen(true)}
           className="text-xs font-medium inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-40"
         >
-          {isAddingBlank ? (
-            <>
-              <Loader2 size={12} className="animate-spin" /> Adding…
-            </>
-          ) : (
-            <>
-              <Plus size={12} /> Add a blank Master
-            </>
-          )}
+          <Plus size={12} /> Add a new Master
         </button>
       </div>
 
@@ -189,6 +184,14 @@ export default function MastersListSection({ initial }: Props) {
         <ProfileBuilderWizard
           onClose={() => setWizardOpen(false)}
           onSubmit={handleWizardSubmit}
+        />
+      )}
+
+      {newMasterModalOpen && (
+        <NewMasterModal
+          existingNames={masters.map((m) => m.name)}
+          onSubmit={handleNewMasterSubmit}
+          onClose={() => setNewMasterModalOpen(false)}
         />
       )}
     </div>

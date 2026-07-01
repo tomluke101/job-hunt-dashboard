@@ -1,4 +1,4 @@
-import { User, FileText, Sparkles, Pencil, Settings2, Briefcase, Star } from "lucide-react";
+import { User, FileText, Sparkles, Pencil, Settings2, Briefcase, Star, ShieldOff } from "lucide-react";
 import PageHeader from "@/app/_components/PageHeader";
 import ProfileCompletion from "./_components/ProfileCompletion";
 import ConstantsForm from "./_components/ConstantsForm";
@@ -8,10 +8,11 @@ import SkillsManager from "./_components/SkillsManager";
 import WritingExamples from "./_components/WritingExamples";
 import CoverLetterPrefsForm from "./_components/CoverLetterPrefsForm";
 import MastersListSection from "./_components/MastersListSection";
+import UserExclusionsSection from "./_components/UserExclusionsSection";
 import {
   getProfile, getCVs, getSkills, getWritingExamples, getProfileCompleteness, getCoverLetterPrefs, getEmployers,
 } from "@/app/actions/profile";
-import { getMasterProfiles } from "@/app/actions/cv-tailoring";
+import { getMasterProfiles, getUserExclusions } from "@/app/actions/cv-tailoring";
 
 function Section({ icon: Icon, title, description, children }: {
   icon: React.ElementType;
@@ -38,7 +39,7 @@ function Section({ icon: Icon, title, description, children }: {
 }
 
 export default async function ProfilePage() {
-  const [profile, cvs, skills, writingExamples, completeness, clPrefs, employers, masters] = await Promise.all([
+  const [profile, cvs, skills, writingExamples, completeness, clPrefs, employers, masters, userExclusions] = await Promise.all([
     getProfile(),
     getCVs(),
     getSkills(),
@@ -47,6 +48,7 @@ export default async function ProfilePage() {
     getCoverLetterPrefs(),
     getEmployers(),
     getMasterProfiles(),
+    getUserExclusions(),
   ]);
 
   return (
@@ -97,6 +99,14 @@ export default async function ProfilePage() {
           description="Save one or more canonical Profiles — one per role family you apply to (e.g. supply chain, property, finance). The CV builder uses your default unless you pick a different one."
         >
           <MastersListSection initial={masters} />
+        </Section>
+
+        <Section
+          icon={ShieldOff}
+          title="Profile Exclusions"
+          description="Phrases the AI must never include in any Profile, no matter how relevant the JD looks. Applies globally across every Master."
+        >
+          <UserExclusionsSection initial={userExclusions} />
         </Section>
 
         <Section

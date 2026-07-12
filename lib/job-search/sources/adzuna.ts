@@ -11,6 +11,7 @@
 
 import type { JobSourceAdapter, PullInput, PullResult, RawJob } from "../types";
 import { htmlToText } from "../html-to-text";
+import { resolvePlaceName } from "../postcode";
 
 const ADZUNA_BASE = "https://api.adzuna.com/v1/api/jobs/gb/search";
 const MAX_PER_PAGE = 50;
@@ -76,7 +77,9 @@ function buildParams(
   input: PullInput,
   perRoleLimit: number,
   app_id: string,
-  app_key: string
+  app_key: string,
+  // A PLACE NAME ("Birmingham"), never a postcode — see the note in fetchRole.
+  place: string | null
 ): URLSearchParams {
   const params = new URLSearchParams();
   params.set("app_id", app_id);
@@ -87,9 +90,8 @@ function buildParams(
   // Omitted in browse mode so the pull is driven by location + salary alone.
   if (role.trim()) params.set("what", role);
   else params.set("sort_by", "date"); // browse mode — surface fresh listings
-  const loc = input.locationText || input.postcode;
-  if (loc) {
-    params.set("where", loc);
+  if (place) {
+    params.set("where", place);
     const distanceKm = milesToKm(input.radiusMiles);
     if (distanceKm !== null) params.set("distance", String(distanceKm));
   }
@@ -103,9 +105,10 @@ async function fetchRole(
   input: PullInput,
   perRoleLimit: number,
   app_id: string,
-  app_key: string
+  app_key: string,
+  place: string | null
 ): Promise<{ results: AdzunaResult[]; error?: string }> {
-  const params = buildParams(role, input, perRoleLimit, app_id, app_key);
+  const params = buildParams(role, input, perRoleLimit, app_id, app_key, place);
   const url = `${ADZUNA_BASE}/1?${params.toString()}`;
   let res: Response;
   try {
@@ -150,13 +153,32 @@ export const adzunaAdapter: JobSourceAdapter = {
   async pull(input: PullInput): Promise<PullResult> {
     const { app_id, app_key } = creds();
 
+    // Adzuna cannot read a UK postcode. `where=B1 1AA` returns ZERO results for
+    // every query — no error, just count: 0 — which is why this source silently
+    // contributed nothing from the day it shipped while Reed (which does accept
+    // postcodes) carried every pull. Resolve to a town name first.
+    const rawLoc = input.locationText || input.postcode;
+    let place: string | null = null;
+    if (rawLoc) {
+      place = await resolvePlaceName(rawLoc);
+      if (!place) {
+        // Do NOT fall back to a nationwide pull. The pipeline applies no
+        // post-pull distance filter, so a location-less search would hand back
+        // jobs 300 miles away to someone who asked for "within 25 miles".
+        return {
+          jobs: [],
+          error: `adzuna: could not resolve "${rawLoc}" to a place name; skipping rather than searching the wrong area`,
+        };
+      }
+    }
+
     const roles = splitRoles(input.keywords || "");
     // Browse mode — no keyword. Single pull with location + salary alone.
     const rolesToFetch = roles.length === 0 ? [""] : roles;
     const perRoleLimit = Math.max(10, Math.ceil(input.limit / rolesToFetch.length));
 
     const settled = await Promise.allSettled(
-      rolesToFetch.map((role) => fetchRole(role, input, perRoleLimit, app_id, app_key))
+      rolesToFetch.map((role) => fetchRole(role, input, perRoleLimit, app_id, app_key, place))
     );
 
     const seen = new Set<string>();

@@ -1,0 +1,151 @@
+// Populate the company → ATS board registry.
+//
+//   npx tsx scripts/discover-ats.ts --seed              # the curated UK seed list
+//   npx tsx scripts/discover-ats.ts --from-enrichment   # every company we've already enriched
+//   npx tsx scripts/discover-ats.ts --from-postings     # every employer seen in any search
+//   npx tsx scripts/discover-ats.ts --company "Monzo"   # one company
+//   ... --probe-only     token probe only (fast, free — no crawl, no LLM)
+//   ... --llm            allow the LLM domain-resolution rung (~$0.001/company)
+//   ... --limit N        cap how many companies to attempt
+//   ... --recheck        ignore the negative-result cache
+//
+// --from-postings is the compounding one: every employer name that has EVER
+// appeared in a Reed/Adzuna pull gets queued, so the registry grows to cover
+// exactly the companies our users' searches actually surface. Recruiters are
+// skipped — an agency has no first-party board, and probing them is pure waste.
+
+import { config } from "dotenv";
+config({ path: ".env.local" });
+
+import { createServerSupabaseClient } from "../lib/supabase-server";
+import { discoverForCompany } from "../lib/ats/discover";
+import { upsertBoard, loadDiscoveryBlocklist, recordDiscoveryAttempt } from "../lib/ats/registry";
+import { SEED_COMPANIES } from "../lib/ats/seed-companies";
+import { normaliseCompanyName, isUnmatchableName } from "../lib/enrichment/normalise-company";
+
+const argv = process.argv.slice(2);
+const has = (f: string) => argv.includes(f);
+const val = (f: string) => {
+  const i = argv.indexOf(f);
+  return i >= 0 ? argv[i + 1] : undefined;
+};
+
+const PROBE_ONLY = has("--probe-only");
+const USE_LLM = has("--llm");
+const RECHECK = has("--recheck");
+// Probe and report, touch no tables. Lets us measure ATS COVERAGE — the number
+// that decides whether this moat is real — without the schema being applied yet.
+const DRY_RUN = has("--dry-run");
+const LIMIT = parseInt(val("--limit") ?? "0", 10) || 0;
+const CONCURRENCY = 6;
+
+async function companiesFromEnrichment(): Promise<string[]> {
+  const supabase = createServerSupabaseClient();
+  const { data } = await supabase
+    .from("company_enrichment")
+    .select("raw_names, normalised_name, is_likely_recruiter")
+    .eq("is_likely_recruiter", false); // agencies have no first-party board
+  return (data ?? [])
+    .map((r) => ((r.raw_names as string[]) ?? [])[0] ?? (r.normalised_name as string))
+    .filter(Boolean);
+}
+
+async function companiesFromPostings(): Promise<string[]> {
+  const supabase = createServerSupabaseClient();
+  const { data } = await supabase.from("job_postings").select("company").limit(10_000);
+  return [...new Set((data ?? []).map((r) => r.company as string).filter(Boolean))];
+}
+
+async function main() {
+  let companies: string[] = [];
+  const one = val("--company");
+
+  if (one) companies = [one];
+  else if (has("--from-enrichment")) companies = await companiesFromEnrichment();
+  else if (has("--from-postings")) companies = await companiesFromPostings();
+  else if (has("--seed")) companies = SEED_COMPANIES;
+  else companies = [...SEED_COMPANIES];
+
+  // De-dupe on the normalised key and drop placeholders ("Confidential", "N/A").
+  const seen = new Set<string>();
+  companies = companies.filter((c) => {
+    const n = normaliseCompanyName(c);
+    if (!n || isUnmatchableName(n) || seen.has(n)) return false;
+    seen.add(n);
+    return true;
+  });
+
+  if (!RECHECK && !DRY_RUN) {
+    const blocked = await loadDiscoveryBlocklist();
+    const before = companies.length;
+    companies = companies.filter((c) => !blocked.has(normaliseCompanyName(c)));
+    if (before !== companies.length) {
+      console.log(`Skipping ${before - companies.length} already-attempted (use --recheck to force).`);
+    }
+  }
+
+  if (LIMIT) companies = companies.slice(0, LIMIT);
+
+  console.log(
+    `Discovering ATS boards for ${companies.length} companies ` +
+      `(probeOnly=${PROBE_ONLY} llm=${USE_LLM}, concurrency=${CONCURRENCY})\n`
+  );
+
+  let found = 0;
+  let missed = 0;
+  let unverified = 0;
+  const byProvider: Record<string, number> = {};
+
+  let cursor = 0;
+  async function worker() {
+    for (;;) {
+      const i = cursor++;
+      if (i >= companies.length) return;
+      const name = companies[i];
+
+      try {
+        const { board, providersTried, notes } = await discoverForCompany(name, {
+          probeOnly: PROBE_ONLY,
+          useLlm: USE_LLM,
+        });
+
+        if (board) {
+          if (!DRY_RUN) {
+            await upsertBoard(board);
+            await recordDiscoveryAttempt(name, true, providersTried, notes);
+          }
+          found++;
+          if (!board.verified) unverified++;
+          byProvider[board.provider] = (byProvider[board.provider] ?? 0) + 1;
+          console.log(
+            `✅ ${name} → ${board.provider}/${board.token}` +
+              `${board.workday ? `/${board.workday.site}` : ""} ` +
+              `(${board.job_count} jobs${board.verified ? "" : ", UNVERIFIED"}) — ${board.discovered_via}`
+          );
+        } else {
+          if (!DRY_RUN) await recordDiscoveryAttempt(name, false, providersTried, notes);
+          missed++;
+          console.log(`—  ${name}: ${notes}`);
+        }
+      } catch (e) {
+        missed++;
+        console.log(`💥 ${name}: ${String(e)}`);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+
+  console.log(`\n${"=".repeat(60)}`);
+  console.log(`FOUND    ${found}  (${unverified} unverified — held back from ingest)`);
+  console.log(`MISSED   ${missed}`);
+  console.log(`BY PROVIDER: ${JSON.stringify(byProvider)}`);
+  console.log(
+    `\nA miss is normal: most employers are not on a public ATS. The misses are cached\n` +
+      `(company_ats_discovery) and won't be re-probed for 30 days.`
+  );
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

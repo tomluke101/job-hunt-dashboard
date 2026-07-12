@@ -4,12 +4,46 @@
 export type SourceType =
   | "reed"
   | "adzuna"
+  // ATS-direct (first-party, straight from the employer's own board).
   | "greenhouse"
   | "lever"
   | "ashby"
+  | "smartrecruiters"
+  | "recruitee"
+  | "workday"
+  | "workable"
   | "apify_linkedin"
   | "apify_indeed"
   | "agent";
+
+/**
+ * Sources that are ATS-direct: the posting came from the employer's own
+ * applicant-tracking system, so the employer IS the poster. No recruiter can
+ * appear here by construction — which is the whole point.
+ */
+export const ATS_SOURCES: readonly SourceType[] = [
+  "greenhouse", "lever", "ashby", "smartrecruiters", "recruitee", "workday", "workable",
+] as const;
+
+export function isAtsSource(s: SourceType): boolean {
+  return ATS_SOURCES.includes(s);
+}
+
+/**
+ * Sources that do their OWN server-side radius search, so a posting they return
+ * is already known to be near the user. Our post-pull distance filter therefore
+ * KEEPS a job from these sources when its location can't be geocoded — the
+ * source already vouched for it.
+ *
+ * ATS sources vouch for nothing: they hand back the company's entire global
+ * board. An unresolvable ATS location must be DROPPED, or "within 25 miles of
+ * Birmingham" starts returning Palo Alto.
+ */
+export const TRUSTED_RADIUS_SOURCES: readonly SourceType[] = ["reed", "adzuna"] as const;
+
+export function hasTrustedRadius(s: SourceType): boolean {
+  return TRUSTED_RADIUS_SOURCES.includes(s);
+}
 
 export type WorkingModel = "remote" | "hybrid" | "office" | "unknown";
 export type FilterableWorkingModel = "remote" | "hybrid" | "office";
@@ -37,6 +71,37 @@ export interface RawJob {
   salary_max: number | null;
   salary_currency: string | null;
   raw?: unknown;
+
+  // ---- ATS-direct extras -------------------------------------------------
+  // Aggregators leave these null; every one of them is data Reed and Adzuna
+  // simply do not give us. Captured at INGEST even though the filters that use
+  // them (job type / seniority / job function) ship after supply — the cost of
+  // storing them now is zero, and the cost of re-ingesting the whole corpus
+  // later to backfill them is not.
+
+  /** "Engineering", "Commercial", ... — the employer's own department name. */
+  department?: string | null;
+  /** Canonicalised from the provider's native field, never guessed from text. */
+  employment_type?: string | null;
+  /** Canonicalised seniority where the provider states it (SmartRecruiters, Recruitee). */
+  seniority_hint?: string | null;
+  /** SmartRecruiters gives a real job-function taxonomy. */
+  job_function?: string | null;
+
+  /** The provider explicitly flags this as a remote role. */
+  is_remote?: boolean | null;
+  /**
+   * A single posting can list SEVERAL locations — Monzo's Greenhouse board says
+   * "Cardiff, London or Remote (UK)". Splitting that into candidates matters: a
+   * Cardiff user and a London user should BOTH match this job. Collapsing it to
+   * one location silently hides the role from one of them.
+   */
+  location_candidates?: string[];
+  /** ISO-2 where the provider tells us outright (Workday, SmartRecruiters, Ashby). */
+  country_hint?: string | null;
+  /** SmartRecruiters ships lat/lng on every posting — no geocoding needed. */
+  lat?: number | null;
+  lng?: number | null;
 }
 
 export interface JobSourceAdapter {

@@ -1,15 +1,45 @@
-// Pull -> normalise -> dedupe -> hard-filter -> rank -> insert.
-// Cheap axes only for now. Match-to-user + career-fit (LLM) added in next iteration.
+// Pull -> normalise -> geo -> cross-source dedupe -> hard-filter -> rank -> insert.
+//
+// SUPPLY (2026-07-12): three sources, not two.
+//   • ATS CORPUS  — first-party jobs straight from employers' own Greenhouse /
+//     Lever / Ashby / SmartRecruiters / Recruitee / Workday boards. Served from
+//     the LOCAL corpus that lib/ats/ingest.ts fills in the background, because an
+//     ATS board has no keyword or radius parameter — you get the company's entire
+//     global board or nothing, so it cannot be polled per-search. Zero recruiters
+//     by construction. This is the moat.
+//   • Reed, Adzuna — commodity aggregators. Breadth. Every competitor has them too.
+//
+// Two things ATS supply forced into existence, both of which fix latent bugs that
+// pre-dated it:
+//   1. A REAL POST-PULL DISTANCE FILTER (lib/geo). There was none: the pipeline
+//      trusted each source's server-side radius search. ATS boards vouch for
+//      nothing — Palantir's board offers Seoul and Palo Alto next to London.
+//   2. CROSS-SOURCE DEDUPE (lib/job-search/canonical.ts). The same role now
+//      arrives via Reed AND Adzuna AND the employer's own board. `dedupe_hash`
+//      cannot see that — it hashes the JD text, and every source rewrites the JD.
 
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 import type { SearchCriteria, FilterableWorkingModel, CommuteMode } from "./types";
+import { hasTrustedRadius, isAtsSource } from "./types";
 import { normalise, type NormalisedJob } from "./normalise";
 import { reedAdapter } from "./sources/reed";
 import { adzunaAdapter } from "./sources/adzuna";
-import type { JobSourceAdapter, PullInput } from "./types";
+import { pullFromCorpus } from "./sources/ats-corpus";
+import type { JobSourceAdapter, PullInput, SourceType } from "./types";
 import { extractSearchTerms } from "./title-suggestions";
 import { enrichBatch } from "@/lib/enrichment/batch";
 import { normaliseCompanyName } from "@/lib/enrichment/normalise-company";
+import { buildTargets, titleRelevantAny, type TargetTitle } from "./title-match";
+import { canonicalKey, dedupeByCanonicalKey } from "./canonical";
+import { parseSalaryFromText } from "./salary-parse";
+import { atsColumnsAvailable } from "./schema-guard";
+import {
+  resolveOrigin,
+  resolveJobLocation,
+  distanceMiles,
+  type GeoPoint,
+  type JobLocation,
+} from "@/lib/geo";
 
 export interface RunSearchInput {
   userId: string;
@@ -32,15 +62,17 @@ export interface RunSearchResult {
   error?: string;
   searchTermsUsed?: string[];
   termsDerivedFrom?: TermsSource;
+  /** Per-source pull counts. Surfaced so a source silently returning ZERO can
+   *  never again masquerade as "no jobs matched" — see the Adzuna incident. */
+  sourceCounts?: Record<string, number>;
+  sourceWarnings?: string[];
 }
 
 // Resolve what to actually send to the job APIs. The search NAME is a label,
 // never a query. Priority: user's explicit keywords → explicit target titles
 // → terms extracted from the description. If none of those produce anything,
 // we run in BROWSE mode — no keyword sent to the APIs, the pull is driven by
-// location + salary + working-model filters. A "general" search of the form
-// "hybrid, decent pay, 40 miles from home" is legitimate and should return
-// jobs across sectors, not fail.
+// location + salary + working-model filters.
 function resolveSearchTerms(
   criteria: SearchCriteria,
   description: string | null
@@ -57,12 +89,7 @@ function resolveSearchTerms(
   return { terms: "", source: "browse" };
 }
 
-// Mode-aware minutes → straight-line miles. Assumed average speeds:
-//   car          30 mph  (motorway/A-road mix, off-peak)
-//   public       18 mph  (bus/train + walk to station)
-//   cycle        12 mph  (urban commuter pace)
-// These are approximations — actual per-postcode commute lives behind the
-// Google Distance Matrix wiring in step 6 of the build order.
+// Mode-aware minutes → straight-line miles.
 const COMMUTE_MPH: Record<CommuteMode, number> = {
   car: 30,
   public_transport: 18,
@@ -80,8 +107,6 @@ function resolveRadiusMiles(loc: SearchCriteria["location"]): number | null {
   if (mode === "distance" && loc.max_distance_miles) {
     return Math.max(1, Math.round(loc.max_distance_miles));
   }
-  // Legacy row without an explicit mode set — fall back to whichever value
-  // is populated (older rows only stored max_commute_minutes).
   if (loc.max_distance_miles) return Math.max(1, Math.round(loc.max_distance_miles));
   if (loc.max_commute_minutes) {
     const mph = COMMUTE_MPH[loc.commute_mode] ?? 20;
@@ -90,102 +115,24 @@ function resolveRadiusMiles(loc: SearchCriteria["location"]): number | null {
   return loc.fallback_radius_miles;
 }
 
-// Tokenise a free-text field into content words. Cheap, no dependencies.
 const STOPWORDS = new Set([
   "the","a","an","and","or","of","to","in","for","with","on","at","by","from","as","is","are",
   "be","been","being","this","that","these","those","i","you","we","they","it","my","our","your",
   "will","would","should","can","have","has","had","do","does","did","not","but","if","then","so",
-  "job","role","position","company","team","work","working","experience","looking","looking",
+  "job","role","position","company","team","work","working","experience","looking",
 ]);
-
-// Stopwords used specifically for TITLE-relevance filtering. Kept short —
-// don't strip content words we care about (analyst, driver, engineer, etc.).
-const TITLE_STOP = new Set(["the","a","an","and","or","of","to","in","for","with","on","at","by","from","-"]);
-
-// Words that mark seniority, not role type. Stripped from the chip during
-// title matching so "Senior Data Analyst" filters the same as "Data Analyst"
-// but "Head of Marketing" still requires Head (Head IS the role type here).
-const SENIORITY_MARKERS = new Set([
-  "junior", "senior", "entry", "mid", "graduate", "intern", "trainee",
-  "apprentice", "experienced", "level", "principal", "staff",
-]);
-
-// Light stemmer for job-title matching. Strips common English plural and
-// gerund suffixes so "Analysts" ~ "Analyst", "Buyers" ~ "Buyer",
-// "Managing" ~ "Manage". Keeps short words untouched.
-// See feedback_input_tolerance_saas — every match is case-insensitive
-// and stem-normalised, otherwise real users get zero results from a plural.
-function stemWord(w: string): string {
-  const s = w.toLowerCase();
-  if (s.length < 5) return s;
-  if (s.endsWith("ies") && s.length > 5) return s.slice(0, -3) + "y";
-  if (s.endsWith("sses")) return s.slice(0, -2);
-  if (s.endsWith("s") && !s.endsWith("ss") && !s.endsWith("us") && !s.endsWith("is")) return s.slice(0, -1);
-  if (s.endsWith("ing") && s.length > 6) return s.slice(0, -3);
-  if (s.endsWith("ed") && s.length > 5) return s.slice(0, -2);
-  return s;
-}
-
-// Does the title contain `word` (or its stem)? Both sides are stem-compared,
-// so "Analysts"/"Analyst" and "Buyers"/"Buyer" match either way.
-function titleContainsStem(titleLower: string, word: string): boolean {
-  const wordStem = stemWord(word);
-  // Whole-word regex; then stem-compare each hit / miss.
-  if (new RegExp(`\\b${word}\\b`, "i").test(titleLower)) return true;
-  // Search stems of each title word.
-  for (const t of titleLower.split(/[^a-z0-9]+/)) {
-    if (t && stemWord(t) === wordStem) return true;
-  }
-  return false;
-}
-
-// True if a job title is relevant to a target chip. The rule:
-//   1. Full-phrase substring match (highest signal) → accept.
-//   2. Strip seniority markers (senior, junior, entry, mid, graduate, etc.).
-//   3. If 1 content word remains: title must contain it (stem-matched).
-//      "Analyst" chip → any Analyst title.
-//   4. If 2+ content words remain: LAST is the role noun, the rest are
-//      qualifiers. Title must contain the role noun AND at least one
-//      qualifier. This prevents "Marketing Manager" from matching a
-//      "Construction Site Manager" chip via bare "manager", while still
-//      accepting "Site Manager" (role=manager, has qualifier "site") and
-//      "Construction Manager" (role=manager, has qualifier "construction").
-//   5. If the chip is pure seniority (e.g. "Senior"), fall back to matching
-//      any of those words in the title.
-function titleRelevantOne(title: string, phrase: string, askWords: string[]): boolean {
-  const t = title.toLowerCase();
-  if (phrase && t.includes(phrase)) return true;
-  if (!askWords.length) return true;
-
-  const contentWords = askWords.filter((w) => !SENIORITY_MARKERS.has(w));
-
-  if (contentWords.length === 0) {
-    return askWords.some((w) => titleContainsStem(t, w));
-  }
-
-  if (contentWords.length === 1) {
-    return titleContainsStem(t, contentWords[0]);
-  }
-
-  const roleNoun = contentWords[contentWords.length - 1];
-  const qualifiers = contentWords.slice(0, -1);
-  if (!titleContainsStem(t, roleNoun)) return false;
-  return qualifiers.some((q) => titleContainsStem(t, q));
-}
-
-// True if the job title matches ANY of the user's target phrases. Multi-role
-// search — e.g. accept jobs matching "supply chain analyst" OR "buyer".
-function titleRelevantAny(title: string, targets: Array<{ phrase: string; words: string[] }>): boolean {
-  return targets.some((t) => titleRelevantOne(title, t.phrase, t.words));
-}
 
 function tokens(s: string): string[] {
   return s.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 2 && !STOPWORDS.has(w));
 }
 
-// Cheap keyword-based match-to-search axis: how well does this job match what
-// the user asked for? Title hits weighted heavier than JD hits; description
-// terms weighted heavier than the raw keywords string.
+// Cheap keyword-based match-to-search axis.
+//
+// Title hits are weighted far above JD hits ON PURPOSE. Reed keyword-matches the
+// JD BODY, so a query for "supply chain analyst" comes back with Class 2 HGV
+// Driver ads whose JD merely mentions a supply chain. The hard title filter bins
+// most of those; this weighting makes sure any that survive still rank beneath a
+// genuine title match rather than winning on a wall of incidental keywords.
 function matchToSearchScore(
   j: NormalisedJob,
   criteria: SearchCriteria,
@@ -211,13 +158,11 @@ function matchToSearchScore(
 
   const titleCoverage = titleHits.length / askTerms.size;
   const jdCoverage = jdHits.length / askTerms.size;
-  // Weight title matches 3x JD matches. Full title coverage caps at 100.
-  const raw = titleCoverage * 75 + jdCoverage * 40;
+  const raw = titleCoverage * 80 + jdCoverage * 25;
   const score = Math.max(0, Math.min(100, Math.round(raw)));
   return { score, hits: [...titleHits, ...jdHits].slice(0, 8) };
 }
 
-// Salary vs target — used as a soft signal, not a hard rank axis.
 function salaryFitScore(j: NormalisedJob, criteria: SearchCriteria): number {
   const target = criteria.salary.target;
   const salaryMid = j.salary_min && j.salary_max
@@ -228,9 +173,18 @@ function salaryFitScore(j: NormalisedJob, criteria: SearchCriteria): number {
   return Math.max(20, Math.round((salaryMid / target) * 100));
 }
 
-// Composite: match-to-search 45% + quality 35% + salary-fit 20%.
-// (match-to-user + career-fit come online in the next step and take share
-// from quality + salary-fit.)
+/**
+ * First-party bonus. A job straight from the employer's own ATS is strictly
+ * better than the same job seen through an aggregator: you apply on the
+ * employer's site rather than through a middleman, the JD is the real one, the
+ * employer is the actual employer (not "Client of Hays"), and it appeared the
+ * hour it was posted. That is a genuine quality difference and the ranking
+ * should say so.
+ */
+function firstPartyBonus(source: SourceType): number {
+  return isAtsSource(source) ? 8 : 0;
+}
+
 function cheapRankScore(
   j: NormalisedJob,
   criteria: SearchCriteria,
@@ -240,51 +194,86 @@ function cheapRankScore(
   const mts = matchToSearchScore(j, criteria, searchName, description);
   const q = j.quality_score ?? 50;
   const sf = salaryFitScore(j, criteria);
-  const composite = Math.round(mts.score * 0.45 + q * 0.35 + sf * 0.20);
-  return {
-    composite,
-    match_to_search: mts.score,
-    quality: q,
-    salary_fit: sf,
-    hits: mts.hits,
-  };
+  const composite = Math.min(
+    100,
+    Math.round(mts.score * 0.45 + q * 0.35 + sf * 0.2) + firstPartyBonus(j.source)
+  );
+  return { composite, match_to_search: mts.score, quality: q, salary_fit: sf, hits: mts.hits };
+}
+
+/** Resolve locations for a batch of jobs with bounded concurrency. */
+async function resolveLocations(
+  jobs: NormalisedJob[],
+  concurrency = 8
+): Promise<Map<NormalisedJob, JobLocation>> {
+  const out = new Map<NormalisedJob, JobLocation>();
+  let cursor = 0;
+  async function worker() {
+    for (;;) {
+      const i = cursor++;
+      if (i >= jobs.length) return;
+      const j = jobs[i];
+      try {
+        const loc = await resolveJobLocation(j.location_raw, {
+          candidates: j.location_candidates,
+          countryHint: j.country_hint,
+          isRemote: j.is_remote,
+          lat: j.lat,
+          lng: j.lng,
+        });
+        out.set(j, loc);
+      } catch {
+        out.set(j, {
+          raw: j.location_raw ?? "",
+          places: [],
+          is_remote: false,
+          is_foreign: false,
+          is_unresolved: true,
+          is_country_only: false,
+        });
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  return out;
 }
 
 export async function runSearch(input: RunSearchInput): Promise<RunSearchResult> {
   const supabase = createServerSupabaseClient();
 
+  // Deploy-order safety: the code and the hand-applied SQL migration can land in
+  // either order, and a search that silently returns zero is the worst outcome here.
+  const hasAtsColumns = await atsColumnsAvailable(supabase);
+
   const runInsert = await supabase
     .from("job_search_runs")
-    .insert({
-      user_id: input.userId,
-      search_id: input.searchId,
-      trigger: input.trigger,
-    })
+    .insert({ user_id: input.userId, search_id: input.searchId, trigger: input.trigger })
     .select("id")
     .single();
   const runId = runInsert.data?.id ?? null;
 
   const sourceCounts: Record<string, number> = {};
+  const sourceWarnings: string[] = [];
   const filterDrops: Record<string, number> = {
     salary_floor: 0, working_model: 0, hidden_salary: 0, industry_exclude: 0,
     expired: 0, already_decided: 0,
-    // Post-enrichment filters (recorded during upsert phase, not the hard-filter phase).
     company_size: 0, recruiter: 0,
-    // Undecided shortlist rows removed because they no longer match the current
-    // criteria (e.g. the user tightened a filter and re-ran).
     pruned_stale: 0,
+    title_irrelevant: 0,
+    // Geo. Before ATS these could not exist — every source did its own radius
+    // search server-side and we trusted it.
+    location_distance: 0,   // resolved, but further away than the user asked
+    location_foreign: 0,    // not a UK job at all (an ATS board is global)
+    location_unresolved: 0, // couldn't place it, and its source doesn't vouch for it
+    // Cross-source duplicates collapsed into one shortlist row.
+    cross_source_dupe: 0,
   };
   const allRaw: NormalisedJob[] = [];
 
-  // Cross-search "already decided" gate. Jobs the user has explicitly
-  // rejected / marked interested / applied to / deleted stay hidden across
-  // every future search — one decision is enough. Transient "new" rows do
-  // NOT block, so deleting a search (which cascade-wipes its 'new' rows)
-  // frees those jobs to resurface, which is what makes iterative testing
-  // bearable. Match by (source, source_id) — the stable identity of a
-  // posting across runs.
+  // Cross-search "already decided" gate.
   const DECIDED_STATES = ["rejected_user", "rejected_employer", "interested", "applied", "deleted"] as const;
   const decidedKeys = new Set<string>();
+  const decidedCanonical = new Set<string>();
   {
     const { data: decidedRows } = await supabase
       .from("job_shortlist")
@@ -293,26 +282,57 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       .in("state", DECIDED_STATES as unknown as string[]);
     const decidedPostingIds = (decidedRows ?? []).map((r) => r.posting_id as string);
     if (decidedPostingIds.length) {
+      // Selecting a column the database doesn't have yet errors the WHOLE query and
+      // returns no rows — which would quietly un-block every job the user has already
+      // rejected. Only ask for canonical_key once it exists.
       const { data: postings } = await supabase
         .from("job_postings")
-        .select("source, source_id")
+        .select(hasAtsColumns ? "source, source_id, canonical_key" : "source, source_id")
         .in("id", decidedPostingIds);
-      for (const p of postings ?? []) {
+      for (const p of (postings ?? []) as unknown as Array<Record<string, unknown>>) {
         if (p.source && p.source_id) decidedKeys.add(`${p.source}|${p.source_id}`);
+        // Also block by CANONICAL identity. Without this, rejecting the Reed copy
+        // of a job leaves the employer's own ATS copy free to walk straight back
+        // into the shortlist — a different (source, source_id), the same job. The
+        // user would reject it again, and again.
+        if (p.canonical_key) decidedCanonical.add(p.canonical_key as string);
       }
     }
   }
 
   const resolved = resolveSearchTerms(input.criteria, input.description);
   const keywords = resolved.terms;
-  const isBrowseMode = resolved.source === "browse";
 
-  // ---- Fan out across sources in parallel ----
-  // Every adapter shares the same PullInput. Cross-source dedupe runs below.
+  // ---- Targets (shared by the title filter AND the corpus query) ----
+  const rawTargets = input.criteria.target_titles?.length
+    ? input.criteria.target_titles
+    : (input.criteria.keywords ?? "")
+        .split(/[,/\n]+|\s+and\s+/gi)
+        .map((s) => s.trim())
+        .filter(Boolean);
+  const targetSets: TargetTitle[] = buildTargets(rawTargets);
+
+  // ---- Location ----
   const radius = resolveRadiusMiles(input.criteria.location);
   const isNationwide =
     input.criteria.location.willing_to_relocate ||
     input.criteria.location.filter_mode === "anywhere";
+
+  const origin: GeoPoint | null =
+    !isNationwide && input.criteria.location.postcode
+      ? await resolveOrigin(input.criteria.location.postcode)
+      : null;
+
+  if (!isNationwide && input.criteria.location.postcode && !origin) {
+    // We cannot place the USER. Every distance claim downstream would be a guess,
+    // so say so rather than quietly returning jobs from anywhere in the country.
+    sourceWarnings.push(
+      `Could not resolve "${input.criteria.location.postcode}" to a location — distance filtering is OFF for this run.`
+    );
+  }
+
+  const acceptRemote = input.criteria.working_model.accepted.includes("remote");
+
   const pullInput: PullInput = {
     keywords,
     locationText: isNationwide ? null : input.criteria.location.postcode,
@@ -324,64 +344,115 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     sinceDate: null,
   };
 
-  const sources: JobSourceAdapter[] = [reedAdapter, adzunaAdapter];
-  const settled = await Promise.allSettled(sources.map((s) => s.pull(pullInput)));
-  for (let i = 0; i < sources.length; i++) {
-    const type = sources[i].type;
+  // ---- Fan out: network aggregators + the local ATS corpus, in parallel ----
+  const networkSources: JobSourceAdapter[] = [reedAdapter, adzunaAdapter];
+  const [settled, corpus] = await Promise.all([
+    Promise.allSettled(networkSources.map((s) => s.pull(pullInput))),
+    pullFromCorpus({
+      ...pullInput,
+      origin,
+      targetTitles: rawTargets,
+      acceptRemote,
+    }),
+  ]);
+
+  for (let i = 0; i < networkSources.length; i++) {
+    const type = networkSources[i].type;
     const r = settled[i];
     if (r.status !== "fulfilled") {
       console.error(`[runSearch] ${type} pull threw`, r.reason);
       sourceCounts[type] = 0;
+      sourceWarnings.push(`${type} failed: ${String(r.reason).slice(0, 140)}`);
       continue;
     }
     sourceCounts[type] = r.value.jobs.length;
-    if (r.value.error) console.error(`[runSearch] ${type} error:`, r.value.error);
+    if (r.value.error) {
+      console.error(`[runSearch] ${type} error:`, r.value.error);
+      sourceWarnings.push(`${type}: ${r.value.error.slice(0, 140)}`);
+    }
     for (const j of r.value.jobs) allRaw.push(normalise(j));
+  }
+
+  for (const [src, n] of Object.entries(corpus.bySource)) sourceCounts[src] = n;
+  sourceCounts.ats_total = corpus.jobs.length;
+  if (corpus.error) sourceWarnings.push(`ats corpus: ${corpus.error}`);
+  for (const j of corpus.jobs) allRaw.push(normalise(j));
+
+  // A source that returns ZERO is indistinguishable from "no jobs matched" unless
+  // somebody says so out loud. Adzuna returned zero for TEN DAYS because nothing did.
+  if (corpus.jobs.length === 0 && !corpus.error) {
+    sourceWarnings.push(
+      "ATS corpus returned 0 jobs. If the registry is populated, this is a fault — " +
+        "run `npx tsx scripts/ingest-ats.ts` and check ats_ingest_runs."
+    );
   }
 
   const pulled = allRaw.length;
 
-  // ---- Dedupe within the run ----
+  // ---- Dedupe within the run (exact) ----
   const seenHashes = new Set<string>();
-  const deduped: NormalisedJob[] = [];
+  const exactDeduped: NormalisedJob[] = [];
   for (const j of allRaw) {
     if (!seenHashes.has(j.dedupe_hash)) {
       seenHashes.add(j.dedupe_hash);
-      deduped.push(j);
+      exactDeduped.push(j);
     }
   }
 
+  // ---- Geo pass ----
+  const locations = await resolveLocations(exactDeduped);
+
+  // ---- Cross-source dedupe ----
+  //
+  // Runs AFTER geo because the canonical key uses the RESOLVED town: Reed says
+  // "Birmingham, West Midlands", the ATS says "Birmingham" — the raw strings
+  // differ, the resolved place doesn't. Keying on the resolved place is what
+  // actually collapses the duplicate.
+  const keyed = exactDeduped.map((j) => {
+    const loc = locations.get(j);
+    return {
+      job: j,
+      loc,
+      key: canonicalKey({
+        company: j.company,
+        title: j.title,
+        location_raw: j.location_raw,
+        place_name: loc?.places[0]?.name ?? null,
+        is_remote: loc?.is_remote ?? null,
+      }),
+    };
+  });
+
+  const groups = dedupeByCanonicalKey(
+    keyed,
+    (r) => r.key,
+    (r) => ({
+      source: r.job.source,
+      salary_min: r.job.salary_min,
+      salary_max: r.job.salary_max,
+      jd_text: r.job.jd_text,
+      posted_at: r.job.posted_at,
+    })
+  );
+  filterDrops.cross_source_dupe = groups.reduce((n, g) => n + g.duplicates_merged, 0);
+
+  const deduped = groups.map((g) => ({
+    ...g.winner,
+    also_seen_on: g.also_seen_on,
+  }));
+
   // ---- Hard filters ----
-  const kept: NormalisedJob[] = [];
+  const kept: Array<{ job: NormalisedJob; loc?: JobLocation; key: string; also_seen_on: SourceType[] }> = [];
   const now = Date.now();
   const acceptedWM = new Set<FilterableWorkingModel>(input.criteria.working_model.accepted);
   const includeUnknownWM = input.criteria.working_model.include_unknown;
   const excludes = input.criteria.industries_exclude.map((s) => s.toLowerCase());
 
-  // Title-relevance hard filter. Uses the explicit `target_titles` list if
-  // the user set one (multi-role searches like ["supply chain analyst",
-  // "procurement analyst", "buyer"]). Falls back to splitting the keywords
-  // string on the same separators the target_titles input accepts. Never
-  // uses the search NAME — the name is a label, not a query. In BROWSE mode
-  // (no keywords, no titles, no description-derived terms) targetSets stays
-  // empty and this filter becomes a no-op — the pull is filter-driven only.
-  const rawTargets = input.criteria.target_titles?.length
-    ? input.criteria.target_titles
-    : (input.criteria.keywords ?? "")
-        .split(/[,/\n]+|\s+and\s+/gi)
-        .map((s) => s.trim())
-        .filter(Boolean);
-  const targetSets = rawTargets
-    .map((t) => t.trim().toLowerCase())
-    .filter(Boolean)
-    .map((phrase) => ({
-      phrase,
-      words: phrase.split(/\s+/).filter((w) => w.length > 2 && !TITLE_STOP.has(w)),
-    }));
-  filterDrops.title_irrelevant = 0;
+  for (const entry of deduped) {
+    const j = entry.job;
+    const loc = entry.loc;
 
-  for (const j of deduped) {
-    if (decidedKeys.has(`${j.source}|${j.source_id}`)) {
+    if (decidedKeys.has(`${j.source}|${j.source_id}`) || decidedCanonical.has(entry.key)) {
       filterDrops.already_decided++;
       continue;
     }
@@ -393,6 +464,36 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       filterDrops.title_irrelevant++;
       continue;
     }
+
+    // ---- Distance ----
+    // Skipped entirely for a nationwide / willing-to-relocate search.
+    if (!isNationwide && loc) {
+      if (loc.is_foreign) {
+        filterDrops.location_foreign++;
+        continue;
+      }
+      const remoteOk = loc.is_remote && acceptRemote;
+      if (!remoteOk && origin && radius) {
+        const d = distanceMiles(origin, loc);
+        if (d !== null) {
+          if (d > radius) {
+            filterDrops.location_distance++;
+            continue;
+          }
+        } else if (!loc.is_country_only) {
+          // No usable coordinates. Whether that's fatal depends on WHO gave us
+          // the job: Reed and Adzuna already did a server-side radius search, so
+          // they vouch for it. An ATS board vouches for nothing — it handed us
+          // its entire global board — so an unplaceable ATS job must go, or
+          // "within 25 miles of Birmingham" starts returning Palo Alto.
+          if (!hasTrustedRadius(j.source)) {
+            filterDrops.location_unresolved++;
+            continue;
+          }
+        }
+      }
+    }
+
     if (input.criteria.salary.floor && j.salary_max !== null && j.salary_max < input.criteria.salary.floor) {
       filterDrops.salary_floor++;
       continue;
@@ -417,11 +518,10 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
         continue;
       }
     }
-    kept.push(j);
+    kept.push({ job: j, loc, key: entry.key, also_seen_on: entry.also_seen_on });
   }
 
   // ---- Cheap ranking ----
-  // Look up the search description once for match-to-search axis.
   const { data: searchRow } = await supabase
     .from("job_searches")
     .select("description")
@@ -430,37 +530,18 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
   const description = (searchRow?.description as string | null | undefined) ?? null;
 
   const ranked = kept
-    .map((j) => ({ j, r: cheapRankScore(j, input.criteria, input.name, description) }))
+    .map((e) => ({ ...e, r: cheapRankScore(e.job, input.criteria, input.name, description) }))
     .sort((a, b) => b.r.composite - a.r.composite);
 
   // ---- Companies House enrichment (best-effort, budget-capped) ----
-  //
-  // We enrich a MUCH bigger pool than jobsPerRun so the size + recruiter
-  // filters have room to work. If a user asks for 10 mid/large/enterprise
-  // jobs, we can't just enrich the top-10 by rank — most of those will be
-  // small businesses posting on Reed/Adzuna. Enrich the top-K by rank (K=50)
-  // and let the filter loop below pick the top-N survivors.
-  //
-  // Budget: 45s (Vercel function has 60s max via /roles page-level
-  // maxDuration). Cached rows are near-instant (~200ms each); only fresh CH
-  // fetches burn real budget (~5s each). If budget runs out, remaining
-  // companies stay un-enriched → filter treats them as size=unknown.
   const ENRICH_POOL_MAX = 50;
   const enrichPoolLen = Math.min(ENRICH_POOL_MAX, ranked.length);
   const enrichPool = ranked.slice(0, enrichPoolLen);
-  const uniqueCompanies = Array.from(new Set(enrichPool.map(({ j }) => j.company).filter(Boolean)));
+  const uniqueCompanies = Array.from(new Set(enrichPool.map((e) => e.job.company).filter(Boolean)));
   const enrichmentResult = await enrichBatch(uniqueCompanies, 45_000);
   const enrichmentByNorm = enrichmentResult.byNormalisedName;
-  console.log(
-    `[runSearch] enrichment stats: pool=${enrichPoolLen} unique=${uniqueCompanies.length} ` +
-    `processed=${enrichmentResult.stats.processed} deferred=${enrichmentResult.stats.deferred} ` +
-    `elapsed=${enrichmentResult.stats.elapsed_ms}ms`
-  );
 
   // ---- Upsert postings + shortlist ----
-  // Look up which posting_ids already sit on this user's shortlist for this
-  // search — so we can UPDATE ranking without resurrecting rows the user has
-  // already decided on (rejected/applied/etc.).
   const existingByPosting = new Map<string, { id: string; state: string }>();
   {
     const { data: existing } = await supabase
@@ -468,42 +549,27 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       .select("id, posting_id, state")
       .eq("user_id", input.userId)
       .eq("search_id", input.searchId);
-    for (const row of existing ?? []) existingByPosting.set(row.posting_id as string, { id: row.id as string, state: row.state as string });
+    for (const row of existing ?? []) {
+      existingByPosting.set(row.posting_id as string, { id: row.id as string, state: row.state as string });
+    }
   }
 
-  // Company-size + recruiter filters. Applied at upsert time because they
-  // depend on enrichment data we just fetched. Postings that don't yet have
-  // an enrichment row are treated as size='unknown' — filtered per the
-  // user's include_unknown flag (defaults on).
   const acceptedSizes = new Set<string>(input.criteria.company_size?.accepted ?? []);
   const includeUnknownSize = input.criteria.company_size?.include_unknown ?? true;
   const hideRecruiters = input.criteria.hide_recruiters === true;
 
-  // Per-bucket drop breakdown so we can tell the user WHICH sizes were filtered.
   const sizeDropByBucket: Record<string, number> = {
     startup: 0, small: 0, mid: 0, large: 0, enterprise: 0, unknown: 0,
   };
 
-  // Iterate the FULL ranked list. For each candidate:
-  //   1. Upsert to job_postings (ALWAYS — so its enrichment_id persists and
-  //      future runs / after()-sweeps have a stable record). This keeps the
-  //      pipeline stateful across runs, so cache warmth grows monotonically.
-  //   2. Apply size + recruiter filter.
-  //   3. If passes filter AND we haven't hit jobsPerRun yet, upsert to
-  //      job_shortlist.
-  //   4. Stop iterating when the shortlist target is reached (no wasted work
-  //      past that point).
-  // Postings that earned a shortlist slot on THIS run. Everything the user
-  // hasn't decided on that isn't in here gets pruned below.
   const keptPostingIds = new Set<string>();
-
   let shortlisted = 0;
+
   for (let i = 0; i < ranked.length && shortlisted < input.jobsPerRun; i++) {
-    const { j, r } = ranked[i];
+    const { job: j, loc, key, also_seen_on, r } = ranked[i];
     const normalisedCompany = normaliseCompanyName(j.company);
     const enrichment = normalisedCompany ? enrichmentByNorm.get(normalisedCompany) : null;
 
-    // Company-size filter (recorded but doesn't skip the job_postings upsert).
     const bucket = (enrichment?.size_bucket as string | null) ?? "unknown";
     const bucketKnown = bucket !== "unknown" && !!enrichment;
     let passesFilter = true;
@@ -513,44 +579,85 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
         filterDrops.company_size++;
         sizeDropByBucket[bucket] = (sizeDropByBucket[bucket] ?? 0) + 1;
       }
-    } else {
-      if (!includeUnknownSize) {
-        passesFilter = false;
-        filterDrops.company_size++;
-        sizeDropByBucket.unknown++;
-      }
+    } else if (!includeUnknownSize) {
+      passesFilter = false;
+      filterDrops.company_size++;
+      sizeDropByBucket.unknown++;
     }
-    if (passesFilter && hideRecruiters && enrichment?.is_likely_recruiter) {
+
+    // An ATS-direct job is first-party BY CONSTRUCTION — the employer posted it on
+    // their own board. A recruitment agency cannot appear here, so the recruiter
+    // flag (a name heuristic built for aggregator data) must not be applied to it.
+    // Without this guard, a consultancy like Accenture posting its OWN roles on its
+    // OWN Workday board could be name-matched as an "agency" and binned.
+    if (passesFilter && hideRecruiters && !isAtsSource(j.source) && enrichment?.is_likely_recruiter) {
       passesFilter = false;
       filterDrops.recruiter++;
     }
 
+    // Salary stated in the JD body rather than a structured field — the norm for
+    // ATS postings. Without this, our best jobs look salary-less.
+    let salary_min = j.salary_min;
+    let salary_max = j.salary_max;
+    let salary_listed = j.salary_listed;
+    if (salary_min === null && salary_max === null) {
+      const parsed = parseSalaryFromText(j.jd_text);
+      if (parsed) {
+        salary_min = parsed.min;
+        salary_max = parsed.max;
+        salary_listed = true;
+      }
+    }
+
+    const place = loc?.places[0] ?? null;
+
+    const legacyColumns = {
+      source: j.source,
+      source_id: j.source_id,
+      source_url: j.source_url,
+      company: j.company,
+      title: j.title,
+      location_raw: j.location_raw,
+      working_model: j.working_model,
+      hybrid_days_office: j.hybrid_days_office,
+      salary_min,
+      salary_max,
+      salary_currency: j.salary_currency,
+      salary_listed,
+      jd_text: j.jd_text,
+      jd_html: j.jd_html,
+      posted_at: j.posted_at,
+      expires_at: j.expires_at,
+      dedupe_hash: j.dedupe_hash,
+      quality_score: j.quality_score,
+      normalised_company_name: normalisedCompany || null,
+      enrichment_id: enrichment?.id ?? null,
+      last_seen_at: new Date().toISOString(),
+    };
+
+    // The corpus columns only exist once supabase-ats-schema.sql has been applied.
+    // Sending them to a database that lacks them makes PostgREST reject EVERY
+    // upsert, which would empty every search on this deploy. Degrade instead.
     const upsert = await supabase
       .from("job_postings")
       .upsert(
-        {
-          source: j.source,
-          source_id: j.source_id,
-          source_url: j.source_url,
-          company: j.company,
-          title: j.title,
-          location_raw: j.location_raw,
-          working_model: j.working_model,
-          hybrid_days_office: j.hybrid_days_office,
-          salary_min: j.salary_min,
-          salary_max: j.salary_max,
-          salary_currency: j.salary_currency,
-          salary_listed: j.salary_listed,
-          jd_text: j.jd_text,
-          jd_html: j.jd_html,
-          posted_at: j.posted_at,
-          expires_at: j.expires_at,
-          dedupe_hash: j.dedupe_hash,
-          quality_score: j.quality_score,
-          normalised_company_name: normalisedCompany || null,
-          enrichment_id: enrichment?.id ?? null,
-          last_seen_at: new Date().toISOString(),
-        },
+        hasAtsColumns
+          ? {
+              ...legacyColumns,
+              canonical_key: key,
+              also_seen_on,
+              lat: place?.lat ?? null,
+              lng: place?.lng ?? null,
+              place_name: place?.name ?? null,
+              country_code: place?.country ?? null,
+              is_remote: loc?.is_remote ?? null,
+              geo_resolved: !!place,
+              department: j.department ?? null,
+              employment_type: j.employment_type ?? null,
+              seniority_hint: j.seniority_hint ?? null,
+              job_function: j.job_function ?? null,
+            }
+          : legacyColumns,
         { onConflict: "source,source_id" }
       )
       .select("id")
@@ -560,12 +667,9 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       continue;
     }
     const posting_id = upsert.data.id;
-
-    // If the posting was upserted but failed the size/recruiter filter, skip
-    // the shortlist step. The job_postings row still persists so its
-    // enrichment_id (and any future re-derivations) live on. Anything already
-    // in the shortlist that no longer belongs is pruned after the loop.
     if (!passesFilter) continue;
+
+    const distance = origin && loc ? distanceMiles(origin, loc) : null;
 
     const rankingPayload = {
       quality_score: r.quality,
@@ -573,12 +677,15 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       composite_rank: r.composite,
       ranking_explanation: {
         phase: "cheap-only",
-        note: "Match-to-search + quality + salary-fit. Match-to-you + career-fit come online next.",
         match_to_search: r.match_to_search,
         quality: r.quality,
         salary_fit: r.salary_fit,
         keyword_hits: r.hits,
         quality_reasons: j.quality_reasons,
+        first_party: isAtsSource(j.source),
+        also_seen_on,
+        distance_miles: distance !== null ? Math.round(distance) : null,
+        place: place?.name ?? null,
         rank_position: i + 1,
         of: ranked.length,
       },
@@ -586,12 +693,7 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
 
     const existing = existingByPosting.get(posting_id);
     if (existing) {
-      // Preserve the user's decision (rejected/applied/interested/deleted).
-      // Just refresh ranking scores so re-runs update stale positions.
-      const short = await supabase
-        .from("job_shortlist")
-        .update(rankingPayload)
-        .eq("id", existing.id);
+      const short = await supabase.from("job_shortlist").update(rankingPayload).eq("id", existing.id);
       if (short.error) console.error("[runSearch] shortlist update failed", short.error);
       else {
         shortlisted++;
@@ -616,19 +718,7 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     }
   }
 
-  // Prune the undecided leftovers.
-  //
-  // A re-run REBUILDS the shortlist from the current criteria. Without this,
-  // a job shortlisted under looser criteria sits there forever: tighten "hide
-  // recruiters" or narrow the size filter, re-run, and every previously-matched
-  // Hays job stays on screen — a working filter looks broken. The same applies
-  // to every hard filter (raise the salary floor, change the titles): whatever
-  // no longer matches must leave.
-  //
-  // Only rows the user hasn't touched (state 'new') are pruned. Anything they
-  // marked interested / applied / rejected is THEIR decision and survives a
-  // criteria change — dropping it would destroy real user data, and the
-  // cross-search decided-gate depends on those rows persisting.
+  // Prune undecided leftovers that no longer match the current criteria.
   {
     const toPrune: string[] = [];
     for (const [postingId, row] of existingByPosting) {
@@ -650,9 +740,7 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       ? input.criteria.target_titles ?? []
       : resolved.source === "description"
       ? resolved.extracted ?? []
-      : []; // browse mode — no query terms
-  void isBrowseMode; // reserved for adapter-specific handling; currently
-                      // adapters already treat empty keywords as browse.
+      : [];
 
   await supabase
     .from("job_search_runs")
@@ -662,12 +750,15 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       dedupe_stats: {
         before: pulled,
         after: deduped.length,
+        cross_source_merged: filterDrops.cross_source_dupe,
         search_terms: searchTermsUsed,
         terms_source: resolved.source,
         enrichment: enrichmentResult.stats,
         size_drops_by_bucket: sizeDropByBucket,
         ranked_pool: ranked.length,
         jobs_per_run_target: input.jobsPerRun,
+        origin_resolved: !!origin,
+        warnings: sourceWarnings,
       },
       filter_drops: filterDrops,
       shortlist_count: shortlisted,
@@ -687,5 +778,7 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     runId,
     searchTermsUsed,
     termsDerivedFrom: resolved.source,
+    sourceCounts,
+    sourceWarnings,
   };
 }

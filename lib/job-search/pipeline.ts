@@ -270,6 +270,9 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     expired: 0, already_decided: 0,
     // Post-enrichment filters (recorded during upsert phase, not the hard-filter phase).
     company_size: 0, recruiter: 0,
+    // Undecided shortlist rows removed because they no longer match the current
+    // criteria (e.g. the user tightened a filter and re-ran).
+    pruned_stale: 0,
   };
   const allRaw: NormalisedJob[] = [];
 
@@ -490,6 +493,10 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
   //      job_shortlist.
   //   4. Stop iterating when the shortlist target is reached (no wasted work
   //      past that point).
+  // Postings that earned a shortlist slot on THIS run. Everything the user
+  // hasn't decided on that isn't in here gets pruned below.
+  const keptPostingIds = new Set<string>();
+
   let shortlisted = 0;
   for (let i = 0; i < ranked.length && shortlisted < input.jobsPerRun; i++) {
     const { j, r } = ranked[i];
@@ -556,7 +563,8 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
 
     // If the posting was upserted but failed the size/recruiter filter, skip
     // the shortlist step. The job_postings row still persists so its
-    // enrichment_id (and any future re-derivations) live on.
+    // enrichment_id (and any future re-derivations) live on. Anything already
+    // in the shortlist that no longer belongs is pruned after the loop.
     if (!passesFilter) continue;
 
     const rankingPayload = {
@@ -585,7 +593,10 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
         .update(rankingPayload)
         .eq("id", existing.id);
       if (short.error) console.error("[runSearch] shortlist update failed", short.error);
-      else shortlisted++;
+      else {
+        shortlisted++;
+        keptPostingIds.add(posting_id);
+      }
     } else {
       const short = await supabase
         .from("job_shortlist")
@@ -598,7 +609,37 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
         })
         .select("id");
       if (short.error) console.error("[runSearch] shortlist insert failed", short.error);
-      else shortlisted++;
+      else {
+        shortlisted++;
+        keptPostingIds.add(posting_id);
+      }
+    }
+  }
+
+  // Prune the undecided leftovers.
+  //
+  // A re-run REBUILDS the shortlist from the current criteria. Without this,
+  // a job shortlisted under looser criteria sits there forever: tighten "hide
+  // recruiters" or narrow the size filter, re-run, and every previously-matched
+  // Hays job stays on screen — a working filter looks broken. The same applies
+  // to every hard filter (raise the salary floor, change the titles): whatever
+  // no longer matches must leave.
+  //
+  // Only rows the user hasn't touched (state 'new') are pruned. Anything they
+  // marked interested / applied / rejected is THEIR decision and survives a
+  // criteria change — dropping it would destroy real user data, and the
+  // cross-search decided-gate depends on those rows persisting.
+  {
+    const toPrune: string[] = [];
+    for (const [postingId, row] of existingByPosting) {
+      if (DECIDED_STATES.includes(row.state as (typeof DECIDED_STATES)[number])) continue;
+      if (keptPostingIds.has(postingId)) continue;
+      toPrune.push(row.id);
+    }
+    if (toPrune.length) {
+      const del = await supabase.from("job_shortlist").delete().in("id", toPrune);
+      if (del.error) console.error("[runSearch] shortlist prune failed", del.error);
+      else filterDrops.pruned_stale = toPrune.length;
     }
   }
 

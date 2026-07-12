@@ -75,16 +75,23 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
   const wmChoices: FilterableWorkingModel[] = ["remote", "hybrid", "office"];
 
   // Two modes based on whether the user is actively typing in the chip input:
-  // - buffer empty → "Related roles" derived from Name / Keywords / Description
+  // - buffer empty → "Related roles" derived from Keywords / Description
   // - buffer >= 2 chars → live autocomplete driven by the buffer only
+  //
+  // The search NAME is deliberately NOT a suggestion source. It's a label the
+  // user picks for themselves, not a query — the run pipeline already refuses
+  // to search on it for exactly this reason. Feeding it in meant naming a
+  // search "Test" produced "Test Engineer / Test Analyst / Test Manager"
+  // (`test` is a real QA qualifier in the taxonomy), and naming it "Birmingham
+  // roles" or "My search" produced comparable nonsense.
   const titleSuggestions = useMemo(
     () =>
       suggestTitles(
-        { name, keywords: criteria.keywords, description, buffer: titleBuffer },
+        { keywords: criteria.keywords, description, buffer: titleBuffer },
         titles,
         8
       ),
-    [name, criteria.keywords, description, titles, titleBuffer]
+    [criteria.keywords, description, titles, titleBuffer]
   );
   const isAutocomplete = titleBuffer.trim().length >= 2;
 
@@ -657,7 +664,7 @@ function TitleChipInput({
     if (e.key === "Enter" || e.key === ",") {
       if (buffer.trim()) {
         e.preventDefault();
-        commit(buffer);
+        commit(resolveBuffer(buffer));
         setBuffer("");
       } else if (e.key === "Enter") {
         e.preventDefault();
@@ -667,9 +674,27 @@ function TitleChipInput({
     }
   }
 
+  // Complete a half-typed final word against the top match, so clicking away
+  // mid-word banks "Supply Chain Analyst" rather than the fragment "supply
+  // chain ana" (whose core noun is "ana" — it matches nothing downstream).
+  //
+  // Deliberately narrow: we only finish a word the user already started, i.e.
+  // the token count has to be unchanged. "data" is NOT silently promoted to
+  // "Data Analyst" — appending a whole word they never typed is guessing at
+  // the role, not correcting a typo.
+  function resolveBuffer(raw: string): string {
+    const top = suggestions[0];
+    if (!top) return raw;
+    const typed = raw.toLowerCase().replace(/\s+/g, " ").trim();
+    const match = top.toLowerCase().replace(/\s+/g, " ").trim();
+    if (!match.startsWith(typed) || match.length === typed.length) return raw;
+    if (match.split(" ").length !== typed.split(" ").length) return raw;
+    return top;
+  }
+
   function handleBlur() {
     if (buffer.trim()) {
-      commit(buffer);
+      commit(resolveBuffer(buffer));
       setBuffer("");
     }
   }
@@ -742,6 +767,12 @@ function TitleChipInput({
             <button
               key={`sug-${s}`}
               type="button"
+              // Keep focus in the input so onBlur never fires. Without this the
+              // input blurs on mousedown, handleBlur commits the half-typed
+              // buffer as a chip ("supply chain ana"), the suggestion list
+              // re-renders from the new chip, and the button being clicked is
+              // gone before onClick ever lands.
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 if (commit(s)) {
                   setBuffer("");

@@ -210,6 +210,42 @@ async function main() {
   for (const r of results) console.log(`  ${r.path.padEnd(20)} HTTP ${r.status}  "${r.heading}"`);
   console.log();
 
+  // ---- Title-chip autocomplete ----
+  //
+  // Reproduces the exact flow that was broken: open New search, type a partial
+  // role, click the suggestion. The input used to blur on mousedown, which
+  // committed the half-typed buffer ("supply chain ana") as a chip and swapped
+  // the suggestion list out from under the click.
+  console.log("3. Title-chip autocomplete (type partial role -> click suggestion)...");
+  await page.goto(`${BASE}/roles`, { waitUntil: "domcontentloaded" });
+  await page.waitForLoadState("networkidle", { timeout: 60_000 }).catch(() => {});
+
+  await page.getByRole("button", { name: /new search/i }).first().click();
+  const chipInput = page.locator('input[placeholder*="press Enter" i]').first();
+  await chipInput.waitFor({ state: "visible" });
+  await chipInput.fill("supply chain ana");
+
+  // The top suggestion should be the completed title.
+  const suggestion = page.getByRole("button", { name: /^\+ Supply Chain Analyst$/i }).first();
+  await suggestion.waitFor({ state: "visible" });
+  await suggestion.click();
+
+  await page.screenshot({ path: resolve(SHOTS, "title_chip.png"), fullPage: false });
+  console.log("   -> scripts/.screenshots/title_chip.png");
+
+  const chips = await page.locator('span:has(button[aria-label^="Remove"])').allTextContents();
+  const cleaned = chips.map((c) => c.trim()).filter(Boolean);
+  console.log(`   chips now: ${JSON.stringify(cleaned)}`);
+
+  const truncated = cleaned.some((c) => /supply chain ana$/i.test(c));
+  if (truncated) {
+    throw new Error(`Chip committed the half-typed buffer: ${JSON.stringify(cleaned)}`);
+  }
+  if (!cleaned.some((c) => /supply chain analyst/i.test(c))) {
+    throw new Error(`Expected a "Supply Chain Analyst" chip, got ${JSON.stringify(cleaned)}`);
+  }
+  console.log('   OK — chip is "Supply Chain Analyst", not the fragment.\n');
+
   await browser.close();
 }
 

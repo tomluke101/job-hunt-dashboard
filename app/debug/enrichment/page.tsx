@@ -22,6 +22,14 @@ const STATUS_ACCENT: Record<
 const STATUS_ORDER = ["matched", "ambiguous", "unmatched", "pending", "error"];
 const SIZE_ORDER = ["startup", "small", "mid", "large", "enterprise", "unknown"];
 
+// Where each size band came from. Keys match `company_enrichment.size_source`.
+const SIZE_SOURCE_ORDER: Array<{ key: string; label: string }> = [
+  { key: "xbrl", label: "Filed employee count" },
+  { key: "llm-band", label: "Employer brand" },
+  { key: "llm-band-override", label: "Brand (filing was wrong entity)" },
+  { key: "none", label: "Undetermined" },
+];
+
 function formatDate(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -131,10 +139,30 @@ export default async function EnrichmentDebugPage() {
               );
             })}
           </div>
+          <div className="mt-4 pt-3 border-t border-slate-100">
+            <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
+              Decided by
+            </h3>
+            <div className="space-y-1.5">
+              {SIZE_SOURCE_ORDER.map(({ key, label }) => (
+                <div key={key} className="flex items-center justify-between">
+                  <span className="text-xs text-slate-600">{label}</span>
+                  <span className="text-xs font-semibold text-slate-900">
+                    {s.by_size_source[key] ?? 0}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
           <p className="text-[11px] text-slate-400 mt-3 leading-snug">
-            Rough headcount buckets from active officers × company age × entity
-            type. Every row records a size_confidence so low-signal guesses can be
-            greyed out when we surface this to users.
+            A band comes from a real employee count filed with Companies House
+            when one exists (only ~21% of firms disclose one — big private
+            companies file paper accounts). Otherwise we ask what size the{" "}
+            <em>employer brand</em> is, and take the answer only at high
+            confidence — an unrecognised company stays Unknown rather than get a
+            guess. If a filed count disagrees with the brand by 2+ bands,
+            Companies House matched the wrong entity (it matched “Amazon Flex” to
+            a 2-employee shell) and the brand wins.
           </p>
         </div>
       </section>

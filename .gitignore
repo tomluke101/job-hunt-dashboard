@@ -41,3 +41,7 @@ yarn-error.log*
 next-env.d.ts
 
 .vercel
+
+# Playwright verification screenshots
+scripts/.screenshots/
+test-results/

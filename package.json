@@ -24,6 +24,8 @@
     "unpdf": "^1.6.0"
   },
   "devDependencies": {
+    "@clerk/testing": "^2.2.7",
+    "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

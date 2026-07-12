@@ -97,10 +97,14 @@ export default function EnrichmentActions({ initialRemaining }: Props) {
         <div>
           <h2 className="text-sm font-semibold text-slate-900">Re-enrich all rows</h2>
           <p className="text-xs text-slate-500 mt-1">
-            Force-refresh every cached company so it re-derives with the current
-            heuristic. Use after a heuristic change (e.g. adding the statutory
-            accounts-type signal). Bounded per click; keep clicking until
-            &quot;Remaining stale&quot; hits 0.
+            Force-refresh every cached company so its size band and recruiter flag
+            re-derive with the current logic. Bounded to ~50s per click, so a full
+            pass takes many clicks — for a bulk re-run prefer{" "}
+            <code className="text-[11px] bg-slate-100 px-1 py-0.5 rounded">
+              npx tsx scripts/backfill-enrichment.ts --commit
+            </code>
+            , which has no time budget. Keep clicking until &quot;Remaining
+            stale&quot; hits 0.
           </p>
         </div>
         <button

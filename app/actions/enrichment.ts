@@ -240,6 +240,7 @@ export interface EnrichmentStatusSummary {
   total: number;
   by_status: Record<string, number>;
   by_size: Record<string, number>;
+  by_size_source: Record<string, number>;
   by_confidence: Record<string, number>;
   recruiters_flagged: number;
   with_employee_count: number;
@@ -272,6 +273,7 @@ export async function getEnrichmentSummary(): Promise<EnrichmentStatusSummary> {
     total: 0,
     by_status: {},
     by_size: {},
+    by_size_source: {},
     by_confidence: {},
     recruiters_flagged: 0,
     with_employee_count: 0,
@@ -286,7 +288,7 @@ export async function getEnrichmentSummary(): Promise<EnrichmentStatusSummary> {
     supabase
       .from("company_enrichment")
       .select(
-        "normalised_name, ch_company_name, enrichment_status, size_bucket, size_confidence, is_likely_recruiter, ch_sic_codes, ch_accounts_type, ch_officers_active_count, ch_officers_total_count, ch_employee_count, ch_employee_count_period_end, ch_employee_count_status, last_refreshed_at, enrichment_error, updated_at"
+        "normalised_name, ch_company_name, enrichment_status, size_bucket, size_confidence, size_source, is_likely_recruiter, ch_sic_codes, ch_accounts_type, ch_officers_active_count, ch_officers_total_count, ch_employee_count, ch_employee_count_period_end, ch_employee_count_status, last_refreshed_at, enrichment_error, updated_at"
       )
       .order("updated_at", { ascending: false })
       .limit(2000),
@@ -308,6 +310,7 @@ export async function getEnrichmentSummary(): Promise<EnrichmentStatusSummary> {
 
   const by_status: Record<string, number> = {};
   const by_size: Record<string, number> = {};
+  const by_size_source: Record<string, number> = {};
   const by_confidence: Record<string, number> = {};
   let recruiters = 0;
   let withEmpCount = 0;
@@ -316,6 +319,8 @@ export async function getEnrichmentSummary(): Promise<EnrichmentStatusSummary> {
     by_status[st] = (by_status[st] ?? 0) + 1;
     const sb = (row.size_bucket as string) ?? "unknown";
     by_size[sb] = (by_size[sb] ?? 0) + 1;
+    const src = (row.size_source as string) ?? 'none';
+    by_size_source[src] = (by_size_source[src] ?? 0) + 1;
     const sc = (row.size_confidence as string) ?? "unknown";
     by_confidence[sc] = (by_confidence[sc] ?? 0) + 1;
     if (row.is_likely_recruiter) recruiters++;
@@ -326,6 +331,7 @@ export async function getEnrichmentSummary(): Promise<EnrichmentStatusSummary> {
     total: all.length,
     by_status,
     by_size,
+    by_size_source,
     by_confidence,
     recruiters_flagged: recruiters,
     with_employee_count: withEmpCount,

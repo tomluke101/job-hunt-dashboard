@@ -14,6 +14,8 @@ import {
   Building,
   ChevronDown,
   ChevronUp,
+  Users,
+  Briefcase,
 } from "lucide-react";
 import type { ShortlistEntry } from "@/app/actions/searches";
 
@@ -69,6 +71,15 @@ export default function JobCard({ entry, onInterested, onReject, onApplied, onDe
             {p.location_raw && <span className="flex items-center gap-1"><MapPin size={13} className="text-slate-400" />{p.location_raw}</span>}
             <WorkingModelBadge model={p.working_model} />
             <SalaryBadge min={p.salary_min} max={p.salary_max} currency={p.salary_currency} listed={p.salary_listed} />
+            <CompanySizeBadge enrichment={p.enrichment} />
+            {p.enrichment?.is_likely_recruiter && (
+              <span
+                className="flex items-center gap-1 rounded-md bg-amber-50 border border-amber-200 text-amber-700 px-1.5 py-0.5 text-xs"
+                title="Employer looks like a recruitment agency (SIC 78* or curated name match)"
+              >
+                <Briefcase size={11} /> Recruiter
+              </span>
+            )}
           </div>
         </div>
         {p.source_url && (
@@ -182,6 +193,89 @@ function WorkingModelBadge({ model }: { model: string | null }) {
     <span className="flex items-center gap-1 text-slate-600">
       <Icon size={12} className="text-slate-400" />
       {label}
+    </span>
+  );
+}
+
+const SIZE_LABELS: Record<string, string> = {
+  startup: "Startup",
+  small: "Small",
+  mid: "Mid",
+  large: "Large",
+  enterprise: "Enterprise",
+};
+const SIZE_STYLES: Record<string, string> = {
+  startup: "bg-purple-50 border-purple-200 text-purple-700",
+  small: "bg-sky-50 border-sky-200 text-sky-700",
+  mid: "bg-emerald-50 border-emerald-200 text-emerald-700",
+  large: "bg-indigo-50 border-indigo-200 text-indigo-700",
+  enterprise: "bg-slate-100 border-slate-300 text-slate-700",
+};
+
+// Compact company-size chip on each job card. Renders one of three states:
+//   1. Known bucket (Startup/Small/Mid/Large/Enterprise) — coloured chip, may
+//      include a real employee count when iXBRL parse succeeded.
+//   2. Enriched but bucket = unknown — dormant/dissolved matched entity or
+//      the accounts-type field is missing. Grey "Unknown size" chip.
+//   3. No enrichment row yet — waiting on the batch to catch up. Grey
+//      "Size pending" chip so the user knows why the info is missing.
+function CompanySizeBadge({
+  enrichment,
+}: {
+  enrichment: {
+    size_bucket: string | null;
+    size_confidence: string | null;
+    ch_employee_count: number | null;
+    ch_company_name: string | null;
+  } | null;
+}) {
+  // State 3: no enrichment row at all
+  if (!enrichment) {
+    return (
+      <span
+        className="flex items-center gap-1 rounded-md border border-dashed border-slate-300 bg-white text-slate-400 px-1.5 py-0.5 text-xs"
+        title="Waiting for Companies House lookup on this employer. Should populate on the next run."
+      >
+        <Users size={11} />
+        Size pending
+      </span>
+    );
+  }
+  const bucket = enrichment.size_bucket ?? "unknown";
+  // State 2: enrichment row exists but size can't be determined
+  if (bucket === "unknown") {
+    return (
+      <span
+        className="flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 text-slate-500 px-1.5 py-0.5 text-xs"
+        title={
+          enrichment.ch_company_name
+            ? `Matched to ${enrichment.ch_company_name} but its Companies House data doesn't identify a size (usually dormant, dissolved, or a small subsidiary).`
+            : "Couldn't determine size from Companies House data."
+        }
+      >
+        <Users size={11} />
+        Size unknown
+      </span>
+    );
+  }
+  // State 1: known bucket
+  const label = SIZE_LABELS[bucket] ?? bucket;
+  const style = SIZE_STYLES[bucket] ?? "bg-slate-50 border-slate-200 text-slate-600";
+  const employees = enrichment.ch_employee_count;
+  const empLabel = employees ? ` · ${employees.toLocaleString("en-GB")} emp` : "";
+  const tooltip = [
+    enrichment.ch_company_name ? `CH: ${enrichment.ch_company_name}` : null,
+    enrichment.size_confidence ? `confidence: ${enrichment.size_confidence}` : null,
+    employees ? `${employees.toLocaleString("en-GB")} employees (avg during period)` : null,
+  ].filter(Boolean).join(" · ");
+  return (
+    <span
+      className={`flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs ${style}`}
+      title={tooltip || undefined}
+    >
+      <Users size={11} />
+      {label}
+      {empLabel}
     </span>
   );
 }

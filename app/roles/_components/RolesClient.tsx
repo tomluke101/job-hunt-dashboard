@@ -45,6 +45,10 @@ export default function RolesClient({ initialSearches, initialActiveId, initialS
   const [editorMode, setEditorMode] = useState<"create" | "edit">("create");
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastRunNotice, setLastRunNotice] = useState<{
+    terms: string[];
+    source: "keywords" | "target_titles" | "description" | "browse";
+  } | null>(null);
   const [isRunning, startRun] = useTransition();
   const [isDeleting, startDelete] = useTransition();
 
@@ -91,11 +95,17 @@ export default function RolesClient({ initialSearches, initialActiveId, initialS
   function handleRun() {
     if (!active) return;
     setError(null);
+    setLastRunNotice(null);
     startRun(async () => {
       const res = await runSearchNow(active.id);
       if (res.error) {
         setError(res.error);
         return;
+      }
+      if (res.termsDerivedFrom === "description" && res.searchTermsUsed?.length) {
+        setLastRunNotice({ terms: res.searchTermsUsed, source: "description" });
+      } else if (res.termsDerivedFrom === "browse") {
+        setLastRunNotice({ terms: [], source: "browse" });
       }
       await refreshActive(active.id, "new");
       setPane("new");
@@ -234,6 +244,39 @@ export default function RolesClient({ initialSearches, initialActiveId, initialS
               </div>
             )}
 
+            {lastRunNotice && lastRunNotice.source === "description" && (
+              <div className="mb-4 flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+                <Sparkles size={16} className="mt-0.5 shrink-0 text-blue-600" />
+                <div className="flex-1">
+                  <p className="font-medium">Searched from your description</p>
+                  <p className="text-blue-700/90 text-xs mt-0.5">
+                    No keywords or job titles set, so we searched for:{" "}
+                    <span className="font-medium">{lastRunNotice.terms.join(", ")}</span>. Add specific
+                    keywords or job titles in Edit for tighter results.
+                  </p>
+                </div>
+                <button className="text-blue-500 hover:text-blue-700 text-xs" onClick={() => setLastRunNotice(null)}>
+                  dismiss
+                </button>
+              </div>
+            )}
+            {lastRunNotice && lastRunNotice.source === "browse" && (
+              <div className="mb-4 flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+                <Sparkles size={16} className="mt-0.5 shrink-0 text-blue-600" />
+                <div className="flex-1">
+                  <p className="font-medium">Browsing across sectors</p>
+                  <p className="text-blue-700/90 text-xs mt-0.5">
+                    No role type set, so we pulled jobs matching your filters (working model, salary, distance)
+                    and ranked by quality &amp; salary-fit. Add specific keywords or job titles in Edit for a
+                    role-focused search.
+                  </p>
+                </div>
+                <button className="text-blue-500 hover:text-blue-700 text-xs" onClick={() => setLastRunNotice(null)}>
+                  dismiss
+                </button>
+              </div>
+            )}
+
             <PaneTabs
               value={pane}
               onChange={(next) => {
@@ -347,15 +390,89 @@ function PaneTabs({ value, onChange }: { value: PaneState; onChange: (v: PaneSta
 
 function RunSummary({ runs }: { runs: RunRecord[] }) {
   const latest = runs[0];
+  const [expanded, setExpanded] = useState(false);
   if (!latest || !latest.finished_at) return null;
   const sources = latest.source_counts ?? {};
-  const drops = latest.filter_drops ?? {};
+  const drops = (latest.filter_drops ?? {}) as Record<string, number>;
+  const dedupe = (latest.dedupe_stats ?? {}) as Record<string, unknown>;
   const dropSum = Object.values(drops).reduce((a, b) => a + (b ?? 0), 0);
   const sourceStr = Object.entries(sources).map(([k, v]) => `${k}: ${v}`).join(", ") || "—";
+
+  // Human-readable labels for each drop reason.
+  const DROP_LABEL: Record<string, string> = {
+    title_irrelevant: "title didn't match",
+    salary_floor: "under salary floor",
+    hidden_salary: "no salary listed",
+    working_model: "wrong working model",
+    industry_exclude: "excluded industry",
+    expired: "job expired",
+    already_decided: "already decided (rejected / applied / interested)",
+    company_size: "company size didn't match",
+    recruiter: "posted by a recruitment agency",
+  };
+  const rankedPool = (dedupe.ranked_pool as number | undefined) ?? undefined;
+  const target = (dedupe.jobs_per_run_target as number | undefined) ?? undefined;
+  const sizeByBucket = (dedupe.size_drops_by_bucket as Record<string, number> | undefined) ?? {};
+
+  const dropRows = Object.entries(drops)
+    .filter(([, n]) => (n ?? 0) > 0)
+    .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0));
+
   return (
-    <p className="mt-1 text-xs text-slate-500">
-      Last run {relativeTime(latest.finished_at)} · pulled from {sourceStr} · dropped {dropSum} by filters · {latest.shortlist_count ?? 0} shortlisted
-    </p>
+    <div className="mt-1 text-xs text-slate-500">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="hover:text-slate-700"
+      >
+        Last run {relativeTime(latest.finished_at)} · pulled from {sourceStr} · dropped {dropSum} by filters · {latest.shortlist_count ?? 0} shortlisted
+        {" "}
+        <span className="text-slate-400 underline decoration-dotted">{expanded ? "hide" : "details"}</span>
+      </button>
+      {expanded && (
+        <div className="mt-2 bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
+          {target && (
+            <p className="text-slate-600">
+              Target: <span className="font-medium">{target}</span> jobs · ranked pool: <span className="font-medium">{rankedPool ?? "—"}</span> · shortlisted: <span className="font-medium text-slate-900">{latest.shortlist_count ?? 0}</span>
+            </p>
+          )}
+          {dropRows.length > 0 && (
+            <div>
+              <p className="text-slate-500 uppercase tracking-wider text-[10px] font-semibold mb-1">Filter drops</p>
+              <ul className="space-y-0.5">
+                {dropRows.map(([k, n]) => (
+                  <li key={k} className="flex items-center justify-between gap-3">
+                    <span className="text-slate-600">{DROP_LABEL[k] ?? k}</span>
+                    <span className="tabular-nums font-medium text-slate-800">{n}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {(drops.company_size ?? 0) > 0 && Object.values(sizeByBucket).some((v) => v > 0) && (
+            <div>
+              <p className="text-slate-500 uppercase tracking-wider text-[10px] font-semibold mb-1">Sizes filtered out</p>
+              <ul className="space-y-0.5">
+                {Object.entries(sizeByBucket)
+                  .filter(([, v]) => v > 0)
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([bucket, n]) => (
+                    <li key={bucket} className="flex items-center justify-between gap-3">
+                      <span className="text-slate-600 capitalize">{bucket}</span>
+                      <span className="tabular-nums font-medium text-slate-800">{n}</span>
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
+          {(latest.shortlist_count ?? 0) < (target ?? 0) && (
+            <p className="text-slate-600 leading-relaxed pt-1 border-t border-slate-200">
+              Fewer results than you asked for. If most drops are &quot;company size&quot;, either tick more size buckets, tick &quot;include jobs where we can&apos;t tell size&quot;, or accept that few large-employer jobs came through this pull.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

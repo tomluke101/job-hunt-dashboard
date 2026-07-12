@@ -2,18 +2,26 @@
 // Cheap axes only for now. Match-to-user + career-fit (LLM) added in next iteration.
 
 import { createServerSupabaseClient } from "@/lib/supabase-server";
-import type { SearchCriteria, FilterableWorkingModel } from "./types";
+import type { SearchCriteria, FilterableWorkingModel, CommuteMode } from "./types";
 import { normalise, type NormalisedJob } from "./normalise";
 import { reedAdapter } from "./sources/reed";
+import { adzunaAdapter } from "./sources/adzuna";
+import type { JobSourceAdapter, PullInput } from "./types";
+import { extractSearchTerms } from "./title-suggestions";
+import { enrichBatch } from "@/lib/enrichment/batch";
+import { normaliseCompanyName } from "@/lib/enrichment/normalise-company";
 
 export interface RunSearchInput {
   userId: string;
   searchId: string;
   name: string;
+  description: string | null;
   criteria: SearchCriteria;
   jobsPerRun: number;
   trigger: "manual" | "scheduled";
 }
+
+export type TermsSource = "keywords" | "target_titles" | "description" | "browse";
 
 export interface RunSearchResult {
   shortlisted: number;
@@ -22,13 +30,64 @@ export interface RunSearchResult {
   filtered: number;
   runId: string | null;
   error?: string;
+  searchTermsUsed?: string[];
+  termsDerivedFrom?: TermsSource;
 }
 
-// Rough conversion. Real commute calc lives behind a maps API and gets wired
-// in step 6 of the build order. For now: 20 mph average → miles ≈ minutes/3.
-function commuteMinutesToRadiusMiles(mins: number | null, fallback: number | null): number | null {
-  if (mins) return Math.max(5, Math.round(mins / 3));
-  return fallback;
+// Resolve what to actually send to the job APIs. The search NAME is a label,
+// never a query. Priority: user's explicit keywords → explicit target titles
+// → terms extracted from the description. If none of those produce anything,
+// we run in BROWSE mode — no keyword sent to the APIs, the pull is driven by
+// location + salary + working-model filters. A "general" search of the form
+// "hybrid, decent pay, 40 miles from home" is legitimate and should return
+// jobs across sectors, not fail.
+function resolveSearchTerms(
+  criteria: SearchCriteria,
+  description: string | null
+): { terms: string; source: TermsSource; extracted?: string[] } {
+  const kw = (criteria.keywords ?? "").trim();
+  if (kw) return { terms: kw, source: "keywords" };
+  if (criteria.target_titles?.length) {
+    return { terms: criteria.target_titles.join(", "), source: "target_titles" };
+  }
+  const extracted = extractSearchTerms(description ?? "");
+  if (extracted.length) {
+    return { terms: extracted.join(", "), source: "description", extracted };
+  }
+  return { terms: "", source: "browse" };
+}
+
+// Mode-aware minutes → straight-line miles. Assumed average speeds:
+//   car          30 mph  (motorway/A-road mix, off-peak)
+//   public       18 mph  (bus/train + walk to station)
+//   cycle        12 mph  (urban commuter pace)
+// These are approximations — actual per-postcode commute lives behind the
+// Google Distance Matrix wiring in step 6 of the build order.
+const COMMUTE_MPH: Record<CommuteMode, number> = {
+  car: 30,
+  public_transport: 18,
+  cycle: 12,
+};
+
+function resolveRadiusMiles(loc: SearchCriteria["location"]): number | null {
+  if (loc.willing_to_relocate) return null;
+  const mode = loc.filter_mode ?? "distance";
+  if (mode === "anywhere") return null;
+  if (mode === "commute" && loc.max_commute_minutes) {
+    const mph = COMMUTE_MPH[loc.commute_mode] ?? 20;
+    return Math.max(1, Math.round((loc.max_commute_minutes / 60) * mph));
+  }
+  if (mode === "distance" && loc.max_distance_miles) {
+    return Math.max(1, Math.round(loc.max_distance_miles));
+  }
+  // Legacy row without an explicit mode set — fall back to whichever value
+  // is populated (older rows only stored max_commute_minutes).
+  if (loc.max_distance_miles) return Math.max(1, Math.round(loc.max_distance_miles));
+  if (loc.max_commute_minutes) {
+    const mph = COMMUTE_MPH[loc.commute_mode] ?? 20;
+    return Math.max(1, Math.round((loc.max_commute_minutes / 60) * mph));
+  }
+  return loc.fallback_radius_miles;
 }
 
 // Tokenise a free-text field into content words. Cheap, no dependencies.
@@ -43,18 +102,13 @@ const STOPWORDS = new Set([
 // don't strip content words we care about (analyst, driver, engineer, etc.).
 const TITLE_STOP = new Set(["the","a","an","and","or","of","to","in","for","with","on","at","by","from","-"]);
 
-// Level qualifiers that appear at the end of role phrases ("senior", "manager")
-// which shouldn't be treated as THE core noun.
-const LEVEL_QUALIFIERS = new Set(["junior","senior","lead","principal","staff","chief","head","director","manager","assistant","intern","graduate"]);
-
-// The role's core noun is the last content word that isn't a level qualifier.
-// e.g. "senior supply chain analyst" -> "analyst"; "engineering manager" -> "engineering".
-function coreRoleNoun(askWords: string[]): string | null {
-  for (let i = askWords.length - 1; i >= 0; i--) {
-    if (!LEVEL_QUALIFIERS.has(askWords[i])) return askWords[i];
-  }
-  return askWords[askWords.length - 1] ?? null;
-}
+// Words that mark seniority, not role type. Stripped from the chip during
+// title matching so "Senior Data Analyst" filters the same as "Data Analyst"
+// but "Head of Marketing" still requires Head (Head IS the role type here).
+const SENIORITY_MARKERS = new Set([
+  "junior", "senior", "entry", "mid", "graduate", "intern", "trainee",
+  "apprentice", "experienced", "level", "principal", "staff",
+]);
 
 // Light stemmer for job-title matching. Strips common English plural and
 // gerund suffixes so "Analysts" ~ "Analyst", "Buyers" ~ "Buyer",
@@ -85,15 +139,38 @@ function titleContainsStem(titleLower: string, word: string): boolean {
   return false;
 }
 
-// True if the job title is relevant to a specific target phrase.
-// Case-insensitive, plural-tolerant.
+// True if a job title is relevant to a target chip. The rule:
+//   1. Full-phrase substring match (highest signal) → accept.
+//   2. Strip seniority markers (senior, junior, entry, mid, graduate, etc.).
+//   3. If 1 content word remains: title must contain it (stem-matched).
+//      "Analyst" chip → any Analyst title.
+//   4. If 2+ content words remain: LAST is the role noun, the rest are
+//      qualifiers. Title must contain the role noun AND at least one
+//      qualifier. This prevents "Marketing Manager" from matching a
+//      "Construction Site Manager" chip via bare "manager", while still
+//      accepting "Site Manager" (role=manager, has qualifier "site") and
+//      "Construction Manager" (role=manager, has qualifier "construction").
+//   5. If the chip is pure seniority (e.g. "Senior"), fall back to matching
+//      any of those words in the title.
 function titleRelevantOne(title: string, phrase: string, askWords: string[]): boolean {
   const t = title.toLowerCase();
   if (phrase && t.includes(phrase)) return true;
   if (!askWords.length) return true;
-  const core = coreRoleNoun(askWords);
-  if (core && titleContainsStem(t, core)) return true;
-  return false;
+
+  const contentWords = askWords.filter((w) => !SENIORITY_MARKERS.has(w));
+
+  if (contentWords.length === 0) {
+    return askWords.some((w) => titleContainsStem(t, w));
+  }
+
+  if (contentWords.length === 1) {
+    return titleContainsStem(t, contentWords[0]);
+  }
+
+  const roleNoun = contentWords[contentWords.length - 1];
+  const qualifiers = contentWords.slice(0, -1);
+  if (!titleContainsStem(t, roleNoun)) return false;
+  return qualifiers.some((q) => titleContainsStem(t, q));
 }
 
 // True if the job title matches ANY of the user's target phrases. Multi-role
@@ -188,33 +265,75 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
   const runId = runInsert.data?.id ?? null;
 
   const sourceCounts: Record<string, number> = {};
-  const filterDrops: Record<string, number> = { salary_floor: 0, working_model: 0, hidden_salary: 0, industry_exclude: 0, expired: 0 };
+  const filterDrops: Record<string, number> = {
+    salary_floor: 0, working_model: 0, hidden_salary: 0, industry_exclude: 0,
+    expired: 0, already_decided: 0,
+    // Post-enrichment filters (recorded during upsert phase, not the hard-filter phase).
+    company_size: 0, recruiter: 0,
+  };
   const allRaw: NormalisedJob[] = [];
 
-  const keywords = (input.criteria.keywords || input.name).trim();
+  // Cross-search "already decided" gate. Jobs the user has explicitly
+  // rejected / marked interested / applied to / deleted stay hidden across
+  // every future search — one decision is enough. Transient "new" rows do
+  // NOT block, so deleting a search (which cascade-wipes its 'new' rows)
+  // frees those jobs to resurface, which is what makes iterative testing
+  // bearable. Match by (source, source_id) — the stable identity of a
+  // posting across runs.
+  const DECIDED_STATES = ["rejected_user", "rejected_employer", "interested", "applied", "deleted"] as const;
+  const decidedKeys = new Set<string>();
+  {
+    const { data: decidedRows } = await supabase
+      .from("job_shortlist")
+      .select("posting_id")
+      .eq("user_id", input.userId)
+      .in("state", DECIDED_STATES as unknown as string[]);
+    const decidedPostingIds = (decidedRows ?? []).map((r) => r.posting_id as string);
+    if (decidedPostingIds.length) {
+      const { data: postings } = await supabase
+        .from("job_postings")
+        .select("source, source_id")
+        .in("id", decidedPostingIds);
+      for (const p of postings ?? []) {
+        if (p.source && p.source_id) decidedKeys.add(`${p.source}|${p.source_id}`);
+      }
+    }
+  }
 
-  // ---- Pull: Reed ----
-  try {
-    const radius = commuteMinutesToRadiusMiles(
-      input.criteria.location.max_commute_minutes,
-      input.criteria.location.fallback_radius_miles
-    );
-    const reed = await reedAdapter.pull({
-      keywords,
-      locationText: input.criteria.location.postcode,
-      postcode: input.criteria.location.postcode,
-      radiusMiles: radius,
-      minSalary: input.criteria.salary.floor,
-      maxSalary: null,
-      limit: Math.max(50, input.jobsPerRun * 5),
-      sinceDate: null,
-    });
-    sourceCounts.reed = reed.jobs.length;
-    if (reed.error) console.error("[runSearch] Reed error:", reed.error);
-    for (const j of reed.jobs) allRaw.push(normalise(j));
-  } catch (e) {
-    console.error("[runSearch] Reed pull threw", e);
-    sourceCounts.reed = 0;
+  const resolved = resolveSearchTerms(input.criteria, input.description);
+  const keywords = resolved.terms;
+  const isBrowseMode = resolved.source === "browse";
+
+  // ---- Fan out across sources in parallel ----
+  // Every adapter shares the same PullInput. Cross-source dedupe runs below.
+  const radius = resolveRadiusMiles(input.criteria.location);
+  const isNationwide =
+    input.criteria.location.willing_to_relocate ||
+    input.criteria.location.filter_mode === "anywhere";
+  const pullInput: PullInput = {
+    keywords,
+    locationText: isNationwide ? null : input.criteria.location.postcode,
+    postcode: input.criteria.location.postcode,
+    radiusMiles: isNationwide ? null : radius,
+    minSalary: input.criteria.salary.floor,
+    maxSalary: null,
+    limit: Math.max(50, input.jobsPerRun * 5),
+    sinceDate: null,
+  };
+
+  const sources: JobSourceAdapter[] = [reedAdapter, adzunaAdapter];
+  const settled = await Promise.allSettled(sources.map((s) => s.pull(pullInput)));
+  for (let i = 0; i < sources.length; i++) {
+    const type = sources[i].type;
+    const r = settled[i];
+    if (r.status !== "fulfilled") {
+      console.error(`[runSearch] ${type} pull threw`, r.reason);
+      sourceCounts[type] = 0;
+      continue;
+    }
+    sourceCounts[type] = r.value.jobs.length;
+    if (r.value.error) console.error(`[runSearch] ${type} error:`, r.value.error);
+    for (const j of r.value.jobs) allRaw.push(normalise(j));
   }
 
   const pulled = allRaw.length;
@@ -236,13 +355,19 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
   const includeUnknownWM = input.criteria.working_model.include_unknown;
   const excludes = input.criteria.industries_exclude.map((s) => s.toLowerCase());
 
-  // Title-relevance hard filter. Uses the explicit `target_titles` list when
-  // the user set one (supports multi-role searches like
-  // ["supply chain analyst", "procurement analyst", "buyer"]) and falls back
-  // to the core noun of the keywords/search-name.
+  // Title-relevance hard filter. Uses the explicit `target_titles` list if
+  // the user set one (multi-role searches like ["supply chain analyst",
+  // "procurement analyst", "buyer"]). Falls back to splitting the keywords
+  // string on the same separators the target_titles input accepts. Never
+  // uses the search NAME — the name is a label, not a query. In BROWSE mode
+  // (no keywords, no titles, no description-derived terms) targetSets stays
+  // empty and this filter becomes a no-op — the pull is filter-driven only.
   const rawTargets = input.criteria.target_titles?.length
     ? input.criteria.target_titles
-    : [input.criteria.keywords || input.name];
+    : (input.criteria.keywords ?? "")
+        .split(/[,/\n]+|\s+and\s+/gi)
+        .map((s) => s.trim())
+        .filter(Boolean);
   const targetSets = rawTargets
     .map((t) => t.trim().toLowerCase())
     .filter(Boolean)
@@ -253,6 +378,10 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
   filterDrops.title_irrelevant = 0;
 
   for (const j of deduped) {
+    if (decidedKeys.has(`${j.source}|${j.source_id}`)) {
+      filterDrops.already_decided++;
+      continue;
+    }
     if (j.expires_at && new Date(j.expires_at).getTime() < now) {
       filterDrops.expired++;
       continue;
@@ -300,7 +429,30 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
   const ranked = kept
     .map((j) => ({ j, r: cheapRankScore(j, input.criteria, input.name, description) }))
     .sort((a, b) => b.r.composite - a.r.composite);
-  const top = ranked.slice(0, input.jobsPerRun);
+
+  // ---- Companies House enrichment (best-effort, budget-capped) ----
+  //
+  // We enrich a MUCH bigger pool than jobsPerRun so the size + recruiter
+  // filters have room to work. If a user asks for 10 mid/large/enterprise
+  // jobs, we can't just enrich the top-10 by rank — most of those will be
+  // small businesses posting on Reed/Adzuna. Enrich the top-K by rank (K=50)
+  // and let the filter loop below pick the top-N survivors.
+  //
+  // Budget: 45s (Vercel function has 60s max via /roles page-level
+  // maxDuration). Cached rows are near-instant (~200ms each); only fresh CH
+  // fetches burn real budget (~5s each). If budget runs out, remaining
+  // companies stay un-enriched → filter treats them as size=unknown.
+  const ENRICH_POOL_MAX = 50;
+  const enrichPoolLen = Math.min(ENRICH_POOL_MAX, ranked.length);
+  const enrichPool = ranked.slice(0, enrichPoolLen);
+  const uniqueCompanies = Array.from(new Set(enrichPool.map(({ j }) => j.company).filter(Boolean)));
+  const enrichmentResult = await enrichBatch(uniqueCompanies, 45_000);
+  const enrichmentByNorm = enrichmentResult.byNormalisedName;
+  console.log(
+    `[runSearch] enrichment stats: pool=${enrichPoolLen} unique=${uniqueCompanies.length} ` +
+    `processed=${enrichmentResult.stats.processed} deferred=${enrichmentResult.stats.deferred} ` +
+    `elapsed=${enrichmentResult.stats.elapsed_ms}ms`
+  );
 
   // ---- Upsert postings + shortlist ----
   // Look up which posting_ids already sit on this user's shortlist for this
@@ -316,9 +468,56 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     for (const row of existing ?? []) existingByPosting.set(row.posting_id as string, { id: row.id as string, state: row.state as string });
   }
 
+  // Company-size + recruiter filters. Applied at upsert time because they
+  // depend on enrichment data we just fetched. Postings that don't yet have
+  // an enrichment row are treated as size='unknown' — filtered per the
+  // user's include_unknown flag (defaults on).
+  const acceptedSizes = new Set<string>(input.criteria.company_size?.accepted ?? []);
+  const includeUnknownSize = input.criteria.company_size?.include_unknown ?? true;
+  const hideRecruiters = input.criteria.hide_recruiters === true;
+
+  // Per-bucket drop breakdown so we can tell the user WHICH sizes were filtered.
+  const sizeDropByBucket: Record<string, number> = {
+    startup: 0, small: 0, mid: 0, large: 0, enterprise: 0, unknown: 0,
+  };
+
+  // Iterate the FULL ranked list. For each candidate:
+  //   1. Upsert to job_postings (ALWAYS — so its enrichment_id persists and
+  //      future runs / after()-sweeps have a stable record). This keeps the
+  //      pipeline stateful across runs, so cache warmth grows monotonically.
+  //   2. Apply size + recruiter filter.
+  //   3. If passes filter AND we haven't hit jobsPerRun yet, upsert to
+  //      job_shortlist.
+  //   4. Stop iterating when the shortlist target is reached (no wasted work
+  //      past that point).
   let shortlisted = 0;
-  for (let i = 0; i < top.length; i++) {
-    const { j, r } = top[i];
+  for (let i = 0; i < ranked.length && shortlisted < input.jobsPerRun; i++) {
+    const { j, r } = ranked[i];
+    const normalisedCompany = normaliseCompanyName(j.company);
+    const enrichment = normalisedCompany ? enrichmentByNorm.get(normalisedCompany) : null;
+
+    // Company-size filter (recorded but doesn't skip the job_postings upsert).
+    const bucket = (enrichment?.size_bucket as string | null) ?? "unknown";
+    const bucketKnown = bucket !== "unknown" && !!enrichment;
+    let passesFilter = true;
+    if (bucketKnown) {
+      if (acceptedSizes.size > 0 && !acceptedSizes.has(bucket)) {
+        passesFilter = false;
+        filterDrops.company_size++;
+        sizeDropByBucket[bucket] = (sizeDropByBucket[bucket] ?? 0) + 1;
+      }
+    } else {
+      if (!includeUnknownSize) {
+        passesFilter = false;
+        filterDrops.company_size++;
+        sizeDropByBucket.unknown++;
+      }
+    }
+    if (passesFilter && hideRecruiters && enrichment?.is_likely_recruiter) {
+      passesFilter = false;
+      filterDrops.recruiter++;
+    }
+
     const upsert = await supabase
       .from("job_postings")
       .upsert(
@@ -341,6 +540,8 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
           expires_at: j.expires_at,
           dedupe_hash: j.dedupe_hash,
           quality_score: j.quality_score,
+          normalised_company_name: normalisedCompany || null,
+          enrichment_id: enrichment?.id ?? null,
           last_seen_at: new Date().toISOString(),
         },
         { onConflict: "source,source_id" }
@@ -352,6 +553,11 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       continue;
     }
     const posting_id = upsert.data.id;
+
+    // If the posting was upserted but failed the size/recruiter filter, skip
+    // the shortlist step. The job_postings row still persists so its
+    // enrichment_id (and any future re-derivations) live on.
+    if (!passesFilter) continue;
 
     const rankingPayload = {
       quality_score: r.quality,
@@ -366,7 +572,7 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
         keyword_hits: r.hits,
         quality_reasons: j.quality_reasons,
         rank_position: i + 1,
-        of: top.length,
+        of: ranked.length,
       },
     } as const;
 
@@ -396,12 +602,32 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     }
   }
 
+  const searchTermsUsed: string[] =
+    resolved.source === "keywords"
+      ? [keywords]
+      : resolved.source === "target_titles"
+      ? input.criteria.target_titles ?? []
+      : resolved.source === "description"
+      ? resolved.extracted ?? []
+      : []; // browse mode — no query terms
+  void isBrowseMode; // reserved for adapter-specific handling; currently
+                      // adapters already treat empty keywords as browse.
+
   await supabase
     .from("job_search_runs")
     .update({
       finished_at: new Date().toISOString(),
       source_counts: sourceCounts,
-      dedupe_stats: { before: pulled, after: deduped.length },
+      dedupe_stats: {
+        before: pulled,
+        after: deduped.length,
+        search_terms: searchTermsUsed,
+        terms_source: resolved.source,
+        enrichment: enrichmentResult.stats,
+        size_drops_by_bucket: sizeDropByBucket,
+        ranked_pool: ranked.length,
+        jobs_per_run_target: input.jobsPerRun,
+      },
       filter_drops: filterDrops,
       shortlist_count: shortlisted,
     })
@@ -418,5 +644,7 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     deduped: deduped.length,
     filtered: kept.length,
     runId,
+    searchTermsUsed,
+    termsDerivedFrom: resolved.source,
   };
 }

@@ -2,7 +2,10 @@
 
 import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { enrichBatch } from "@/lib/enrichment/batch";
+import { normaliseCompanyName } from "@/lib/enrichment/normalise-company";
 import {
   DEFAULT_CRITERIA,
   DEFAULT_RANKING_WEIGHTS,
@@ -13,6 +16,55 @@ import {
 } from "@/lib/job-search/types";
 import { runSearch } from "@/lib/job-search/pipeline";
 import { htmlToText, tidyText } from "@/lib/job-search/html-to-text";
+import { parseDescriptionWithAI } from "@/lib/job-search/ai-parse";
+import { getApiKeyValues } from "@/app/actions/api-keys";
+import { getTaskPreferences } from "@/app/actions/preferences";
+
+// Runs the AI parse on save when description is present. Uses the user's
+// connected providers via the existing BYOK infrastructure. Merges the
+// parsed output into the criteria the user typed — user's explicit inputs
+// always win, AI adds inferred detail on top.
+async function enrichCriteriaWithAI(
+  description: string | undefined | null,
+  criteria: SearchCriteria
+): Promise<SearchCriteria> {
+  if (!description?.trim()) return criteria;
+  try {
+    const [keys, taskPrefs] = await Promise.all([getApiKeyValues(), getTaskPreferences()]);
+    const parsed = await parseDescriptionWithAI({
+      description,
+      connectedProviders: keys,
+      providerPreference: taskPrefs["job-match"],
+    });
+    if (!parsed) return { ...criteria, ai_parsed: null };
+    return {
+      ...criteria,
+      ai_parsed: parsed,
+      target_titles: mergeStringArrays(criteria.target_titles, parsed.role_types),
+      industries_exclude: mergeStringArrays(criteria.industries_exclude, parsed.industries_avoid),
+      salary: {
+        ...criteria.salary,
+        floor: criteria.salary.floor ?? parsed.salary_floor,
+        target: criteria.salary.target ?? parsed.salary_target,
+      },
+    };
+  } catch (e) {
+    console.error("[enrichCriteriaWithAI] failed", e);
+    return criteria;
+  }
+}
+
+function mergeStringArrays(user: string[], ai: string[]): string[] {
+  const seen = new Set(user.map((s) => s.toLowerCase().trim()));
+  const out = [...user];
+  for (const s of ai) {
+    const key = s.toLowerCase().trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
+  }
+  return out;
+}
 
 // Old shortlist rows were saved with jd_text that hadn't been HTML-decoded or
 // paragraph-broken. Re-derive from jd_html at read-time so every existing row
@@ -62,6 +114,14 @@ export interface ShortlistPosting {
   source: string;
   source_url: string | null;
   posted_at: string | null;
+  // Enrichment (may be null if enrichment hasn't run yet for this posting).
+  enrichment: {
+    size_bucket: string | null;
+    size_confidence: string | null;
+    ch_employee_count: number | null;
+    ch_company_name: string | null;
+    is_likely_recruiter: boolean | null;
+  } | null;
 }
 
 export interface ShortlistEntry {
@@ -126,6 +186,12 @@ export async function getSearch(id: string): Promise<Search | null> {
   return data as Search;
 }
 
+// A saved search only needs a name — everything else is optional. Filters
+// alone (working model + salary + distance) produce a valid browse-mode
+// pull. Description is optional and drives semantic ranking. Keywords and
+// titles are optional and narrow the pull. Runtime behaviour is defined by
+// pipeline's resolveSearchTerms.
+
 export async function createSearch(input: {
   name: string;
   description?: string;
@@ -139,13 +205,14 @@ export async function createSearch(input: {
   if (!input.name?.trim()) return { error: "Name is required" };
 
   const supabase = createServerSupabaseClient();
-  const criteria: SearchCriteria = {
+  const baseCriteria: SearchCriteria = {
     ...DEFAULT_CRITERIA,
     ...(input.criteria ?? {}),
     location: { ...DEFAULT_CRITERIA.location, ...(input.criteria?.location ?? {}) },
     working_model: { ...DEFAULT_CRITERIA.working_model, ...(input.criteria?.working_model ?? {}) },
     salary: { ...DEFAULT_CRITERIA.salary, ...(input.criteria?.salary ?? {}) },
   };
+  const criteria = await enrichCriteriaWithAI(input.description, baseCriteria);
   const weights: CriteriaWeights = { ...DEFAULT_WEIGHTS, ...(input.weights ?? {}) };
 
   const { data, error } = await supabase
@@ -184,9 +251,16 @@ export async function updateSearch(
   const { userId } = await auth();
   if (!userId) return { error: "Unauthorised" };
   const supabase = createServerSupabaseClient();
+  // Re-run the AI parse if description changed and criteria is being
+  // updated. Keeps ai_parsed in sync with what the user actually wrote.
+  const patchWithAI = { ...patch };
+  if (patch.criteria && patch.description !== undefined) {
+    const enriched = await enrichCriteriaWithAI(patch.description, patch.criteria);
+    patchWithAI.criteria = enriched;
+  }
   const { error } = await supabase
     .from("job_searches")
-    .update({ ...patch, updated_at: new Date().toISOString() })
+    .update({ ...patchWithAI, updated_at: new Date().toISOString() })
     .eq("id", id)
     .eq("user_id", userId);
   if (error) return { error: error.message };
@@ -204,7 +278,13 @@ export async function deleteSearch(id: string): Promise<{ error?: string }> {
   return {};
 }
 
-export async function runSearchNow(id: string): Promise<{ shortlisted?: number; pulled?: number; error?: string }> {
+export async function runSearchNow(id: string): Promise<{
+  shortlisted?: number;
+  pulled?: number;
+  error?: string;
+  searchTermsUsed?: string[];
+  termsDerivedFrom?: "keywords" | "target_titles" | "description" | "browse";
+}> {
   const { userId } = await auth();
   if (!userId) return { error: "Unauthorised" };
   const supabase = createServerSupabaseClient();
@@ -221,16 +301,72 @@ export async function runSearchNow(id: string): Promise<{ shortlisted?: number; 
       userId,
       searchId: id,
       name: s.name,
+      description: (s.description as string | null) ?? null,
       criteria: s.criteria as SearchCriteria,
       jobsPerRun: s.jobs_per_run,
       trigger: "manual",
     });
     revalidatePath("/roles");
-    return { shortlisted: result.shortlisted, pulled: result.pulled, error: result.error };
+
+    // Background enrichment sweep — runs after the response is sent so it
+    // doesn't slow down the user. Enriches any postings the main pipeline
+    // didn't reach (positions beyond the top-K enrich pool, or that ran out
+    // of budget). This warms the cache so the NEXT run has more companies
+    // pre-enriched and thus more survivors of the size filter.
+    after(async () => {
+      try {
+        await postRunEnrichmentSweep();
+      } catch (e) {
+        console.error("[after runSearchNow] background enrichment sweep failed", e);
+      }
+    });
+
+    return {
+      shortlisted: result.shortlisted,
+      pulled: result.pulled,
+      error: result.error,
+      searchTermsUsed: result.searchTermsUsed,
+      termsDerivedFrom: result.termsDerivedFrom,
+    };
   } catch (e) {
     console.error("[runSearchNow]", e);
     return { error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+// Enriches un-enriched postings so subsequent searches have more cache.
+// Runs post-response via next/server `after()` — so the user doesn't wait.
+async function postRunEnrichmentSweep(): Promise<void> {
+  const supabase = createServerSupabaseClient();
+  const BUDGET_MS = 40_000;
+  // Take up to 30 postings currently missing enrichment. Ordered newest-first
+  // so recently-pulled jobs (higher chance of appearing in the next search)
+  // get enriched preferentially.
+  const { data: postings } = await supabase
+    .from("job_postings")
+    .select("id, company")
+    .is("enrichment_id", null)
+    .order("last_seen_at", { ascending: false, nullsFirst: false })
+    .limit(30);
+  if (!postings || postings.length === 0) return;
+
+  const rawNames = Array.from(new Set(postings.map((r) => (r.company as string) ?? "").filter(Boolean)));
+  if (rawNames.length === 0) return;
+
+  const { byNormalisedName } = await enrichBatch(rawNames, BUDGET_MS);
+
+  // Update the postings we just enriched.
+  for (const row of postings) {
+    const norm = normaliseCompanyName((row.company as string) ?? "");
+    if (!norm) continue;
+    const enrichment = byNormalisedName.get(norm);
+    if (!enrichment) continue;
+    await supabase
+      .from("job_postings")
+      .update({ normalised_company_name: norm, enrichment_id: enrichment.id })
+      .eq("id", row.id);
+  }
+  console.log(`[postRunEnrichmentSweep] enriched ${byNormalisedName.size}/${rawNames.length} companies`);
 }
 
 export async function listShortlist(
@@ -251,7 +387,11 @@ export async function listShortlist(
       posting:job_postings (
         id, company, title, location_raw, working_model,
         salary_min, salary_max, salary_currency, salary_listed,
-        jd_text, jd_html, source, source_url, posted_at
+        jd_text, jd_html, source, source_url, posted_at,
+        enrichment:company_enrichment (
+          size_bucket, size_confidence, ch_employee_count,
+          ch_company_name, is_likely_recruiter
+        )
       )
     `
     )

@@ -97,6 +97,28 @@ export interface Classification {
   job_function: JobFunction | null;
 }
 
+/** Display labels. JOB_FUNCTIONS are already written for the eye. */
+export const JOB_TYPE_LABELS: Record<JobType, string> = {
+  full_time: "Full-time",
+  part_time: "Part-time",
+  contract: "Contract",
+  temporary: "Temporary",
+  internship: "Internship",
+  apprenticeship: "Apprenticeship",
+};
+
+export const SENIORITY_LABELS: Record<Seniority, string> = {
+  intern: "Intern",
+  entry: "Entry / Graduate",
+  junior: "Junior",
+  mid: "Mid",
+  senior: "Senior",
+  lead: "Lead",
+  principal: "Principal",
+  director: "Director / Head of",
+  executive: "Executive / C-suite",
+};
+
 const norm = (s: string | null | undefined) => (s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
 const has = (hay: string, re: RegExp) => re.test(hay);
 

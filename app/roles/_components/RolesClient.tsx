@@ -409,6 +409,16 @@ function RunSummary({ runs }: { runs: RunRecord[] }) {
     already_decided: "already decided (rejected / applied / interested)",
     company_size: "company size didn't match",
     recruiter: "posted by a recruitment agency",
+    // The three classified dimensions. Each is reported separately so a user who
+    // ticks "Contract", gets three results and assumes the product is empty can
+    // instead SEE that the job-type filter removed 140.
+    job_type: "job type didn't match",
+    seniority: "experience level didn't match",
+    job_function: "job function didn't match",
+    location_distance: "further away than your radius",
+    location_foreign: "not a UK job",
+    location_unresolved: "couldn't place the location",
+    pruned_stale: "no longer in the results",
   };
   const rankedPool = (dedupe.ranked_pool as number | undefined) ?? undefined;
   const target = (dedupe.jobs_per_run_target as number | undefined) ?? undefined;

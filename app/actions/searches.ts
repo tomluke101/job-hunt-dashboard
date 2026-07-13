@@ -114,6 +114,12 @@ export interface ShortlistPosting {
   source: string;
   source_url: string | null;
   posted_at: string | null;
+  // The three classified dimensions, shown on the card. A filter the user cannot
+  // see the result of is a filter they cannot trust: if they tick "Contract" the
+  // cards must SAY "Contract", or the filter is asking to be taken on faith.
+  employment_type: string | null;
+  seniority_hint: string | null;
+  job_function: string | null;
   // Enrichment (may be null if enrichment hasn't run yet for this posting).
   enrichment: {
     size_bucket: string | null;
@@ -388,6 +394,7 @@ export async function listShortlist(
         id, company, title, location_raw, working_model,
         salary_min, salary_max, salary_currency, salary_listed,
         jd_text, jd_html, source, source_url, posted_at,
+        employment_type, seniority_hint, job_function,
         enrichment:company_enrichment (
           size_bucket, size_confidence, ch_employee_count,
           ch_company_name, is_likely_recruiter

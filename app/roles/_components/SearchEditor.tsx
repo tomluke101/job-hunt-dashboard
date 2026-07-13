@@ -23,9 +23,17 @@ import {
   type LocationFilterMode,
   type CommuteMode,
   type FilterableSizeBucket,
+  type DimensionFilter,
   SIZE_BUCKET_LABELS,
   SIZE_BUCKET_ORDER,
 } from "@/lib/job-search/types";
+import {
+  JOB_TYPES,
+  SENIORITIES,
+  JOB_FUNCTIONS,
+  JOB_TYPE_LABELS,
+  SENIORITY_LABELS,
+} from "@/lib/job-search/classify";
 import { suggestTitles, extractSearchTerms } from "@/lib/job-search/title-suggestions";
 
 interface Props {
@@ -455,11 +463,45 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
               </label>
             </div>
             {criteria.company_size.accepted.length === 0 && (
-              <p className="text-xs text-amber-600 mt-1">
-                No sizes selected — every posting will be dropped unless you tick a bucket or the &quot;include unknown&quot; box.
+              <p className="text-xs text-slate-500 mt-1">
+                Nothing selected — not filtering on company size.
               </p>
             )}
           </Field>
+
+          {/* The three classified dimensions. Every job in the corpus is classified
+              from its title and JD (lib/job-search/classify.ts), because Reed and
+              Adzuna supply NONE of this and the ATS values are patchy — so without
+              classification, ticking any box here would silently delete half the
+              corpus. Where the signal genuinely isn't there we say "unknown" rather
+              than guessing, and "include unknown" is ON by default. */}
+          <DimensionField
+            label="Job type"
+            values={JOB_TYPES}
+            labels={JOB_TYPE_LABELS}
+            filter={criteria.job_type}
+            unknownHint="Include jobs that don't state a job type"
+            onChange={(f) => setCriteria({ ...criteria, job_type: f })}
+          />
+
+          <DimensionField
+            label="Experience level"
+            values={SENIORITIES}
+            labels={SENIORITY_LABELS}
+            filter={criteria.seniority}
+            unknownHint="Include jobs that don't state a level"
+            onChange={(f) => setCriteria({ ...criteria, seniority: f })}
+            note="Many ads never state a level. Leaving 'include unknown' on keeps those visible."
+          />
+
+          <DimensionField
+            label="Job function"
+            values={JOB_FUNCTIONS}
+            labels={null}
+            filter={criteria.job_function}
+            unknownHint="Include jobs we can't categorise"
+            onChange={(f) => setCriteria({ ...criteria, job_function: f })}
+          />
 
           <label className="flex items-center gap-2 text-xs text-slate-700">
             <input
@@ -800,6 +842,89 @@ function Field({ label, hint, children }: { label: React.ReactNode; hint?: strin
   );
 }
 
+/**
+ * A multi-select over one classified dimension (job type / seniority / function).
+ *
+ * All three behave identically, and the behaviour is the point:
+ *   • nothing ticked           → NOT filtering. Never "drop everything".
+ *   • "include unknown" on     → jobs we couldn't classify stay visible.
+ *
+ * That default matters more than it looks. classify.ts refuses to guess — an ad
+ * that states no seniority gets `null`, not an invented "mid" — so "unknown" is a
+ * real, populated bucket, not an empty edge case. Turning include-unknown off is a
+ * deliberate narrowing, and the run stats report exactly how many jobs each filter
+ * removed, so it can never happen invisibly.
+ */
+function DimensionField<T extends string>({
+  label,
+  values,
+  labels,
+  filter,
+  unknownHint,
+  note,
+  onChange,
+}: {
+  label: string;
+  values: readonly T[];
+  labels: Record<T, string> | null;
+  filter: DimensionFilter<T>;
+  unknownHint: string;
+  note?: string;
+  onChange: (f: DimensionFilter<T>) => void;
+}) {
+  const accepted = filter?.accepted ?? [];
+  const includeUnknown = filter?.include_unknown ?? true;
+
+  const toggle = (v: T) => {
+    const on = accepted.includes(v);
+    const next = on ? accepted.filter((x) => x !== v) : [...accepted, v];
+    // Keep the canonical order rather than click order, so the chips don't shuffle.
+    onChange({ accepted: values.filter((x) => next.includes(x)), include_unknown: includeUnknown });
+  };
+
+  return (
+    <Field label={label}>
+      <div className="flex flex-wrap gap-2">
+        {values.map((v) => {
+          const on = accepted.includes(v);
+          return (
+            <button
+              key={v}
+              type="button"
+              onClick={() => toggle(v)}
+              className={`text-sm rounded-md border px-3 py-1.5 transition-colors ${
+                on
+                  ? "bg-blue-50 border-blue-300 text-blue-700 font-medium"
+                  : "bg-white border-slate-300 text-slate-600 hover:border-slate-400"
+              }`}
+            >
+              {labels ? labels[v] : v}
+            </button>
+          );
+        })}
+      </div>
+      <label className="mt-2 flex items-center gap-2 text-xs text-slate-600">
+        <input
+          type="checkbox"
+          checked={includeUnknown}
+          onChange={(e) => onChange({ accepted, include_unknown: e.target.checked })}
+        />
+        {unknownHint}
+      </label>
+      {accepted.length === 0 ? (
+        <p className="text-xs text-slate-500 mt-1">Nothing selected — not filtering on {label.toLowerCase()}.</p>
+      ) : (
+        !includeUnknown && (
+          <p className="text-xs text-amber-600 mt-1">
+            Jobs that don&apos;t state a {label.toLowerCase()} will be hidden. The run stats will show how many.
+          </p>
+        )
+      )}
+      {note && <p className="text-xs text-slate-500 mt-1">{note}</p>}
+    </Field>
+  );
+}
+
 function ChipPreview({ items }: { items: string[] }) {
   if (items.length === 0) return null;
   return (
@@ -845,7 +970,28 @@ function mergeCriteria(persisted: unknown): SearchCriteria {
     working_model: { ...DEFAULT_CRITERIA.working_model, ...(p.working_model ?? {}) },
     salary: { ...DEFAULT_CRITERIA.salary, ...(p.salary ?? {}) },
     company_size: { ...DEFAULT_CRITERIA.company_size, ...(p.company_size ?? {}) },
+    // `seniority` was a bare string[] before it became a filter, and searches saved
+    // back then still hold an ARRAY here. Spreading an array into an object shape
+    // yields {0:"senior", accepted:undefined, include_unknown:undefined} — which the
+    // UI would render as nothing ticked and, worse, include_unknown FALSY, i.e. a
+    // filter silently hiding every unclassified job. Treat the legacy shape as what
+    // it always was: no filter.
+    job_type: dimensionOrDefault(p.job_type, DEFAULT_CRITERIA.job_type),
+    seniority: dimensionOrDefault(p.seniority, DEFAULT_CRITERIA.seniority),
+    job_function: dimensionOrDefault(p.job_function, DEFAULT_CRITERIA.job_function),
     hide_recruiters: typeof p.hide_recruiters === "boolean" ? p.hide_recruiters : DEFAULT_CRITERIA.hide_recruiters,
     target_titles: p.target_titles ?? [],
+  };
+}
+
+function dimensionOrDefault<T extends string>(
+  raw: unknown,
+  fallback: DimensionFilter<T>
+): DimensionFilter<T> {
+  if (!raw || Array.isArray(raw) || typeof raw !== "object") return fallback;
+  const r = raw as Partial<DimensionFilter<T>>;
+  return {
+    accepted: Array.isArray(r.accepted) ? r.accepted : fallback.accepted,
+    include_unknown: typeof r.include_unknown === "boolean" ? r.include_unknown : true,
   };
 }

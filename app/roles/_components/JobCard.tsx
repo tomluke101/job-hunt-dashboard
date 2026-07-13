@@ -2,6 +2,12 @@
 
 import { useMemo, useState } from "react";
 import {
+  JOB_TYPE_LABELS,
+  SENIORITY_LABELS,
+  type JobType,
+  type Seniority,
+} from "@/lib/job-search/classify";
+import {
   ExternalLink,
   Heart,
   X,
@@ -72,6 +78,11 @@ export default function JobCard({ entry, onInterested, onReject, onApplied, onDe
             <WorkingModelBadge model={p.working_model} />
             <SalaryBadge min={p.salary_min} max={p.salary_max} currency={p.salary_currency} listed={p.salary_listed} />
             <CompanySizeBadge enrichment={p.enrichment} />
+            <ClassifiedBadges
+              employmentType={p.employment_type}
+              seniority={p.seniority_hint}
+              jobFunction={p.job_function}
+            />
             {p.enrichment?.is_likely_recruiter && (
               <span
                 className="flex items-center gap-1 rounded-md bg-amber-50 border border-amber-200 text-amber-700 px-1.5 py-0.5 text-xs"
@@ -182,6 +193,48 @@ export default function JobCard({ entry, onInterested, onReject, onApplied, onDe
         )}
       </div>
     </article>
+  );
+}
+
+/**
+ * Job type / experience level / function, as classified at ingest.
+ *
+ * These are shown for the same reason the filters exist: a user who filters by
+ * "Contract" must be able to SEE "Contract" on the cards that came back, or the
+ * filter is a black box asking to be trusted. Absent values render nothing at all —
+ * we never print "Unknown", because a job whose ad simply didn't state a level is
+ * not a job with a defect, and a wall of "Unknown" chips would imply otherwise.
+ */
+function ClassifiedBadges({
+  employmentType,
+  seniority,
+  jobFunction,
+}: {
+  employmentType: string | null;
+  seniority: string | null;
+  jobFunction: string | null;
+}) {
+  const type = employmentType ? (JOB_TYPE_LABELS[employmentType as JobType] ?? null) : null;
+  const level = seniority ? (SENIORITY_LABELS[seniority as Seniority] ?? null) : null;
+
+  return (
+    <>
+      {type && (
+        <span className="rounded-md bg-slate-100 border border-slate-200 text-slate-700 px-1.5 py-0.5 text-xs">
+          {type}
+        </span>
+      )}
+      {level && (
+        <span className="rounded-md bg-slate-100 border border-slate-200 text-slate-700 px-1.5 py-0.5 text-xs">
+          {level}
+        </span>
+      )}
+      {jobFunction && (
+        <span className="rounded-md bg-violet-50 border border-violet-200 text-violet-700 px-1.5 py-0.5 text-xs">
+          {jobFunction}
+        </span>
+      )}
+    </>
   );
 }
 

@@ -183,11 +183,22 @@ export type SeniorityLevel =
   | "executive";
 
 /**
- * How many jobs we'll take from one board in one pass. Boards this big are rare
- * (Stripe's Greenhouse board is ~511); the cap exists so one giant board can't
- * monopolise an ingest run. `truncated` is set when we hit it, so it's visible.
+ * How many jobs we'll take from one board in one pass. The cap exists so one giant
+ * board can't monopolise an ingest run.
+ *
+ * ⚠️ IT WAS 1000, AND ASTRAZENECA HAS 1,314. So we pulled exactly 1000 and threw
+ * the other 314 away — and because an ATS board is the employer's ENTIRE GLOBAL
+ * board in whatever order the provider feels like, the discarded tail is not
+ * foreign jobs we'd have dropped anyway. It's an arbitrary slice, and AstraZeneca
+ * is a UK enterprise employer: precisely the supply Workday is in this codebase to
+ * unlock. The old comment here claimed "`truncated` is set when we hit it, so it's
+ * visible" — every provider did set it, and ingest.ts never read it. It was
+ * visible to nobody. See assertNoSilentTruncation() in ingest.ts.
+ *
+ * 3000 clears the largest board we have seen with room to spare. If a board ever
+ * exceeds it the ingest now says so LOUDLY rather than quietly serving 77% of it.
  */
-export const MAX_JOBS_PER_BOARD = 1000;
+export const MAX_JOBS_PER_BOARD = 3000;
 
 /** Per-request timeout. ATS endpoints are usually fast; Workday can be slow. */
 export const ATS_FETCH_TIMEOUT_MS = 20_000;

@@ -284,7 +284,16 @@ const CAREERS_PATHS = [
   "/en/careers", "/work-with-us", "/join-us", "/vacancies", "/careers/open-roles",
 ];
 
-async function fetchText(url: string, timeoutMs = 12_000): Promise<string | null> {
+/**
+ * Returns the HTML *and the URL we actually ended up on*. The final URL is not a
+ * detail: hopin.com/careers 301s to RingCentral's Workday board (RingCentral
+ * acquired Hopin), so a crawl that only looks at the HTML happily files
+ * RingCentral's entire req list under the company name "Hopin". See crawlCareers().
+ */
+async function fetchText(
+  url: string,
+  timeoutMs = 12_000
+): Promise<{ html: string; finalUrl: string } | null> {
   try {
     const res = await fetch(url, {
       signal: AbortSignal.timeout(timeoutMs),
@@ -300,10 +309,57 @@ async function fetchText(url: string, timeoutMs = 12_000): Promise<string | null
     if (!res.ok) return null;
     const ct = res.headers.get("content-type") ?? "";
     if (!ct.includes("html")) return null;
-    return await res.text();
+    return { html: await res.text(), finalUrl: res.url || url };
   } catch {
     return null;
   }
+}
+
+/** "www.oxfam.org.uk" → "oxfam.org.uk". Enough to compare two hosts for sameness. */
+function registrable(host: string): string {
+  return host.toLowerCase().replace(/^www\./, "");
+}
+
+function hostOf(url: string): string {
+  try {
+    return registrable(new URL(url).hostname);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Did the careers page land somewhere still belonging to this employer?
+ *
+ * "Same host" is the WRONG test and rejects most of the FTSE: barclays.co.uk/careers
+ * redirects to home.barclays, santander.co.uk to santander.wd3.myworkdayjobs.com.
+ * Those are the same organisation on a different domain, and treating them as
+ * hijacks held Barclays (1,115 jobs), Santander (918), BP and Shell out of the
+ * corpus entirely — the exact UK enterprise supply this rung exists to reach.
+ *
+ * The real question is whether the landing host still bears the company's NAME:
+ *   Barclays → home.barclays               contains "barclays"  ✓ same org
+ *   Santander → santander.wd3.myworkday... contains "santander" ✓ same org
+ *   Hopin    → ringcentral.wd5.myworkday... no "hopin" anywhere ✗ ACQUIRER
+ */
+function sameOrg(landedHost: string, sourceDomain: string, companyName: string): boolean {
+  if (!landedHost || landedHost === sourceDomain) return true;
+  const flat = landedHost.replace(/[^a-z0-9]/g, "");
+
+  const s = slug(companyName); // "barclays", "hopin", "santanderuk"
+  if (s.length >= 4 && flat.includes(s)) return true;
+
+  // The domain we started from is itself derived from the company, so its base
+  // label is a second usable handle ("santander" from santander.co.uk).
+  const base = sourceDomain.split(".")[0].replace(/[^a-z0-9]/g, "");
+  if (base.length >= 4 && flat.includes(base)) return true;
+
+  // ...and the reverse: a company whose name is longer than its domain label
+  // ("Santander UK" → santander.wd3...). Match either direction.
+  if (base.length >= 4 && s.length >= 4 && (s.includes(base) || base.includes(s))) {
+    if (flat.includes(base) || flat.includes(s)) return true;
+  }
+  return false;
 }
 
 /** Pull every ATS board URL out of a page's HTML and resolve it to board coords. */
@@ -331,33 +387,64 @@ export function detectBoardsInHtml(html: string, companyName: string): AtsBoard[
 async function crawlCareers(
   companyName: string,
   careersUrl: string | null,
-  domain: string | null
+  domains: string[]
 ): Promise<DiscoveredBoard | null> {
-  const candidates: string[] = [];
-  if (careersUrl) candidates.push(careersUrl);
-  if (domain) {
+  const candidates: Array<{ url: string; sourceDomain: string | null }> = [];
+  if (careersUrl) candidates.push({ url: careersUrl, sourceDomain: hostOf(careersUrl) || null });
+  for (const domain of domains) {
     const base = domain.startsWith("http") ? domain : `https://${domain}`;
-    for (const p of CAREERS_PATHS) candidates.push(base + p);
+    for (const p of CAREERS_PATHS) candidates.push({ url: base + p, sourceDomain: registrable(domain) });
   }
 
-  for (const url of candidates.slice(0, 8)) {
-    const html = await fetchText(url);
-    if (!html) continue;
+  for (const { url, sourceDomain } of candidates) {
+    const page = await fetchText(url);
+    if (!page) continue;
 
-    for (const board of detectBoardsInHtml(html, companyName)) {
+    const detected = detectBoardsInHtml(page.html, companyName);
+
+    // 🔴 A JOB BOARD'S PAGE IS FULL OF OTHER EMPLOYERS' ATS BOARDS.
+    //
+    // detectBoardsInHtml() scrapes every ATS URL out of the HTML. On an employer's
+    // careers page there is exactly ONE — theirs. On a recruitment agency's or job
+    // board's site there are MANY, because listing other companies' vacancies is the
+    // whole business. Crawling reed.co.uk harvested Howden Joinery's Workday board
+    // and filed its 155 real jobs under the employer name "Reed"; Pareto and Cedar
+    // (both agencies) picked up an AI startup and a US fintech the same way.
+    //
+    // Recruiter-BRANDED first-party jobs are the exact inversion of what ATS-direct
+    // supply is for, so the count itself is the tell: more than one distinct board on
+    // a page means this is not an employer's careers page, and nothing on it can be
+    // trusted to belong to the company we asked about.
+    const distinct = new Set(detected.map((b) => `${b.provider}|${b.token}`));
+    if (distinct.size > 1) {
+      continue;
+    }
+
+    for (const board of detected) {
       const provider = getProvider(board.provider);
       if (!provider) continue;
       const res = await provider.probe(board).catch(() => null);
       if (!res?.exists) continue;
+
+      // A board linked FROM the employer's own careers page is normally
+      // self-evidently theirs — that provenance beats any name comparison.
+      //
+      // EXCEPT when the careers page redirected somewhere else entirely. Acquired
+      // companies point their careers URL at the ACQUIRER: hopin.com/careers lands
+      // on RingCentral's Workday board. The embed is real, the probe succeeds, and
+      // the provenance argument quietly becomes "RingCentral's jobs belong to
+      // Hopin". So a cross-domain landing forfeits the auto-verify and the board is
+      // held back for a human, rather than silently mislabelling an employer.
+      const landedOn = hostOf(page.finalUrl);
+      const crossDomain =
+        Boolean(sourceDomain) && !sameOrg(landedOn, sourceDomain as string, companyName);
+
       return {
         ...board,
         discovered_via: "careers-crawl",
         board_company_name: res.boardCompanyName ?? null,
         job_count: res.jobCount,
-        // A board linked FROM the employer's own careers page is self-evidently
-        // theirs. That provenance is stronger than any name comparison, so it
-        // verifies even when the provider reports no company name.
-        verified: true,
+        verified: !crossDomain,
       };
     }
   }
@@ -372,21 +459,62 @@ function slug(companyName: string): string {
   return normaliseCompanyName(companyName).replace(/[^a-z0-9]/g, "");
 }
 
-/** Cheap guesses before we pay for a model call. */
-async function guessDomain(companyName: string): Promise<string | null> {
+/**
+ * A slug-guessed domain is built FROM the company name — so the page will echo the
+ * name back merely by displaying its own domain, and "does the page mention the
+ * company?" answers itself. oxfam.io's for-sale page contains the word "oxfam", so
+ * it PASSED, and Oxfam (oxfam.org.uk) got recorded as "no ATS board" for 30 days.
+ *
+ * This is the same circular-verification bug as an adapter echoing back
+ * board.companyName so namesMatch() compares a company against itself. Same shape,
+ * different rung: never let a candidate supply its own evidence.
+ *
+ * So: strip the domain (and its bare slug in URL position) out of the haystack
+ * BEFORE looking for the company name, and reject the parked-page boilerplate
+ * outright.
+ */
+const PARKED_MARKERS = [
+  "domain is for sale", "buy this domain", "this domain is parked", "domain for sale",
+  "hugedomains", "sedo.com", "afternic", "dan.com", "namecheap.com/domains",
+  "inquire about this domain", "checkout the domain", "parked free, courtesy of",
+];
+
+function looksLikeCompanySite(html: string, companyName: string, domain: string): boolean {
+  const hay = html.slice(0, 40_000).toLowerCase();
+  if (PARKED_MARKERS.some((m) => hay.includes(m))) return false;
+
+  // De-circularise: remove every echo of the domain itself.
+  const bare = domain.split(".")[0];
+  const stripped = hay.split(domain.toLowerCase()).join(" ").split(`${bare}.`).join(" ");
+
+  const words = normaliseCompanyName(companyName).split(" ").filter((w) => w.length > 3);
+  // A name with no substantial word ("BP", "EE") gives us nothing to confirm
+  // against. The old code returned TRUE here, which verified ANY page that loaded.
+  if (words.length === 0) return false;
+  return words.some((w) => stripped.includes(w));
+}
+
+/**
+ * Slug + TLD guesses. `.io`/`.ai` are LAST, not second: they are startup TLDs, and
+ * a UK housebuilder is not on persimmon.ai (which is a real, unrelated AI company).
+ * The institutional TLDs were missing entirely, which made every charity,
+ * university, NHS trust and public body in the seed list unreachable BY
+ * CONSTRUCTION — Oxfam is .org.uk, TfL is .gov.uk, Cambridge is .ac.uk.
+ */
+const GUESS_TLDS = [".com", ".co.uk", ".org.uk", ".org", ".ac.uk", ".nhs.uk", ".gov.uk", ".net", ".io", ".ai"];
+
+async function guessDomains(companyName: string): Promise<string[]> {
   const s = slug(companyName);
-  if (!s || s.length < 3) return null;
-  for (const tld of [".com", ".co.uk", ".io", ".ai"]) {
+  if (!s || s.length < 3) return [];
+  const out: string[] = [];
+  for (const tld of GUESS_TLDS) {
     const domain = `${s}${tld}`;
-    const html = await fetchText(`https://${domain}`, 8000);
-    if (!html) continue;
-    // Confirm the page is actually about this company — a parked domain or a
-    // squatter would otherwise send the crawler off hunting a stranger's board.
-    const words = normaliseCompanyName(companyName).split(" ").filter((w) => w.length > 3);
-    const hay = html.slice(0, 20_000).toLowerCase();
-    if (words.length === 0 || words.some((w) => hay.includes(w))) return domain;
+    const page = await fetchText(`https://${domain}`, 8000);
+    if (!page) continue;
+    if (!looksLikeCompanySite(page.html, companyName, domain)) continue;
+    out.push(domain);
   }
-  return null;
+  return out;
 }
 
 async function llmDomain(companyName: string): Promise<string | null> {
@@ -461,23 +589,45 @@ export async function discoverForCompany(
   }
 
   // Rung 2/3 — find the careers page and read the embed.
-  let domain: string | null = null;
+  //
+  // ORDER MATTERS, and it used to be backwards. The old code ran the slug-guesser
+  // first and only fell through to the LLM `if (!domain)` — but the guesser's
+  // self-confirming check almost always returned SOMETHING, so the accurate rung
+  // was rarely reached at all. It "resolved" Oxfam to oxfam.io, Persimmon to
+  // persimmon.ai and Kier to kier.io, crawled those, found nothing, and cached a
+  // 30-day miss against the real employer.
+  //
+  // Now: ask the model FIRST (it knows oxfam.org.uk), keep the slug guesses as
+  // fallbacks, and crawl EVERY candidate rather than betting the company on the
+  // first domain that happened to return HTML.
+  const domains: string[] = [];
   if (!opts.careersUrl) {
-    domain = await guessDomain(companyName);
-    if (!domain && opts.useLlm) domain = await llmDomain(companyName);
+    if (opts.useLlm) {
+      const d = await llmDomain(companyName);
+      if (d) domains.push(registrable(d));
+    }
+    for (const d of await guessDomains(companyName)) {
+      if (!domains.includes(d)) domains.push(d);
+    }
   }
-  if (!opts.careersUrl && !domain) {
+  if (!opts.careersUrl && domains.length === 0) {
     return { board: null, providersTried: tried, notes: "no board; could not resolve a website" };
   }
 
-  const crawled = await crawlCareers(companyName, opts.careersUrl ?? null, domain);
+  const crawled = await crawlCareers(companyName, opts.careersUrl ?? null, domains);
   if (crawled) {
-    return { board: crawled, providersTried: tried, notes: `careers-crawl via ${opts.careersUrl ?? domain}` };
+    return {
+      board: crawled,
+      providersTried: tried,
+      notes:
+        `careers-crawl via ${opts.careersUrl ?? domains.join("/")}` +
+        (crawled.verified ? "" : " — CROSS-DOMAIN redirect, held back for review"),
+    };
   }
 
   return {
     board: null,
     providersTried: tried,
-    notes: `no ATS embed found on ${opts.careersUrl ?? domain}`,
+    notes: `no ATS embed found on ${opts.careersUrl ?? domains.join(", ")}`,
   };
 }

@@ -1,6 +1,10 @@
 // Canonical Job Search types. Shared by adapters, pipeline, actions, UI.
 // See project_hunthq_job_search_plan_2026_07_01.md for the design.
 
+// Type-only — erased at compile, so this does NOT create a runtime import cycle
+// with classify.ts (which imports RawJob back from here, also type-only).
+import type { JobType, Seniority, JobFunction } from "./classify";
+
 export type SourceType =
   | "reed"
   | "adzuna"
@@ -168,7 +172,29 @@ export interface SearchCriteria {
     currency: "GBP" | "EUR" | "USD";
     drop_hidden_salary: boolean;
   };
-  seniority: string[];
+  // --- The three dimension filters (job type / seniority / job function) ---
+  //
+  // All three share the {accepted, include_unknown} shape already used by
+  // company_size and working_model. `accepted: []` means "no filter" — identical to
+  // ticking every box — so a fresh search never silently narrows.
+  //
+  // ⚠️ include_unknown DEFAULTS TO TRUE, DELIBERATELY. Not every job states its
+  // seniority, and not every source gives us one: Reed and Adzuna supply NOTHING on
+  // any of these three dimensions. classify.ts derives what it honestly can from the
+  // title and JD and returns null when the signal genuinely isn't there. Defaulting
+  // include_unknown to FALSE would mean the moment a user ticks "Full-time", every
+  // job we couldn't classify vanishes with no explanation — the same silent-drop
+  // failure as the title filter that binned every "Supply Chain Analyst" for a
+  // fortnight. The user can still turn it off; the run stats report exactly how many
+  // each filter dropped (filter_drops), so it is never invisible.
+  //
+  // NOTE: `seniority` was previously `string[]` and was DEAD — declared on the type
+  // and read by nothing. Old saved searches still hold an array in this slot, so the
+  // pipeline reads it through readDimensionFilter(), which tolerates both shapes.
+  job_type: DimensionFilter<JobType>;
+  seniority: DimensionFilter<Seniority>;
+  job_function: DimensionFilter<JobFunction>;
+
   industries_include: string[];
   industries_exclude: string[];
   // Company-size filter — explicit, additive to AI (never replaced by AI
@@ -195,6 +221,42 @@ export interface SearchCriteria {
   // heuristic extraction. See lib/job-search/ai-parse.ts.
   ai_parsed?: AIParsedCriteria | null;
 }
+
+/**
+ * A multi-select filter over one classified dimension.
+ * `accepted: []` = no filter (same as everything ticked).
+ */
+export interface DimensionFilter<T extends string> {
+  accepted: T[];
+  include_unknown: boolean;
+}
+
+/**
+ * Read a dimension filter out of stored criteria, tolerating the legacy shape.
+ *
+ * `criteria.seniority` used to be a bare `string[]` (and was never read by
+ * anything). Searches saved before this change still have an ARRAY sitting in that
+ * slot, and `(["senior"]).accepted` is `undefined` — which would quietly become "no
+ * filter" and, worse, `include_unknown: undefined` → falsy → a filter that drops
+ * every unclassified job. Reading it through here makes the old shape mean exactly
+ * what it always meant: nothing.
+ */
+export function readDimensionFilter<T extends string>(
+  raw: DimensionFilter<T> | T[] | null | undefined
+): { accepted: Set<T>; includeUnknown: boolean } {
+  if (Array.isArray(raw) || !raw) {
+    return { accepted: new Set<T>(), includeUnknown: true };
+  }
+  return {
+    accepted: new Set(raw.accepted ?? []),
+    includeUnknown: raw.include_unknown ?? true,
+  };
+}
+
+// Re-exported so callers configuring these filters don't need to reach into
+// classify.ts for the value sets.
+export type { JobType, Seniority, JobFunction } from "./classify";
+export { JOB_TYPES, SENIORITIES, JOB_FUNCTIONS } from "./classify";
 
 export interface AIParsedCriteria {
   role_types: string[];
@@ -242,7 +304,11 @@ export const DEFAULT_CRITERIA: SearchCriteria = {
     currency: "GBP",
     drop_hidden_salary: false,
   },
-  seniority: [],
+  // Empty `accepted` = no filter. A brand-new search must never silently narrow the
+  // corpus before the user has asked for anything.
+  job_type: { accepted: [], include_unknown: true },
+  seniority: { accepted: [], include_unknown: true },
+  job_function: { accepted: [], include_unknown: true },
   industries_include: [],
   industries_exclude: [],
   company_size: {

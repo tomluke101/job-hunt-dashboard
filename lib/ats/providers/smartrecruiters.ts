@@ -180,6 +180,7 @@ async function fetchAllPostings(
   const postings: SrPosting[] = [];
   let offset = 0;
   let total = Infinity;
+  let ranDry = false;
 
   while (postings.length < cap && offset < total) {
     if (Date.now() > deadlineAt) return { postings, truncated: true };
@@ -191,14 +192,20 @@ async function fetchAllPostings(
       return { postings, truncated: postings.length > 0, error: res.error ?? "unknown error" };
     }
     const page = Array.isArray(res.data.content) ? res.data.content : [];
-    if (page.length === 0) break; // the real end-of-list signal
+    if (page.length === 0) {
+      ranDry = true;
+      break; // the real end-of-list signal
+    }
 
     postings.push(...page);
     if (typeof res.data.totalFound === "number") total = res.data.totalFound;
     offset += page.length;
   }
 
-  const truncated = postings.length > cap || offset < total;
+  // `offset < total` alone is NOT truncation: totalFound is a live count, so a
+  // posting closing mid-pagination leaves offset short of it on a board we pulled
+  // in full. Truncation is only ever "we stopped early because we hit the cap".
+  const truncated = !ranDry && postings.length >= cap && offset < total;
   return { postings: postings.slice(0, cap), truncated };
 }
 

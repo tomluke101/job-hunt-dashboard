@@ -14,7 +14,12 @@ import { config } from "dotenv";
 config({ path: ".env.local" });
 
 import { listPollableBoards } from "../lib/ats/registry";
-import { ingestBoards, assertProviderHealth, recordIngestRun } from "../lib/ats/ingest";
+import {
+  ingestBoards,
+  assertProviderHealth,
+  assertNoSilentTruncation,
+  recordIngestRun,
+} from "../lib/ats/ingest";
 
 const argv = process.argv.slice(2);
 const has = (f: string) => argv.includes(f);
@@ -71,11 +76,17 @@ async function main() {
     }
   }
 
-  const problems = assertProviderHealth(stats);
+  if (stats.truncated_boards.length) {
+    console.log("\n⚠️  PARTIAL BOARDS — we served only part of these employers' boards:");
+    for (const b of stats.truncated_boards) console.log(`   ${b}`);
+  }
+
+  // Truncation is a supply loss, exactly like a dead provider — assert on it too.
+  const problems = [...assertProviderHealth(stats), ...assertNoSilentTruncation(stats)];
   if (!dryRun) await recordIngestRun(stats, "manual", problems);
 
   if (problems.length) {
-    console.error("\n❌ PROVIDER HEALTH:");
+    console.error("\n❌ INGEST INTEGRITY:");
     for (const p of problems) console.error(`   ${p}`);
     process.exit(1);
   }

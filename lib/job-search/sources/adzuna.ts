@@ -144,6 +144,19 @@ function toRawJob(r: AdzunaResult): RawJob {
     salary_min: predicted ? null : (r.salary_min ?? null),
     salary_max: predicted ? null : (r.salary_max ?? null),
     salary_currency: "GBP",
+
+    // Adzuna has ALWAYS returned these three, and we have always thrown them away —
+    // which is why every Adzuna job in the corpus reads as "job type: unknown".
+    //
+    //   contract_time  "full_time" | "part_time"     — the HOURS
+    //   contract_type  "permanent" | "contract"      — the BASIS
+    //   category.label "Logistics & Warehouse Jobs"  — Adzuna's own function taxonomy
+    //
+    // The basis is the scarcer signal and the one a user means when they tick
+    // "Contract", so it goes first and classifyJobType()'s precedence resolves it.
+    // See lib/job-search/classify.ts.
+    employment_type: r.contract_type ?? r.contract_time ?? null,
+    department: r.category?.label ?? null,
     raw: r,
   };
 }

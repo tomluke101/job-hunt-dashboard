@@ -48,7 +48,17 @@ export interface AtsProviderImpl extends Omit<AtsProvider, "listJobs"> {
   listJobs(board: AtsBoard, opts?: AtsPullOptions): Promise<AtsPullResult>;
 }
 
-export const DEFAULT_BOARD_BUDGET_MS = 60_000;
+/**
+ * Per-board wall-clock budget.
+ *
+ * 60s was not enough for the boards that matter most. The N+1 providers (Workday,
+ * SmartRecruiters) must fetch one detail request per job — that is where the JD
+ * and the only real posting date live — so a 1,314-job board needs ~1,314 requests
+ * at DETAIL_CONCURRENCY=5. It cannot finish in 60s, and when it ran out it just
+ * stopped, flagged `truncated`, and nothing read the flag. Raising MAX_JOBS_PER_BOARD
+ * without raising this would simply move the silent cut from the cap to the clock.
+ */
+export const DEFAULT_BOARD_BUDGET_MS = 150_000;
 
 /**
  * Detail-fetch concurrency for the N+1 providers. Five is deliberately modest:

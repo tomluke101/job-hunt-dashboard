@@ -6,7 +6,12 @@
 
 import { NextResponse } from "next/server";
 import { listPollableBoards } from "@/lib/ats/registry";
-import { ingestBoards, assertProviderHealth, recordIngestRun } from "@/lib/ats/ingest";
+import {
+  ingestBoards,
+  assertProviderHealth,
+  assertNoSilentTruncation,
+  recordIngestRun,
+} from "@/lib/ats/ingest";
 
 // Vercel caps a serverless function at 300s on Pro. Boards are polled
 // oldest-first, so a run that doesn't finish the registry still makes forward
@@ -43,7 +48,9 @@ export async function GET(req: Request) {
     trigger: "cron",
   });
 
-  const problems = assertProviderHealth(stats);
+  // Both assertions, not just provider health. A board served in part is as silent
+  // a supply loss as a provider serving nothing.
+  const problems = [...assertProviderHealth(stats), ...assertNoSilentTruncation(stats)];
   await recordIngestRun(stats, "cron", problems);
 
   // A provider returning zero across every board is a FAULT, not an empty job
@@ -58,6 +65,7 @@ export async function GET(req: Request) {
       jobs_upserted: stats.jobs_upserted,
       dropped_foreign: stats.jobs_dropped_foreign,
       provider_counts: stats.provider_counts,
+      truncated_boards: stats.truncated_boards,
       budget_exhausted: stats.budget_exhausted,
       elapsed_ms: stats.elapsed_ms,
     },

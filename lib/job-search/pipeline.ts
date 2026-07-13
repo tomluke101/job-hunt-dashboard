@@ -20,7 +20,7 @@
 
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 import type { SearchCriteria, FilterableWorkingModel, CommuteMode } from "./types";
-import { hasTrustedRadius, isAtsSource } from "./types";
+import { hasTrustedRadius, isAtsSource, readDimensionFilter } from "./types";
 import { normalise, type NormalisedJob } from "./normalise";
 import { reedAdapter } from "./sources/reed";
 import { adzunaAdapter } from "./sources/adzuna";
@@ -30,6 +30,7 @@ import { extractSearchTerms } from "./title-suggestions";
 import { enrichBatch } from "@/lib/enrichment/batch";
 import { normaliseCompanyName } from "@/lib/enrichment/normalise-company";
 import { buildTargets, titleRelevantAny, type TargetTitle } from "./title-match";
+import { classifyJob } from "./classify";
 import { canonicalKey, dedupeByCanonicalKey } from "./canonical";
 import { parseSalaryFromText } from "./salary-parse";
 import { atsColumnsAvailable } from "./schema-guard";
@@ -260,6 +261,10 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     company_size: 0, recruiter: 0,
     pruned_stale: 0,
     title_irrelevant: 0,
+    // The three classified dimensions. Counted separately so a user who ticks
+    // "Contract" and gets three results can SEE that job_type dropped 140 — rather
+    // than concluding the product has no jobs.
+    job_type: 0, seniority: 0, job_function: 0,
     // Geo. Before ATS these could not exist — every source did its own radius
     // search server-side and we trusted it.
     location_distance: 0,   // resolved, but further away than the user asked
@@ -558,6 +563,12 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
   const includeUnknownSize = input.criteria.company_size?.include_unknown ?? true;
   const hideRecruiters = input.criteria.hide_recruiters === true;
 
+  // The three classified dimensions. readDimensionFilter() tolerates the legacy
+  // `seniority: string[]` shape still sitting in older saved searches.
+  const fType = readDimensionFilter(input.criteria.job_type);
+  const fSeniority = readDimensionFilter(input.criteria.seniority);
+  const fFunction = readDimensionFilter(input.criteria.job_function);
+
   const sizeDropByBucket: Record<string, number> = {
     startup: 0, small: 0, mid: 0, large: 0, enterprise: 0, unknown: 0,
   };
@@ -569,6 +580,19 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     const { job: j, loc, key, also_seen_on, r } = ranked[i];
     const normalisedCompany = normaliseCompanyName(j.company);
     const enrichment = normalisedCompany ? enrichmentByNorm.get(normalisedCompany) : null;
+
+    // Classify ONCE, up here: the same values decide whether the job survives the
+    // filters below AND get persisted on the posting row further down. Deriving them
+    // twice invites the two copies to drift, which is how a job gets filtered on one
+    // value and displayed with another.
+    const cls = classifyJob({
+      title: j.title,
+      jd_text: j.jd_text,
+      employment_type: j.employment_type,
+      seniority_hint: j.seniority_hint,
+      department: j.department,
+      job_function: j.job_function,
+    });
 
     const bucket = (enrichment?.size_bucket as string | null) ?? "unknown";
     const bucketKnown = bucket !== "unknown" && !!enrichment;
@@ -593,6 +617,46 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     if (passesFilter && hideRecruiters && !isAtsSource(j.source) && enrichment?.is_likely_recruiter) {
       passesFilter = false;
       filterDrops.recruiter++;
+    }
+
+    // The three classified dimensions. Each behaves identically:
+    //   accepted is empty            → no filter at all
+    //   value known, not accepted    → drop
+    //   value null (unclassified)    → keep, UNLESS the user cleared include_unknown
+    //
+    // The unknown branch is the dangerous one and it is why include_unknown defaults
+    // to true. classify.ts returns null whenever the signal genuinely isn't there,
+    // and it is honest about that rather than guessing — so "unknown" is a real,
+    // populated bucket, not an empty edge case. Every drop is counted into
+    // filter_drops and shown in the run stats: a filter must never remove jobs
+    // silently.
+    // Each dimension carries a different string union, so they are compared as
+    // plain strings here. The unions are enforced where it matters — the values
+    // come from classify.ts and the accepted lists are typed on SearchCriteria.
+    const dims: Array<{
+      accepted: ReadonlySet<string>;
+      includeUnknown: boolean;
+      value: string | null;
+      dropKey: string;
+    }> = [
+      { ...fType, value: cls.employment_type, dropKey: "job_type" },
+      { ...fSeniority, value: cls.seniority, dropKey: "seniority" },
+      { ...fFunction, value: cls.job_function, dropKey: "job_function" },
+    ];
+    for (const { accepted, includeUnknown, value, dropKey } of dims) {
+      if (!passesFilter) break;
+      if (accepted.size === 0) continue; // not filtering on this dimension
+      if (value === null) {
+        if (!includeUnknown) {
+          passesFilter = false;
+          filterDrops[dropKey]++;
+        }
+        continue;
+      }
+      if (!accepted.has(value)) {
+        passesFilter = false;
+        filterDrops[dropKey]++;
+      }
     }
 
     // Salary stated in the JD body rather than a structured field — the norm for
@@ -652,10 +716,14 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
               country_code: place?.country ?? null,
               is_remote: loc?.is_remote ?? null,
               geo_resolved: !!place,
+              // Classified, not copied — identically to the ATS ingest path.
+              // Reed and Adzuna supply NO seniority and NO function at all, so
+              // without this every aggregator job is "unknown" on all three
+              // dimensions and any filter the user touches silently deletes them.
               department: j.department ?? null,
-              employment_type: j.employment_type ?? null,
-              seniority_hint: j.seniority_hint ?? null,
-              job_function: j.job_function ?? null,
+              employment_type: cls.employment_type,
+              seniority_hint: cls.seniority,
+              job_function: cls.job_function,
             }
           : legacyColumns,
         { onConflict: "source,source_id" }

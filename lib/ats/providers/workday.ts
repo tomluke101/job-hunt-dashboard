@@ -274,6 +274,9 @@ export const workdayProvider: AtsProviderImpl = {
       let total = Infinity;
       let offset = 0;
       let listTruncated = false;
+      // Did the board simply RUN OUT of jobs? That is a complete pull, not a cut-off
+      // one — and the two are easy to confuse. See the `truncated` note below.
+      let ranDry = false;
 
       while (postings.length < cap && offset < total) {
         if (Date.now() > deadlineAt) {
@@ -296,7 +299,10 @@ export const workdayProvider: AtsProviderImpl = {
           break;
         }
         const page = res.data.jobPostings ?? [];
-        if (page.length === 0) break;
+        if (page.length === 0) {
+          ranDry = true;
+          break;
+        }
         postings.push(...page);
         if (typeof res.data.total === "number") total = res.data.total;
         offset += page.length;
@@ -323,7 +329,14 @@ export const workdayProvider: AtsProviderImpl = {
       return {
         jobs: taken.map((p, i) => toRawJob(board, tenant, host, site, p, results[i])),
         boardCompanyName: board.companyName ?? null,
-        truncated: listTruncated || timedOut || postings.length > cap || offset < total,
+        // ⚠️ `offset < total` IS NOT A TRUNCATION TEST. Workday's reported `total` is
+        // a live count, so a req that closes mid-pagination leaves offset one short
+        // of it — AstraZeneca reports 1,319 and hands back 1,318 — and the board is
+        // nonetheless COMPLETE. Flagging that as truncation cried wolf on every run.
+        //
+        // Truncation is exactly three things: we ran out of clock, the detail fetches
+        // ran out of clock, or we stopped because we hit the cap while jobs remained.
+        truncated: listTruncated || timedOut || (!ranDry && postings.length >= cap && offset < total),
       };
     } catch (e) {
       return { jobs: [], error: `workday ${board.token}: ${errMsg(e)}` };

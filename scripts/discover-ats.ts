@@ -50,10 +50,68 @@ async function companiesFromEnrichment(): Promise<string[]> {
     .filter(Boolean);
 }
 
+/**
+ * Every employer ever seen in a pull — MINUS the recruitment agencies.
+ *
+ * 🔴 THE AGENCY TRAP. This function used to return every company name in
+ * job_postings, agencies included, even though the header of this file has always
+ * claimed recruiters were skipped. They were not. A recruitment agency has NO
+ * first-party board, so discovery cannot find "Reed's board" — it finds SOMEONE
+ * ELSE'S and attaches it to the agency's name. Live results from one run:
+ *
+ *     Reed     → workday/howdenjoinerylimited   (Howden Joinery's 155 real jobs)
+ *     Cedar    → ashby/cedar                    (a US healthcare fintech)
+ *     Pareto   → ashby/pareto-ai                (an unrelated AI startup)
+ *     Huntress → greenhouse/huntress            (a US security company)
+ *
+ * The next ingest would have filed Howdens' entire req list under the employer name
+ * "Reed" — recruiter-branded FIRST-PARTY jobs, which is the precise inversion of
+ * what ATS-direct supply exists to achieve. `job_postings` is also exactly where
+ * recruiter-posted rows live, so this is the one source of company names where
+ * agencies are GUARANTEED to be over-represented.
+ *
+ * Also: `.limit(10_000)` was a no-op. PostgREST caps a response at 1000 rows
+ * server-side, so this read 1,000 of 1,627 postings and the tail of the employer
+ * list was never discovered at all.
+ */
 async function companiesFromPostings(): Promise<string[]> {
   const supabase = createServerSupabaseClient();
-  const { data } = await supabase.from("job_postings").select("company").limit(10_000);
-  return [...new Set((data ?? []).map((r) => r.company as string).filter(Boolean))];
+
+  const companies: string[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase
+      .from("job_postings")
+      .select("company")
+      .range(from, from + 999);
+    if (error) throw new Error(`read job_postings: ${error.message}`);
+    const batch = data ?? [];
+    companies.push(...batch.map((r) => r.company as string).filter(Boolean));
+    if (batch.length < 1000) break;
+  }
+
+  // Agencies, by normalised name. An unenriched company is NOT assumed innocent
+  // here — but it isn't assumed guilty either; enrichment is the only evidence we
+  // have, and it flags the agencies we've actually met.
+  const recruiters = new Set<string>();
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase
+      .from("company_enrichment")
+      .select("normalised_name")
+      .eq("is_likely_recruiter", true)
+      .range(from, from + 999);
+    if (error) throw new Error(`read company_enrichment: ${error.message}`);
+    const batch = data ?? [];
+    for (const r of batch) recruiters.add(r.normalised_name as string);
+    if (batch.length < 1000) break;
+  }
+
+  const unique = [...new Set(companies)];
+  const kept = unique.filter((c) => !recruiters.has(normaliseCompanyName(c)));
+  console.log(
+    `From postings: ${unique.length} distinct employers, ` +
+      `${unique.length - kept.length} dropped as recruitment agencies (they have no first-party board).`
+  );
+  return kept;
 }
 
 async function main() {

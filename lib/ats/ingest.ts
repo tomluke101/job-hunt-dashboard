@@ -20,6 +20,7 @@ import { markPolled } from "./registry";
 import { normalise } from "@/lib/job-search/normalise";
 import { canonicalKey } from "@/lib/job-search/canonical";
 import { parseSalaryFromText } from "@/lib/job-search/salary-parse";
+import { classifyRawJob } from "@/lib/job-search/classify";
 import { normaliseCompanyName } from "@/lib/enrichment/normalise-company";
 import { resolveJobLocation, type JobLocation } from "@/lib/geo";
 import type { RawJob } from "@/lib/job-search/types";
@@ -34,6 +35,8 @@ export interface IngestStats {
   provider_counts: Record<string, number>;
   provider_boards: Record<string, number>;
   provider_errors: Record<string, string[]>;
+  /** Boards whose pull hit the job cap or the clock — i.e. we served a PARTIAL board. */
+  truncated_boards: string[];
   elapsed_ms: number;
   budget_exhausted: boolean;
 }
@@ -71,6 +74,36 @@ export function assertProviderHealth(stats: IngestStats): string[] {
   return problems;
 }
 
+/**
+ * A board we only half-pulled is a board we are half-serving — and it looks
+ * identical to a small board. Same shape as the dead-source bug: the failure is
+ * invisible because the number that comes back is plausible.
+ *
+ * This became real, not theoretical: AstraZeneca's Workday board has 1,314 jobs,
+ * MAX_JOBS_PER_BOARD was 1000, and every ingest silently discarded 314 of them.
+ * The cap and the clock are both legitimate protections — but hitting one must be
+ * REPORTED, never absorbed. Surfacing it as a "problem" routes it into the
+ * ats_ingest_runs.error column, which is exactly what verify-ats.ts asserts on.
+ */
+export function assertNoSilentTruncation(stats: IngestStats): string[] {
+  const problems: string[] = [];
+  if (stats.truncated_boards.length) {
+    problems.push(
+      `PARTIAL BOARDS (${stats.truncated_boards.length}): hit the job cap or the per-board clock, ` +
+        `so we are serving only PART of these employers' boards — ${stats.truncated_boards.join(", ")}. ` +
+        `Raise MAX_JOBS_PER_BOARD / DEFAULT_BOARD_BUDGET_MS, or page the remainder on the next run.`
+    );
+  }
+  if (stats.budget_exhausted) {
+    problems.push(
+      `RUN BUDGET EXHAUSTED: only ${stats.boards_polled} boards were polled before the clock ran out. ` +
+        `The rest of the registry did not refresh. Boards are polled oldest-first so the next run ` +
+        `continues, but if this recurs the corpus is permanently stale at the tail.`
+    );
+  }
+  return problems;
+}
+
 /** Map a resolved location onto the columns job_postings stores. */
 function geoColumns(loc: JobLocation) {
   const place = loc.places[0];
@@ -94,6 +127,17 @@ async function ingestBoard(
 
   const result = await provider.listJobs(board);
   stats.provider_boards[board.provider] = (stats.provider_boards[board.provider] ?? 0) + 1;
+
+  // A PARTIAL board is not a complete board. Every provider has always set this
+  // flag and nothing has ever read it — which is how AstraZeneca quietly served
+  // 1,000 of its 1,314 jobs. The tail of an ATS board is not "the foreign jobs we'd
+  // drop anyway"; it's an arbitrary slice of the employer's ENTIRE global board.
+  if (result.truncated) {
+    stats.truncated_boards.push(
+      `${board.provider}/${board.token}${board.workday?.site ? "/" + board.workday.site : ""}` +
+        ` (${result.jobs.length} pulled)`
+    );
+  }
 
   if (result.error) {
     (stats.provider_errors[board.provider] ??= []).push(`${board.token}: ${result.error}`);
@@ -181,10 +225,27 @@ async function ingestBoard(
         place_name: geo.place_name,
         is_remote: geo.is_remote,
       }),
-      department: raw.department ?? null,
-      employment_type: raw.employment_type ?? null,
-      seniority_hint: raw.seniority_hint ?? null,
-      job_function: raw.job_function ?? null,
+      // The three filter dimensions, CLASSIFIED rather than copied.
+      //
+      // The provider's raw `job_function` is the employer's internal team name —
+      // "SMB Hub", "Echo", "Somnia", "Other" — 177 distinct values across the
+      // corpus. It is a signal, not a taxonomy, and a filter dropdown built on it
+      // is unusable. Same for seniority: only 21% of ATS jobs carry a hint, so a
+      // filter that trusted the column would hide the other 79%.
+      //
+      // classifyJob() folds the provider's field in as a high-confidence prior and
+      // derives the rest from title + JD, so every job — ATS or aggregator — is
+      // classified on the same basis. The raw employer string stays in `department`,
+      // which is what we derive FROM and never filter ON.
+      department: raw.department ?? raw.job_function ?? null,
+      ...(() => {
+        const c = classifyRawJob(raw);
+        return {
+          employment_type: c.employment_type,
+          seniority_hint: c.seniority,
+          job_function: c.job_function,
+        };
+      })(),
       ...geo,
       ats_board_id: board.id,
       last_seen_at: new Date().toISOString(),
@@ -233,6 +294,7 @@ export async function ingestBoards(
     provider_counts: {},
     provider_boards: {},
     provider_errors: {},
+    truncated_boards: [],
     elapsed_ms: 0,
     budget_exhausted: false,
   };
@@ -285,7 +347,10 @@ export async function recordIngestRun(
     jobs_dropped_foreign: stats.jobs_dropped_foreign,
     jobs_dropped_unresolved: stats.jobs_dropped_unresolved,
     provider_counts: stats.provider_counts,
-    provider_errors: stats.provider_errors,
+    // Truncation is recorded ALONGSIDE the errors, not inside them: a partial board
+    // is not a provider fault, and burying it in provider_errors would let a real
+    // provider failure hide behind it.
+    provider_errors: { ...stats.provider_errors, __truncated: stats.truncated_boards },
     error: problems.length ? problems.join(" | ") : null,
   });
 }

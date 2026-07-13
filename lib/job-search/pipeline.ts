@@ -29,6 +29,7 @@ import type { JobSourceAdapter, PullInput, SourceType } from "./types";
 import { extractSearchTerms } from "./title-suggestions";
 import { enrichBatch } from "@/lib/enrichment/batch";
 import { normaliseCompanyName } from "@/lib/enrichment/normalise-company";
+import { detectRecruiter } from "@/lib/enrichment/recruiter-detect";
 import { buildTargets, titleRelevantAny, type TargetTitle } from "./title-match";
 import { classifyJob } from "./classify";
 import { canonicalKey, dedupeByCanonicalKey } from "./canonical";
@@ -186,6 +187,34 @@ function firstPartyBonus(source: SourceType): number {
   return isAtsSource(source) ? 8 : 0;
 }
 
+/**
+ * Recruiter penalty.
+ *
+ * The first-party BONUS existed; the recruiter PENALTY did not — so an agency job
+ * competed on equal terms and, on a live search, a recruiter ("Bright Executive")
+ * ranked FIRST, above Aldi and ZEISS. `hide_recruiters` is a hard filter and
+ * defaults to OFF (plenty of users are happy to see agency roles), which left
+ * nothing at all expressing that a recruiter-posted ad is a WORSE version of the
+ * same job: the employer is hidden, the JD is rewritten, the salary is a band, and
+ * you apply through a middleman who may not even have the mandate.
+ *
+ * A filter is the wrong instrument for that — it is all-or-nothing. Ranking is the
+ * right one: agency roles stay visible, but they have to be genuinely better matches
+ * to beat a direct one.
+ *
+ * This is name-based and PURE, so it costs nothing and — importantly — it works at
+ * ranking time. The enrichment layer's flag would be no use here: enrichment runs
+ * AFTER the ranking and is budget-capped to the top 50, so the very jobs whose rank
+ * we need to fix are the ones it hasn't looked at yet.
+ */
+function recruiterPenalty(company: string, source: SourceType): number {
+  // An ATS job is first-party by construction — the employer posted it on their own
+  // board. Never penalise a consultancy (Accenture, Deloitte, KPMG) for posting its
+  // OWN roles on its OWN board just because its name pattern-matches an agency.
+  if (isAtsSource(source)) return 0;
+  return detectRecruiter(null, company).is_recruiter ? -12 : 0;
+}
+
 function cheapRankScore(
   j: NormalisedJob,
   criteria: SearchCriteria,
@@ -195,9 +224,14 @@ function cheapRankScore(
   const mts = matchToSearchScore(j, criteria, searchName, description);
   const q = j.quality_score ?? 50;
   const sf = salaryFitScore(j, criteria);
-  const composite = Math.min(
-    100,
-    Math.round(mts.score * 0.45 + q * 0.35 + sf * 0.2) + firstPartyBonus(j.source)
+  const composite = Math.max(
+    0,
+    Math.min(
+      100,
+      Math.round(mts.score * 0.45 + q * 0.35 + sf * 0.2) +
+        firstPartyBonus(j.source) +
+        recruiterPenalty(j.company, j.source)
+    )
   );
   return { composite, match_to_search: mts.score, quality: q, salary_fit: sf, hits: mts.hits };
 }

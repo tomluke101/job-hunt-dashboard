@@ -394,9 +394,31 @@ export async function resolveJobLocation(
       const key = normalise(p.name);
       if (!byName.has(key)) byName.set(key, p);
     }
-    const finalPlaces = Array.from(byName.values());
+    let finalPlaces = Array.from(byName.values());
 
-    const is_foreign = finalPlaces.length === 0 && foreignHits > 0;
+    // 🔴 AN EXPLICIT PROVIDER COUNTRY CODE IS AUTHORITATIVE. IT BEATS THE GAZETTEER.
+    //
+    // `is_foreign` used to require `finalPlaces.length === 0`, which meant that the
+    // moment the UK gazetteer matched ANY town in the string, a provider explicitly
+    // telling us "United States of America" was silently discarded.
+    //
+    // Barclays' Workday board writes US locations with NO country prefix — just
+    // "Wilmington, 125 South West Street" (their Delaware HQ) and "Building
+    // 400-Whippany Campus" (New Jersey). There is a real Wilmington in Kent, so the
+    // gazetteer matched it, outvoted the country code, and filed Barclays' AMERICAN
+    // jobs into a UK corpus as country_code=GB. Whippany isn't a UK village, so that
+    // one got dropped correctly — which is exactly why the bug looked like nothing:
+    // it leaked only through towns that happen to exist in both countries.
+    //
+    // This is the same lesson already learned for Primark's Dublin jobs ("an explicit
+    // provider country code must BEAT the bbox") — but that fix was applied ONLY to
+    // the coordinate path. The gazetteer path had the identical hole. A signal that
+    // is authoritative is authoritative everywhere, not just where we first got bitten.
+    if (hintIsForeign) {
+      finalPlaces = [];
+    }
+
+    const is_foreign = hintIsForeign || (finalPlaces.length === 0 && foreignHits > 0);
     const is_country_only = finalPlaces.length === 0 && !is_foreign && countryOnly;
     const is_unresolved = finalPlaces.length === 0 && !is_foreign && !is_country_only;
 

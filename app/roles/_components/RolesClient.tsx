@@ -15,6 +15,7 @@ import {
   createSearch,
   deleteSearch,
   listShortlist,
+  listRuns,
   runSearchNow,
   updateSearch,
   type Search,
@@ -62,8 +63,21 @@ export default function RolesClient({ initialSearches, initialActiveId, initialS
       rejected_user: ["rejected_user"],
       deleted: ["deleted"],
     };
-    const list = await listShortlist(searchId, { states: states[keepPane] });
+    // Shortlist AND runs. `setRuns` used to be called exactly once — at initial
+    // state — so the Run Summary panel showed whichever search happened to be
+    // active when the PAGE LOADED, for ever: switch search, it stayed; re-run the
+    // search, it stayed. On a live run it cheerfully reported "ats_total: 0" over a
+    // shortlist made entirely of SmartRecruiters jobs, because those numbers
+    // belonged to a different search.
+    //
+    // A panel of numbers that silently belongs to something else is worse than no
+    // panel: it is the stats equivalent of a source returning zero.
+    const [list, runList] = await Promise.all([
+      listShortlist(searchId, { states: states[keepPane] }),
+      listRuns(searchId),
+    ]);
     setShortlist(list);
+    setRuns(runList);
   }
 
   function switchSearch(id: string) {

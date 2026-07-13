@@ -349,6 +349,50 @@ async function main() {
     check("END-TO-END: London is NOT within 25 miles of Birmingham", !within25(london), "dropped");
   }
 
+  // -------------------------------------------------------------------------
+  console.log(
+    "\n=== 7b. AN EXPLICIT PROVIDER COUNTRY CODE BEATS THE GAZETTEER\n" +
+      "        (Barclays' Delaware jobs were sitting in the UK corpus as country_code=GB)\n"
+  );
+
+  // Barclays' Workday board writes US locations with NO country prefix — just the
+  // city and the street. There IS a Wilmington in Kent, so the gazetteer matched it
+  // and outvoted the detail payload's explicit "United States of America".
+  //
+  // The tell for why this hid so well: Whippany has no UK twin, so THAT one was
+  // dropped correctly. The bug only ever leaked through towns that exist in both
+  // countries — which is precisely the set of towns nobody thinks to check.
+  const wilmingtonUs = await resolveJobLocation("Wilmington, 125 South West Street", {
+    countryHint: "US",
+  });
+  check(
+    'Wilmington + countryHint "US" is FOREIGN (a real Wilmington exists in Kent)',
+    wilmingtonUs.is_foreign,
+    `is_foreign=${wilmingtonUs.is_foreign} places=${JSON.stringify(wilmingtonUs.places.map((p) => `${p.name}/${p.country}`))}`
+  );
+  check(
+    "a foreign country hint emits NO UK place at all",
+    wilmingtonUs.places.length === 0,
+    `places=${wilmingtonUs.places.length}`
+  );
+
+  // The same town with no hint, and with a UK hint, must still resolve to the UK —
+  // the fix must not turn every ambiguous town into a foreign job.
+  const wilmingtonUk = await resolveJobLocation("Wilmington, Kent", { countryHint: "GB" });
+  check(
+    'Wilmington + countryHint "GB" is still a UK place',
+    !wilmingtonUk.is_foreign && wilmingtonUk.places.length > 0,
+    `places=${JSON.stringify(wilmingtonUk.places.map((p) => p.name))}`
+  );
+
+  // And the case that DID work, so we know we kept it working.
+  const cambridgeUk = await resolveJobLocation("UK - Cambridge", { countryHint: "GB" });
+  check(
+    'AstraZeneca\'s "UK - Cambridge" still resolves to Cambridge, GB',
+    !cambridgeUk.is_foreign && cambridgeUk.places.some((p) => /cambridge/i.test(p.name)),
+    JSON.stringify(cambridgeUk.places.map((p) => `${p.name}/${p.country}`))
+  );
+
   console.log("\n=== 8. warmCache (batched, concurrency 5) + never-throws contract\n");
 
   // None of these are in the gazetteer, so every one is a real postcodes.io call.

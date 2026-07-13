@@ -58,15 +58,27 @@ export interface AtsProviderImpl extends Omit<AtsProvider, "listJobs"> {
  * stopped, flagged `truncated`, and nothing read the flag. Raising MAX_JOBS_PER_BOARD
  * without raising this would simply move the silent cut from the cap to the clock.
  */
-export const DEFAULT_BOARD_BUDGET_MS = 150_000;
+export const DEFAULT_BOARD_BUDGET_MS = 240_000;
 
 /**
- * Detail-fetch concurrency for the N+1 providers. Five is deliberately modest:
- * these are free, unauthenticated, unmetered endpoints and we're going to hit
- * them across thousands of boards. Getting rate-limited (or IP-blocked) kills
- * the supply for every user, which is a far worse outcome than a slow ingest.
+ * Detail-fetch concurrency for the N+1 providers.
+ *
+ * Five was deliberately modest — these are free, unauthenticated endpoints and
+ * getting IP-blocked would kill supply for every user. But it was too modest for
+ * the biggest boards, and the cost was not merely "a slow ingest":
+ *
+ * AstraZeneca (1,313 jobs) and Barclays (1,115) could not finish their detail
+ * fetches inside the per-board budget. THE DETAIL IS WHERE `country` LIVES. So the
+ * timeout silently stripped the country hint off exactly the jobs most likely to be
+ * foreign — and Barclays' Wilmington, DELAWARE jobs then matched the UK gazetteer
+ * (there is a Wilmington in Kent) and entered the corpus as country_code=GB.
+ *
+ * A timeout that drops a FIELD is far more dangerous than one that drops a JOB:
+ * a missing job is absent, a job missing its country is WRONG. Eight is still a
+ * polite rate against a single tenant, and it clears the largest board we have with
+ * room to spare.
  */
-export const DETAIL_CONCURRENCY = 5;
+export const DETAIL_CONCURRENCY = 8;
 
 export function budgetDeadline(opts?: AtsPullOptions): number {
   return Date.now() + (opts?.budgetMs ?? DEFAULT_BOARD_BUDGET_MS);

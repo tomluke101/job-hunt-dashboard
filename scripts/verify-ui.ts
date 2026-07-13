@@ -220,7 +220,14 @@ async function main() {
   await page.goto(`${BASE}/roles`, { waitUntil: "domcontentloaded" });
   await page.waitForLoadState("networkidle", { timeout: 60_000 }).catch(() => {});
 
-  await page.getByRole("button", { name: /new search/i }).first().click();
+  // The button is "New search" in the empty state and a compact "+ New" once the
+  // user has any searches — so the harness only worked on a virgin account, and
+  // broke the moment it had successfully created a search on a previous run. A
+  // test that passes exactly once is not a test.
+  await page
+    .getByRole("button", { name: /^(\+\s*)?new( search)?$/i })
+    .first()
+    .click();
   const chipInput = page.locator('input[placeholder*="press Enter" i]').first();
   await chipInput.waitFor({ state: "visible" });
   await chipInput.fill("supply chain ana");
@@ -245,6 +252,135 @@ async function main() {
     throw new Error(`Expected a "Supply Chain Analyst" chip, got ${JSON.stringify(cleaned)}`);
   }
   console.log('   OK — chip is "Supply Chain Analyst", not the fragment.\n');
+
+  // -------------------------------------------------------------------------
+  // 4. A REAL SEARCH, END TO END.
+  //
+  // Everything above proves pages RENDER. None of it proves the product WORKS.
+  // Nobody — not Claude, not Tom — had run an actual search on the live site since
+  // ATS-direct supply landed, so "1,854 first-party jobs in the corpus" was a
+  // database fact, not a user-visible one. This drives the thing a user does:
+  // name a role, run it, and look at what comes back.
+  //
+  // The assertions are the ones that matter for the moat:
+  //   • ATS (first-party) jobs actually REACH the shortlist, and
+  //   • they are not sitting underneath recruiter spam.
+  // -------------------------------------------------------------------------
+  console.log("4. Running a REAL search end-to-end...");
+
+  // Finish creating the search the chip test started.
+  //
+  // ⚠️ Select on the EXACT placeholder. A loose `input[placeholder*="e.g."]` matches
+  // the POSTCODE box (placeholder "e.g. SW1A 1AA") before it matches anything else,
+  // so the first version of this typed the search NAME into the postcode field, left
+  // the name blank, and sat on a red "Give the search a name" error — while the
+  // script sailed on. The screenshot is what caught it; the exit code said nothing.
+  // ⚠️ THE QUERY IS PART OF THE TEST, AND THE FIRST ONE WAS WRONG.
+  //
+  // This originally searched "Supply Chain Analyst" near BIRMINGHAM and asserted that
+  // ATS jobs must appear. Zero did — and the assertion was RIGHT to fire but WRONG
+  // about why. The corpus holds ~1,900 first-party jobs, of which 553 are in London
+  // and EIGHT are in Birmingham, none of them supply-chain. So the search was
+  // measuring a COVERAGE gap in the registry, while claiming the moat was unplugged.
+  //
+  // Those are opposite bugs with opposite fixes (register more Midlands employers vs.
+  // repair the query), and conflating them would have sent the next session chasing a
+  // phantom. A test asserting "first-party supply reaches the shortlist" must ask for
+  // supply we KNOW exists, or it is really testing the registry's geography.
+  //
+  // Coverage is tracked separately — see scripts/probe-corpus.ts.
+  await page.locator('input[placeholder*="remember it by" i]').first()
+    .fill(`Claude verify — software engineer ${Date.now()}`);
+  await page.locator('input[placeholder*="SW1A" i]').first().fill("EC2A 1AF"); // London
+
+  // Replace the chip the autocomplete test left behind.
+  const removeChip = page.locator('button[aria-label^="Remove"]').first();
+  if (await removeChip.count()) await removeChip.click();
+  const chipBox = page.locator('input[placeholder*="press Enter" i]').first();
+  await chipBox.fill("Software Engineer");
+  await chipBox.press("Enter");
+
+  await page.getByRole("button", { name: /^create search$/i }).first().click();
+  await page.waitForLoadState("networkidle", { timeout: 60_000 }).catch(() => {});
+  await page.waitForTimeout(2000);
+  await page.screenshot({ path: resolve(SHOTS, "search_saved.png"), fullPage: true });
+  console.log("   -> scripts/.screenshots/search_saved.png");
+
+  // The modal must actually be GONE. If validation failed it is still sitting there
+  // and everything below would be asserting against a form, not a shortlist.
+  if (await page.locator('input[placeholder*="remember it by" i]').count()) {
+    throw new Error(
+      "The New-search modal is still open — the search was not created (validation error?). " +
+        "See scripts/.screenshots/search_saved.png"
+    );
+  }
+
+  // Run it. The pull hits Reed + Adzuna live and queries the ATS corpus, so give
+  // it room — a slow run is not a failed one.
+  const runBtn = page.getByRole("button", { name: /^run now$/i }).first();
+  await runBtn.waitFor({ state: "visible", timeout: 30_000 });
+  await runBtn.click();
+  console.log("   search running (up to 3 min)...");
+
+  // Wait for the button to stop saying "Running…" — that is the real completion
+  // signal. Waiting on networkidle alone returns while the server action is still
+  // in flight, and we would screenshot an empty shortlist and call it a failure.
+  await page
+    .getByRole("button", { name: /^run now$/i })
+    .first()
+    .waitFor({ state: "visible", timeout: 240_000 })
+    .catch(() => {});
+  await page.waitForLoadState("networkidle", { timeout: 180_000 }).catch(() => {});
+  await page.waitForTimeout(5000);
+
+  await page.screenshot({ path: resolve(SHOTS, "search_results.png"), fullPage: true });
+  console.log("   -> scripts/.screenshots/search_results.png");
+
+  // What actually came back? Read the source label off each card, in rank order.
+  const bodyText = (await page.locator("body").innerText()).toLowerCase();
+  const ATS_SOURCES = ["greenhouse", "lever", "ashby", "smartrecruiters", "workday", "recruitee"];
+  const atsSeen = ATS_SOURCES.filter((s) => bodyText.includes(s));
+  const aggSeen = ["reed", "adzuna"].filter((s) => bodyText.includes(s));
+
+  console.log(`   ATS sources visible on the page : ${atsSeen.join(", ") || "(NONE)"}`);
+  console.log(`   aggregator sources visible      : ${aggSeen.join(", ") || "(none)"}`);
+
+  const empty = /no jobs|nothing matched|0 jobs/i.test(bodyText);
+  if (empty) {
+    throw new Error(
+      "The search returned an EMPTY shortlist. A green render over zero results is exactly " +
+        "the false pass this harness exists to prevent. See scripts/.screenshots/search_results.png"
+    );
+  }
+  if (atsSeen.length === 0) {
+    throw new Error(
+      "NO first-party ATS job reached the shortlist for 'Software Engineer' in LONDON — " +
+        "where the corpus definitely has them (74 at last count, across all five providers). " +
+        "That means the moat is not connected to the product. " +
+        "See scripts/.screenshots/search_results.png"
+    );
+  }
+  console.log("   OK — first-party ATS jobs reached the shortlist.");
+
+  // And the moat has to actually WIN, not merely appear. A recruiter-posted ad at
+  // the top of the list is the exact outcome ATS-direct supply exists to prevent —
+  // it happened on the first live run of this harness (a recruiter ranked #1, above
+  // Aldi and ZEISS), because ranking had a first-party BONUS and no recruiter PENALTY.
+  const firstCardSource = (
+    await page
+      .locator("text=/^(reed|adzuna|greenhouse|lever|ashby|smartrecruiters|workday)$/i")
+      .first()
+      .textContent()
+      .catch(() => null)
+  )?.trim().toLowerCase();
+  console.log(`   top-ranked result's source: ${firstCardSource ?? "(unreadable)"}`);
+  if (firstCardSource && !ATS_SOURCES.includes(firstCardSource)) {
+    console.log(
+      `   ⚠️  the top result is from an AGGREGATOR (${firstCardSource}), not the employer's own board. ` +
+        `Not fatal — an aggregator job can legitimately be the best match — but worth an eye.`
+    );
+  }
+  console.log();
 
   await browser.close();
 }

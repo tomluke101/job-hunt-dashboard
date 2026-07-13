@@ -283,6 +283,40 @@ export async function resolveJobLocation(
     const isRemote =
       hints?.isRemote === true || inputs.some((i) => isRemoteText(i));
 
+    // ── THE RAW STRING HAS A VETO ────────────────────────────────────────────
+    // If the location the employer actually wrote is positively FOREIGN, no
+    // provider candidate may rescue it.
+    //
+    // Workday writes "{COUNTRY} - {City} - {State}", and the adapter expands that
+    // into candidates so UK jobs ("UK - Cambridge") can geocode. But the expansion
+    // also emits a bare "Cambridge" for "US - Cambridge - MA" — and the UK
+    // gazetteer matches it happily. Result: AstraZeneca's Massachusetts jobs were
+    // filed as Cambridge, GB. Same for "US - Wilmington - DE" (there is a Wilmington
+    // in Kent) and Waltham.
+    //
+    // The candidates are a CONVENIENCE for geocoding; the raw string is the TRUTH
+    // about which country the job is in. Truth wins.
+    if (rawStr) {
+      const rawSegs = splitSegments(rawStr);
+      let rawForeign = false;
+      let rawUkPlaces = 0;
+      for (const seg of rawSegs) {
+        const r = classifySegment(seg);
+        if (r.foreign) rawForeign = true;
+        rawUkPlaces += r.places.length;
+      }
+      if (rawForeign && rawUkPlaces === 0) {
+        return {
+          raw: rawStr,
+          places: [],
+          is_remote: isRemote,
+          is_foreign: true,
+          is_unresolved: false,
+          is_country_only: false,
+        };
+      }
+    }
+
     // Dedupe segments across raw + provider candidates.
     const segments: string[] = [];
     const seen = new Set<string>();
@@ -309,16 +343,34 @@ export async function resolveJobLocation(
       unknownQueue.push(...r.unknown);
     }
 
+    // Provider country hint. Read BEFORE the coordinates, because an explicit
+    // country code from the provider must OVERRULE the bounding box.
+    const hint = hints?.countryHint ? hints.countryHint.trim().toUpperCase() : null;
+    const hintIsUk = hint === "GB" || hint === "UK";
+    const hintIsForeign = !!hint && !hintIsUk;
+    if (hint) {
+      if (hintIsUk) countryOnly = true;
+      else foreignHits++;
+    }
+
     // Provider-supplied coordinates (SmartRecruiters). Cheapest, most reliable
     // signal we get — but it still has to be checked against the UK, because a
     // provider will hand us Seoul's coordinates just as readily as London's.
+    //
+    // ⚠️ A UK BOUNDING BOX IS NOT THE UK. Ireland sits entirely inside the UK's
+    // lat/lng envelope (Dublin is 53.35, -6.26), as do parts of France. So the box
+    // alone happily admitted Primark's Dublin jobs — country_code "IE" and all —
+    // straight into a UK corpus. When the provider has TOLD us the country, believe
+    // it: an explicit ISO code beats a rectangle.
     const lat = hints?.lat;
     const lng = hints?.lng;
     if (typeof lat === "number" && typeof lng === "number" && Number.isFinite(lat) && Number.isFinite(lng)) {
-      if (isInUkBbox({ lat, lng })) {
+      if (hintIsForeign) {
+        foreignHits++;
+      } else if (isInUkBbox({ lat, lng })) {
         places.push({
           name: rawStr || "Provider coordinates",
-          country: (hints?.countryHint ?? "GB").toUpperCase(),
+          country: "GB",
           lat,
           lng,
           source: "provider",
@@ -326,13 +378,6 @@ export async function resolveJobLocation(
       } else {
         foreignHits++;
       }
-    }
-
-    // Provider country hint.
-    const hint = hints?.countryHint ? hints.countryHint.trim().toUpperCase() : null;
-    if (hint) {
-      if (hint === "GB" || hint === "UK") countryOnly = true;
-      else foreignHits++;
     }
 
     // Long tail -> postcodes.io (cached, negatives included). Only worth doing

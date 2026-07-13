@@ -67,8 +67,12 @@ export async function upsertBoard(d: DiscoveredBoard): Promise<string | null> {
     .single();
 
   if (error) {
-    console.error("[registry] upsertBoard failed", error.message);
-    return null;
+    // THROW, don't return null. Swallowing this made discover-ats.ts print a ✅ for
+    // all 38 boards while writing ZERO rows — the registry stayed empty and the
+    // failure only surfaced later, from ingest, as "no pollable boards". A write
+    // that silently reports success is the same class of bug as a source that
+    // silently returns zero. The caller records the failure and exits non-zero.
+    throw new Error(`upsertBoard(${d.provider}/${d.token}): ${error.message}`);
   }
   return data?.id ?? null;
 }

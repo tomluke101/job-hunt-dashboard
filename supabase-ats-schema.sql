@@ -59,12 +59,22 @@ create table if not exists company_ats (
   updated_at timestamptz not null default now()
 );
 
--- One row per board. workday_site is nullable and Postgres treats NULLs as
--- DISTINCT, so a plain unique(provider, board_token, workday_site) would happily
--- allow duplicate (provider, token) rows for every non-Workday provider. coalesce
--- closes that hole.
+-- One row per board.
+--
+-- workday_site is nullable and Postgres treats NULLs as DISTINCT, so a plain
+-- unique(provider, board_token, workday_site) would allow duplicate (provider,
+-- token) rows for every non-Workday provider. NULLS NOT DISTINCT (PG15+) closes
+-- that hole.
+--
+-- It must NOT be an expression index like coalesce(workday_site,''): PostgREST's
+-- upsert issues ON CONFLICT (provider, board_token, workday_site), which cannot
+-- match an expression index. That version rejected every write with "no unique or
+-- exclusion constraint matching the ON CONFLICT specification" — while discovery
+-- reported all 38 boards found. Registry stayed empty; the failure only surfaced
+-- later as "no pollable boards".
+drop index if exists company_ats_board_uniq;
 create unique index if not exists company_ats_board_uniq
-  on company_ats(provider, board_token, coalesce(workday_site, ''));
+  on company_ats(provider, board_token, workday_site) nulls not distinct;
 create index if not exists company_ats_normalised_name_idx on company_ats(normalised_name);
 create index if not exists company_ats_status_idx on company_ats(status);
 create index if not exists company_ats_last_polled_idx on company_ats(last_polled_at nulls first);

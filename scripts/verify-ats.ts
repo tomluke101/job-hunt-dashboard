@@ -19,6 +19,7 @@ import { canonicalKey, dedupeByCanonicalKey, titleIdentityTokens, companyIdentit
 import { parseSalaryFromText } from "../lib/job-search/salary-parse";
 import { createServerSupabaseClient } from "../lib/supabase-server";
 import type { SourceType } from "../lib/job-search/types";
+import { resolveJobLocation } from "../lib/geo";
 
 let failures = 0;
 function check(name: string, pass: boolean, detail = "") {
@@ -162,19 +163,49 @@ async function partB(): Promise<void> {
     .in("source", ATS);
   check("corpus contains ATS jobs", (corpusCount ?? 0) > 0, `jobs=${corpusCount}`);
 
-  // Every ATS job in the corpus must be UK or remote. A foreign job here means the
-  // geo filter leaked and a Birmingham user can be shown Palo Alto.
-  const { data: foreign } = await supabase
-    .from("job_postings")
-    .select("id, title, country_code, place_name")
-    .in("source", ATS)
-    .not("country_code", "is", null)
-    .neq("country_code", "GB")
-    .limit(5);
+  // Every ATS job in the corpus must be UK or remote.
+  //
+  // Checking country_code alone is NOT enough — that is exactly how the first leak
+  // hid. Workday's "US - Cambridge - MA" resolved to place "Cambridge" and country
+  // "GB", so a stored-column check waved it straight through. The only honest test
+  // is to re-run the resolver over what's actually in the corpus and assert nothing
+  // in there is foreign.
+  // Supabase enforces a SERVER-SIDE max-rows cap (1000) that .range() cannot raise.
+  // Without paginating, this check silently inspected 1000 of 1440 jobs and still
+  // printed a confident PASS. A verifier that quietly covers 70% of the evidence is
+  // worse than no verifier — it manufactures false confidence. Page until exhausted.
+  const rows: Array<Record<string, unknown>> = [];
+  const PAGE = 1000;
+  for (let offset = 0; ; offset += PAGE) {
+    const { data, error } = await supabase
+      .from("job_postings")
+      .select("id, title, location_raw, place_name, country_code")
+      .in("source", ATS)
+      .range(offset, offset + PAGE - 1);
+    if (error) {
+      check("corpus readable for the geo re-check", false, error.message);
+      break;
+    }
+    const page = (data ?? []) as unknown as Array<Record<string, unknown>>;
+    rows.push(...page);
+    if (page.length < PAGE) break;
+  }
+
+  const leaked: string[] = [];
+  for (const r of (rows ?? []) as unknown as Array<Record<string, unknown>>) {
+    if (r.country_code && r.country_code !== "GB") {
+      leaked.push(`${r.title} — country=${r.country_code} (${r.location_raw})`);
+      continue;
+    }
+    const loc = await resolveJobLocation(r.location_raw as string | null);
+    if (loc.is_foreign) {
+      leaked.push(`${r.title} — "${r.location_raw}" stored as ${r.place_name}`);
+    }
+  }
   check(
-    "NO non-UK jobs in the corpus (geo filter held)",
-    (foreign ?? []).length === 0,
-    (foreign ?? []).length ? JSON.stringify(foreign) : ""
+    `NO non-UK jobs in the corpus (re-resolved all ${(rows ?? []).length})`,
+    leaked.length === 0,
+    leaked.length ? `${leaked.length} leaked, e.g. ${leaked.slice(0, 3).join(" | ")}` : ""
   );
 
   // Every ingested row must carry a canonical key, or cross-source dedupe is blind.

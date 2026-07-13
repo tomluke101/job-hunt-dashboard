@@ -183,10 +183,45 @@ async function main() {
   // A town deliberately NOT in the gazetteer: proves the postcodes.io long-tail
   // path is alive. If this one fails, the gazetteer is carrying the whole test
   // and the API fallback could be broken without anyone noticing.
+  // REGRESSION — Workday writes "{COUNTRY} - {City} - {State}" and its adapter
+  // expands that into candidates so UK jobs geocode. The expansion also emits a bare
+  // "Cambridge" for "US - Cambridge - MA", which the UK gazetteer matched: 22
+  // AstraZeneca Massachusetts/Delaware jobs went into the corpus filed as GB.
+  // A candidate must never rescue a raw string that is positively foreign.
+  const usCam = await resolveJobLocation("US - Cambridge - MA", {
+    candidates: ["Cambridge, MA", "Cambridge", "US - Cambridge - MA"],
+  });
+  check(
+    'Workday "US - Cambridge - MA" is FOREIGN even though a candidate says "Cambridge"',
+    usCam.is_foreign && usCam.places.length === 0,
+    summarise(usCam)
+  );
+  const ukCam = await resolveJobLocation("UK - Cambridge", {
+    candidates: ["Cambridge, UK", "Cambridge", "UK - Cambridge"],
+  });
+  check(
+    'Workday "UK - Cambridge" still resolves to Cambridge, GB',
+    !ukCam.is_foreign && ukCam.places[0]?.country === "GB",
+    summarise(ukCam)
+  );
+  const usWilm = await resolveJobLocation("US - Wilmington - DE", {
+    candidates: ["Wilmington, DE", "Wilmington"],
+  });
+  check(
+    '"US - Wilmington - DE" is FOREIGN (there IS a Wilmington in Kent)',
+    usWilm.is_foreign,
+    summarise(usWilm)
+  );
+
   const bicester = await resolveJobLocation("Bicester");
   check(
-    '"Bicester" (NOT in the gazetteer) -> resolved via postcodes.io',
-    bicester.places.length === 1 && bicester.places[0].source === "postcodes.io",
+    '"Bicester" (NOT in the gazetteer) -> resolved via postcodes.io (or its cache)',
+    // Accept "cache" as well as "postcodes.io": once geo_cache is live, the second
+    // and every later run is legitimately served from the cache. Pinning this to
+    // "postcodes.io" asserted that the cache DOESN'T work, which is backwards.
+    bicester.places.length === 1 &&
+      (bicester.places[0].source === "postcodes.io" || bicester.places[0].source === "cache") &&
+      bicester.places[0].country === "GB",
     summarise(bicester)
   );
 

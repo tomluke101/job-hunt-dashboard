@@ -94,6 +94,7 @@ async function main() {
   let found = 0;
   let missed = 0;
   let unverified = 0;
+  let writeErrors = 0;
   const byProvider: Record<string, number> = {};
 
   let cursor = 0;
@@ -128,7 +129,10 @@ async function main() {
           console.log(`—  ${name}: ${notes}`);
         }
       } catch (e) {
-        missed++;
+        // A REGISTRY WRITE failure is not a "miss" — the board was found, we just
+        // failed to persist it. Counting it as a miss (or printing a ✅) is how 38
+        // boards got reported as discovered while the table stayed empty.
+        writeErrors++;
         console.log(`💥 ${name}: ${String(e)}`);
       }
     }
@@ -143,6 +147,23 @@ async function main() {
     `\nA miss is normal: most employers are not on a public ATS. The misses are cached\n` +
       `(company_ats_discovery) and won't be re-probed for 30 days.`
   );
+
+  if (writeErrors) {
+    console.error(`\n❌ ${writeErrors} board(s) were DISCOVERED but FAILED TO PERSIST.`);
+    console.error(`   The registry is incomplete. Fix the write error above and re-run.`);
+    process.exitCode = 1;
+    return;
+  }
+
+  // Discovery that finds boards but writes none is a broken run, not an empty market.
+  if (!DRY_RUN && found > 0) {
+    const supabase = createServerSupabaseClient();
+    const { count } = await supabase.from("company_ats").select("id", { count: "exact", head: true });
+    if (!count) {
+      console.error(`\n❌ Found ${found} boards but company_ats is EMPTY. The writes did not land.`);
+      process.exitCode = 1;
+    }
+  }
 }
 
 main().catch((e) => {

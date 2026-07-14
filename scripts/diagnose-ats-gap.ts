@@ -202,10 +202,28 @@ async function main() {
     .reduce((n, [, c]) => n + c.length, 0);
   console.log(
     `\n${"=".repeat(70)}\n` +
-      `${unsupported} employers sit on an ATS WE DO NOT SUPPORT.\n` +
-      `Each one is real vacancies, invisible to HuntHQ for want of an adapter — not\n` +
-      `for want of a seed name. If this number is large, the coverage bottleneck is\n` +
-      `the PROVIDER LIST, and seeding more companies cannot fix it.`
+      `>= ${unsupported} employers sit on an ATS WE DO NOT SUPPORT.\n` +
+      `Each one is real vacancies, invisible to HuntHQ for want of an ADAPTER — not\n` +
+      `for want of a seed name. Seeding more companies cannot reach them.\n`
+  );
+
+  // ⚠️ THIS IS A FLOOR, NOT A CENSUS — DO NOT READ THE "no fingerprint" BUCKET AS
+  // "these employers have no ATS".
+  //
+  // We fetch RAW HTML and never execute JavaScript. A modern enterprise careers page
+  // (Aldi, HSBC, Boots) renders its search widget client-side, so the ATS host never
+  // appears in the markup we read. Those employers land in the unknown bucket for a
+  // reason that has nothing to do with which ATS they use.
+  //
+  // So: every vendor COUNTED above is real evidence (we saw its host in their HTML),
+  // and the ranking among them is trustworthy. The unknown bucket is EVIDENCE OF
+  // NOTHING. Proving what those employers run needs a headless browser — the same
+  // Playwright already in devDependencies for verify-ui.
+  console.log(
+    `The ${unknown.length} "no fingerprint" employers are NOT evidence of no ATS. This script\n` +
+      `reads raw HTML and runs no JavaScript, and a JS-rendered careers page hides its\n` +
+      `ATS host from us entirely. Treat the ranking above as a FLOOR. To settle the\n` +
+      `unknown bucket, re-run this crawl through Playwright (already a devDependency).`
   );
 }
 

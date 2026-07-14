@@ -47,6 +47,18 @@ async function main() {
 
   const stats = await ingestBoards(boards, {
     budgetMs,
+    // Match the cron (app/api/ats/ingest/route.ts). If the script polls at a
+    // different concurrency than production does, its timing tells us nothing about
+    // whether the nightly run can actually finish.
+    //
+    // ⚠️ 4 IS A SUPPLY DECISION, NOT A POLITENESS ONE — DO NOT RAISE IT TO GO FASTER.
+    // Measured on the 94-board registry (2026-07-14):
+    //     concurrency 4 -> 296s, workday 3854 jobs, no truncation
+    //     concurrency 6 -> 152s, workday 2653 jobs, Barclays TRUNCATED
+    //     concurrency 8 -> 151s, workday 2353 jobs, Barclays + AstraZeneca TRUNCATED
+    // Polling more boards at once gets us THROTTLED by Workday, and the throttling
+    // shows up as a HALVED JOB COUNT, not as an error. Raising it looks like a free
+    // 2x speed-up and is really a 40% cut to our largest first-party employers.
     concurrency: 4,
     dryRun,
     onProgress: (m) => process.stdout.write(`\r${m.padEnd(90)}`),

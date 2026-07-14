@@ -44,6 +44,29 @@ export async function GET(req: Request) {
   const stats = await ingestBoards(boards, {
     // Leave headroom under maxDuration so the run can still write its audit row.
     budgetMs: 270_000,
+    // ⚠️ STAYS AT 4 — AND THAT IS A SUPPLY DECISION, NOT A POLITENESS ONE.
+    //
+    // The registry went 52 -> 94 boards on 2026-07-14 and a full ingest at
+    // concurrency 4 now takes 240-300s across runs — i.e. it STRADDLES this 270s
+    // budget and will sometimes not finish. The obvious fix is to poll more boards at
+    // once. It was tried, and measured:
+    //
+    //     concurrency 4 -> 296s, workday 3854 jobs, no truncation
+    //     concurrency 6 -> 152s, workday 2653 jobs, Barclays TRUNCATED
+    //     concurrency 8 -> 151s, workday 2353 jobs, Barclays + AstraZeneca TRUNCATED
+    //
+    // Polling harder gets us THROTTLED by Workday, and the throttling does not arrive
+    // as an error — it arrives as a QUIETLY HALVED JOB COUNT on our biggest employers.
+    // A 2x speed-up that costs 40% of Barclays and AstraZeneca is not a speed-up.
+    //
+    // So this run will now exhaust its clock and poll ~85 of 94 boards. That is
+    // ACCEPTABLE and it is not silent: boards are polled oldest-first, so the next run
+    // continues where this one stopped, and assertNoSilentTruncation() reports the
+    // exhaustion as a problem, which makes this route return 500 and show up in
+    // Vercel's cron failure log. Full refresh takes two nights instead of one.
+    //
+    // The real fix is to SHARD the cron (poll a slice of the registry per invocation)
+    // or raise maxDuration — not to hammer Workday. Tom's call; it costs money.
     concurrency: 4,
     trigger: "cron",
   });

@@ -324,8 +324,20 @@ async function main() {
   }
 
   await page.getByRole("button", { name: /^create search$/i }).first().click();
+
+  // WAIT FOR THE MODAL TO CLOSE — do not just sleep and hope.
+  //
+  // Saving a search runs an LLM parse of the description (enrichCriteriaWithAI), so
+  // "Create search" sits on a spinner for well over the 2s this used to wait. The
+  // harness then screenshotted a form MID-SUBMIT and declared a validation error —
+  // a FALSE FAILURE, which is the same class of lie as a false pass: it sends the
+  // next session hunting a bug that was never there. The modal closing is the only
+  // real completion signal.
+  await page
+    .locator('input[placeholder*="remember it by" i]')
+    .waitFor({ state: "detached", timeout: 120_000 })
+    .catch(() => {});
   await page.waitForLoadState("networkidle", { timeout: 60_000 }).catch(() => {});
-  await page.waitForTimeout(2000);
   await page.screenshot({ path: resolve(SHOTS, "search_saved.png"), fullPage: true });
   console.log("   -> scripts/.screenshots/search_saved.png");
 
@@ -359,11 +371,37 @@ async function main() {
   await page.screenshot({ path: resolve(SHOTS, "search_results.png"), fullPage: true });
   console.log("   -> scripts/.screenshots/search_results.png");
 
-  // What actually came back? Read the source label off each card, in rank order.
-  const bodyText = (await page.locator("body").innerText()).toLowerCase();
+  // What actually came back? Read the source label off each CARD, in rank order.
+  //
+  // 🔴🔴 THIS CHECK USED TO BE VACUOUS AND ALWAYS PASSED.
+  //
+  // It was `bodyText.includes(source)` over the WHOLE PAGE — and the run-stats line
+  // at the top of every search reads:
+  //     "pulled from reed: 50, ashby: 0, lever: 0, adzuna: 38, workday: 1,
+  //      recruitee: 0, greenhouse: 0, smartrecruiters: 3 · ats_total: 4"
+  // Every provider's name is printed there whether or not it returned ANYTHING. So
+  // the assertion "first-party ATS jobs reached the shortlist" was really asserting
+  // "the page contains the word 'greenhouse'", which is true of a shortlist made
+  // entirely of Reed adverts — and true even when ats_total is 0. It reported all six
+  // providers as visible on a run where FOUR of them returned nothing at all.
+  //
+  // The tell was Recruitee: we have ZERO Recruitee boards in the registry, so it can
+  // never contribute a job, and the harness cheerfully listed it as present.
+  //
+  // A check that cannot fail is not a check. Count the CARDS.
   const ATS_SOURCES = ["greenhouse", "lever", "ashby", "smartrecruiters", "workday", "recruitee"];
-  const atsSeen = ATS_SOURCES.filter((s) => bodyText.includes(s));
-  const aggSeen = ["reed", "adzuna"].filter((s) => bodyText.includes(s));
+  const cardSources = (
+    await page
+      .locator("text=/^(reed|adzuna|greenhouse|lever|ashby|smartrecruiters|workday|recruitee)$/i")
+      .allTextContents()
+  ).map((s) => s.trim().toLowerCase());
+
+  const atsSeen = [...new Set(cardSources.filter((s) => ATS_SOURCES.includes(s)))];
+  const aggSeen = [...new Set(cardSources.filter((s) => s === "reed" || s === "adzuna"))];
+  const atsCards = cardSources.filter((s) => ATS_SOURCES.includes(s)).length;
+  console.log(`   shortlist cards by source       : ${JSON.stringify(cardSources)}`);
+  console.log(`   first-party cards on the page   : ${atsCards} of ${cardSources.length}`);
+  const bodyText = (await page.locator("body").innerText()).toLowerCase();
 
   console.log(`   ATS sources visible on the page : ${atsSeen.join(", ") || "(NONE)"}`);
   console.log(`   aggregator sources visible      : ${aggSeen.join(", ") || "(none)"}`);

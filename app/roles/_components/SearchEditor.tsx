@@ -800,6 +800,11 @@ function TitleChipInput({
           onPaste={handlePaste}
           className="flex-1 min-w-[160px] outline-none border-none text-sm bg-transparent py-1"
           placeholder={chips.length === 0 ? emptyPlaceholder : ""}
+          // A STABLE HANDLE FOR THE UI HARNESS. The placeholder is the only other way
+          // to select this input, and it EMPTIES as soon as the first chip exists — so
+          // a test that adds two chips can never find the box for the second one. The
+          // harness cannot drive a multi-role search without this.
+          data-testid="title-chip-input"
         />
       </div>
       {suggestions.length > 0 && (

@@ -306,7 +306,13 @@ async function main() {
   // Replace the chip the autocomplete test left behind.
   const removeChip = page.locator('button[aria-label^="Remove"]').first();
   if (await removeChip.count()) await removeChip.click();
-  const chipBox = page.locator('input[placeholder*="press Enter" i]').first();
+
+  // ⚠️ SELECT ON THE TESTID, NOT THE PLACEHOLDER. The chip input renders
+  // `placeholder={chips.length === 0 ? emptyPlaceholder : ""}` — so the moment the
+  // FIRST chip lands the placeholder empties and `input[placeholder*="press Enter"]`
+  // stops matching. A loop that adds four roles using that selector deadlocks on the
+  // second one, which is exactly what happened here.
+  const chipBox = page.getByTestId("title-chip-input").first();
   for (const role of [
     "Supply Chain Analyst",
     "Procurement Consultant",

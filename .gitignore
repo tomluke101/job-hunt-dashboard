@@ -45,3 +45,7 @@ next-env.d.ts
 # Playwright verification screenshots
 scripts/.screenshots/
 test-results/
+
+# Local run logs from scripts/ (discovery, ingest, verifiers)
+scripts/*.log
+scripts/.*.log

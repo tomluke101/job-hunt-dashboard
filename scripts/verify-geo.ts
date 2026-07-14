@@ -138,6 +138,54 @@ async function main() {
     );
   }
 
+  console.log("\n=== 2b. SITE DESCRIPTORS — the employer named the BUILDING, not the town\n");
+
+  // 🔴 These strings resolved to NOTHING on the live corpus (2026-07-14), so the
+  // postings were invisible to every location search ever run: Barclays' "Glasgow
+  // Campus" (36 jobs), Darktrace's "Cambridge Office" (9) and "London Office" (8).
+  // 53 real UK jobs — more than SEVEN TIMES the entire first-party supply we had in
+  // Birmingham at the time. The gazetteer knew "Glasgow" perfectly well; it had just
+  // never been shown it.
+  const siteCases: Array<[string, string]> = [
+    ["Glasgow Campus", "Glasgow"],
+    ["Cambridge Office, United Kingdom", "Cambridge"],
+    ["London Office, United Kingdom", "London"],
+    ["Manchester Site", "Manchester"],
+    ["Leeds Distribution Centre", "Leeds"],
+    ["Birmingham Business Park", "Birmingham"],
+  ];
+  for (const [raw, want] of siteCases) {
+    const loc = await resolveJobLocation(raw);
+    check(
+      `"${raw}" -> ${want}`,
+      loc.places.some((pl) => pl.name === want && pl.country === "GB"),
+      summarise(loc)
+    );
+  }
+
+  // ...AND STRIPPING THE DESCRIPTOR MUST NOT MANUFACTURE A UK PLACE.
+  // "Kuwait - Main Office" splits to ["Kuwait", "Main Office"]; strip "Office" and
+  // "Main" is left — which the gazetteer MATCHED. The first cut of this feature
+  // resolved a Kuwaiti job to a UK town: a foreign job admitted into a UK search,
+  // introduced by the very change meant to improve coverage. Caught only by asserting
+  // it. A coverage fix that leaks a foreign job is not a fix.
+  const siteMustNotBeUk: string[] = [
+    "Kuwait - Main Office",
+    "Qingdao Site",
+    "Qingdao Office",
+    "Shanghai Jing'An Office",
+    "Any of our offices",
+    "Building 400-Whippany Campus, Jefferson Park",
+  ];
+  for (const raw of siteMustNotBeUk) {
+    const loc = await resolveJobLocation(raw);
+    check(
+      `"${raw}" -> NEVER a UK place`,
+      loc.places.length === 0,
+      summarise(loc)
+    );
+  }
+
   console.log("\n=== 3. THE ORDERING TEST — a foreign qualifier must beat the UK gazetteer\n");
 
   const bhamUk = await resolveJobLocation("Birmingham");

@@ -275,30 +275,47 @@ async function main() {
   // so the first version of this typed the search NAME into the postcode field, left
   // the name blank, and sat on a red "Give the search a name" error — while the
   // script sailed on. The screenshot is what caught it; the exit code said nothing.
-  // ⚠️ THE QUERY IS PART OF THE TEST, AND THE FIRST ONE WAS WRONG.
+  // ⚠️ THE QUERY IS PART OF THE TEST, AND IT HAS NOW BEEN WRONG IN BOTH DIRECTIONS.
   //
-  // This originally searched "Supply Chain Analyst" near BIRMINGHAM and asserted that
-  // ATS jobs must appear. Zero did — and the assertion was RIGHT to fire but WRONG
-  // about why. The corpus holds ~1,900 first-party jobs, of which 553 are in London
-  // and EIGHT are in Birmingham, none of them supply-chain. So the search was
-  // measuring a COVERAGE gap in the registry, while claiming the moat was unplugged.
+  // v1 searched "Supply Chain Analyst" near BIRMINGHAM and asserted ATS jobs must
+  // appear. Zero did — the assertion was RIGHT to fire but WRONG about why. The
+  // corpus then held ~1,900 first-party jobs, of which 553 were in London and EIGHT
+  // in Birmingham, none supply-chain. It was measuring a COVERAGE gap in the
+  // registry while claiming the moat was unplugged: opposite bugs, opposite fixes.
   //
-  // Those are opposite bugs with opposite fixes (register more Midlands employers vs.
-  // repair the query), and conflating them would have sent the next session chasing a
-  // phantom. A test asserting "first-party supply reaches the shortlist" must ask for
-  // supply we KNOW exists, or it is really testing the registry's geography.
+  // v2 therefore moved to "Software Engineer" in LONDON — supply we KNEW existed —
+  // so the harness tested the WIRING and not the registry's geography. Correct at
+  // the time, but it meant the product's worst case was no longer being tested.
   //
-  // Coverage is tracked separately — see scripts/probe-corpus.ts.
+  // v3 (2026-07-14) PUTS BIRMINGHAM BACK, because the coverage gap has been closed:
+  // 52 -> 94 boards, and Birmingham first-party supply went 7 -> 169 jobs, including
+  // Turner & Townsend's procurement desk, Baxi (Warwick) and Greene King (Burton).
+  // London's share of first-party supply fell from 43% to 23%. This is now the
+  // strictly HARDER test — if the Midlands works, London (with 9x the supply through
+  // the identical code path) works.
+  //
+  // SEVERAL ROLE CHIPS, deliberately. `titleRelevantOne` requires the role noun AND
+  // a qualifier, so a lone "Supply Chain Analyst" chip drops "Procurement Consultant"
+  // by design (else "Analyst" matches the whole corpus). That is the documented chip
+  // rule, NOT a coverage gap — and a harness that ignored it would re-diagnose a
+  // working registry as broken, which is the exact mistake v1 made.
   await page.locator('input[placeholder*="remember it by" i]').first()
-    .fill(`Claude verify — software engineer ${Date.now()}`);
-  await page.locator('input[placeholder*="SW1A" i]').first().fill("EC2A 1AF"); // London
+    .fill(`Claude verify — supply chain Birmingham ${Date.now()}`);
+  await page.locator('input[placeholder*="SW1A" i]').first().fill("B1 1AA"); // Birmingham
 
   // Replace the chip the autocomplete test left behind.
   const removeChip = page.locator('button[aria-label^="Remove"]').first();
   if (await removeChip.count()) await removeChip.click();
   const chipBox = page.locator('input[placeholder*="press Enter" i]').first();
-  await chipBox.fill("Software Engineer");
-  await chipBox.press("Enter");
+  for (const role of [
+    "Supply Chain Analyst",
+    "Procurement Consultant",
+    "Supply Chain Coordinator",
+    "Buyer",
+  ]) {
+    await chipBox.fill(role);
+    await chipBox.press("Enter");
+  }
 
   await page.getByRole("button", { name: /^create search$/i }).first().click();
   await page.waitForLoadState("networkidle", { timeout: 60_000 }).catch(() => {});
@@ -354,10 +371,11 @@ async function main() {
   }
   if (atsSeen.length === 0) {
     throw new Error(
-      "NO first-party ATS job reached the shortlist for 'Software Engineer' in LONDON — " +
-        "where the corpus definitely has them (74 at last count, across all five providers). " +
-        "That means the moat is not connected to the product. " +
-        "See scripts/.screenshots/search_results.png"
+      "NO first-party ATS job reached the shortlist for SUPPLY CHAIN roles in BIRMINGHAM — " +
+        "where the corpus now definitely has them (169 first-party Birmingham jobs, incl. " +
+        "Turner & Townsend procurement). This search returned ZERO before the 2026-07-14 " +
+        "coverage block; if it is zero again, either the registry regressed or the moat came " +
+        "unplugged from the product. See scripts/.screenshots/search_results.png"
     );
   }
   console.log("   OK — first-party ATS jobs reached the shortlist.");

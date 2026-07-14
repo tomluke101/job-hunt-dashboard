@@ -57,8 +57,19 @@ export interface AtsProviderImpl extends Omit<AtsProvider, "listJobs"> {
  * at DETAIL_CONCURRENCY=5. It cannot finish in 60s, and when it ran out it just
  * stopped, flagged `truncated`, and nothing read the flag. Raising MAX_JOBS_PER_BOARD
  * without raising this would simply move the silent cut from the cap to the clock.
+ *
+ * ⚠️ RAISED 240s -> 600s (2026-07-14). Once the registry grew to 94 boards, four
+ * of them polling concurrently contend for bandwidth, and AstraZeneca — which had
+ * comfortably pulled 1,313 jobs at 240s — got only 700 away before the clock ran
+ * out. The board did not change; its NEIGHBOURS did. A per-board budget that is
+ * really a function of how many OTHER boards happen to be in flight is not a
+ * budget, it is a race, and it silently amputates the biggest employers first.
+ *
+ * This is the per-board ceiling for the offline script, which has all night. The
+ * CRON passes its own, much smaller, whole-run `budgetMs` and polls oldest-first,
+ * so raising this does not let a serverless invocation overrun.
  */
-export const DEFAULT_BOARD_BUDGET_MS = 240_000;
+export const DEFAULT_BOARD_BUDGET_MS = 600_000;
 
 /**
  * Detail-fetch concurrency for the N+1 providers.

@@ -37,7 +37,12 @@ const RECHECK = has("--recheck");
 // that decides whether this moat is real — without the schema being applied yet.
 const DRY_RUN = has("--dry-run");
 const LIMIT = parseInt(val("--limit") ?? "0", 10) || 0;
-const CONCURRENCY = 6;
+// Discovery is entirely I/O-bound, and every company talks to DIFFERENT hosts, so
+// this is not a politeness question — there is no single server to hammer. The
+// slow path is a MISS: it walks ~10 TLD guesses and then ~10 careers-page paths,
+// each with its own timeout, so one miss can take two minutes of pure waiting.
+// At 6 workers a 465-company seed run took ~3 hours, nearly all of it idle sockets.
+const CONCURRENCY = 12;
 
 async function companiesFromEnrichment(): Promise<string[]> {
   const supabase = createServerSupabaseClient();

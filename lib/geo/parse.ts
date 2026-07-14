@@ -90,6 +90,63 @@ const SEGMENT_SPLIT_RE = /\s*(?:;|\||\/|\r?\n)\s*|\s+or\s+/i;
  */
 const PART_SPLIT_RE = /\s*(?:[,;|/]|\s-\s|\s–\s|\s—\s|\r?\n)\s*|\s+or\s+/i;
 
+/**
+ * A trailing SITE-TYPE descriptor: the employer naming the *building*, not the town.
+ *
+ * 🔴 THIS SILENTLY DELETED REAL UK JOBS. Measured on the live corpus (2026-07-14),
+ * these strings resolved to NOTHING and the postings were invisible to every
+ * location search ever run:
+ *
+ *     "Glasgow Campus"                     Barclays   36 jobs
+ *     "Cambridge Office, United Kingdom"   Darktrace   9 jobs
+ *     "London Office, United Kingdom"      Darktrace   8 jobs
+ *
+ * 53 jobs — more than SEVEN TIMES the entire first-party supply we had in
+ * Birmingham. The gazetteer knows "Glasgow" perfectly well; it had simply never
+ * been shown it, because the hiring manager wrote the name of the campus.
+ *
+ * ⚠️ STRIPPING IS NOT A LICENCE TO CLAIM THE PLACE. "Qingdao Site" and "Kuwait -
+ * Main Office" strip down to foreign cities, and must stay foreign. So the caller
+ * re-runs the FULL classification on the stripped fragment (UK gazetteer *and*
+ * foreign-city list) rather than assuming what is left is British.
+ *
+ * Deliberately NOT in this list: "House". "Douglas Villiers House" is a building,
+ * but plenty of genuine UK settlements end in -house, and a wrong town is worse
+ * than an unresolved one.
+ */
+const SITE_DESCRIPTOR_RE =
+  /[\s,-]+(?:main\s+|the\s+)?(?:campus|offices?|site|hq|head\s*office|headquarters|business\s+park|industrial\s+estate|science\s+park|technology\s+park|depot|distribution\s+cent(?:re|er)|fulfilment\s+cent(?:re|er)|warehouse|plant|factory|works|store|branch)$/i;
+
+/**
+ * What is left after stripping must still be a plausible PLACE NAME, not a filler
+ * word the descriptor was leaning on.
+ *
+ * 🔴 THIS GUARD IS NOT THEORETICAL — it caught a live regression the moment the
+ * strip was written. "Kuwait - Main Office" splits to ["Kuwait", "Main Office"];
+ * stripping "Office" leaves "Main", and the gazetteer MATCHED it. A Kuwaiti job
+ * was resolved to a UK place — a foreign job admitted into a UK search, which is
+ * the single worst outcome this whole module exists to prevent, introduced by the
+ * very change meant to improve coverage.
+ *
+ * The rule that stops it: a descriptor may only be stripped off a name that can
+ * stand on its own.
+ */
+const FILLER_REMAINDERS = new Set([
+  "main", "the", "our", "any", "all", "this", "new", "old", "head", "home",
+  "global", "regional", "central", "corporate", "national", "local", "other",
+  "various", "multiple", "hybrid", "flexible", "primary", "secondary", "north",
+  "south", "east", "west",
+]);
+
+/** "Glasgow Campus" -> "Glasgow". Returns null when there was nothing safe to strip. */
+function stripSiteDescriptor(s: string): string | null {
+  const out = s.replace(SITE_DESCRIPTOR_RE, "").trim();
+  if (!out || out === s.trim()) return null;
+  // A one-word remainder that is a filler word is not a town — refuse.
+  if (FILLER_REMAINDERS.has(normalise(out))) return null;
+  return out;
+}
+
 function stripModifiers(s: string): string {
   return s
     .replace(MODIFIER_RE, " ")
@@ -213,7 +270,28 @@ function classifySegment(segment: string): SegmentResult {
       foreignCity ??= fc;
       continue;
     }
-    unknown.push(p);
+
+    // Nothing claimed the fragment as written. It may be a BUILDING, not a town —
+    // "Glasgow Campus", "Cambridge Office". Strip the site descriptor and ask
+    // again, running the SAME two checks in the SAME order, so a stripped foreign
+    // city ("Qingdao Site") still lands as foreign and never as a UK place.
+    const bare = stripSiteDescriptor(p);
+    if (bare) {
+      const bareUk = lookupUkPlace(bare);
+      if (bareUk) {
+        places.push(bareUk);
+        continue;
+      }
+      const bareForeign = foreignCityOf(bare);
+      if (bareForeign) {
+        foreignCity ??= bareForeign;
+        continue;
+      }
+    }
+
+    // Hand the geocoder the stripped form when we have one: postcodes.io can find
+    // "Watford Croxley Green", it cannot find "Watford Croxley Green Business Park".
+    unknown.push(bare ?? p);
   }
 
   if (places.length > 0) {

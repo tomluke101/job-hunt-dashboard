@@ -315,7 +315,11 @@ export function classifySeniority(
 const FUNCTION_RULES: Array<[JobFunction, RegExp]> = [
   // --- specific-before-general ---
   ["Data & Analytics", /\b(data (scientist|engineer|analyst|architect)|analytics|machine learning|ml engineer|business intelligence|\bbi\b|statistician|data science|quantitative)\b/],
-  ["Supply Chain & Logistics", /\b(supply chain|logistics|procurement|purchasing|buyer|sourcing|warehouse|inventory|demand planner|s&op|freight|shipping|fulfilment|fulfillment|category manager)\b/],
+  // DRIVING IS LOGISTICS. "LGV Driver" and "Transport Planner" (Culina, a 3PL) fell
+  // through to no function at all — the taxonomy knew "warehouse" but not the lorry
+  // that leaves it. Drivers are one of the largest job categories in the UK and were
+  // 100% unclassifiable.
+  ["Supply Chain & Logistics", /\b(supply chain|logistics|procurement|purchasing|buyer|sourcing|warehouse|inventory|demand planner|s&op|freight|shipping|fulfilment|fulfillment|category manager|lgv|hgv|driver|transport (planner|manager|supervisor)|fleet|forklift|goods in|despatch|dispatch)\b/],
   ["IT & Infrastructure", /\b(it support|helpdesk|service desk|sysadmin|system administrator|network engineer|infrastructure engineer|devops|site reliability|\bsre\b|cloud engineer|platform engineer|it technician)\b/],
   ["Engineering", /\b(software|developer|engineer|programmer|full.?stack|front.?end|back.?end|mobile|ios|android|qa engineer|test engineer|architect)\b/],
   ["Product", /\b(product manager|product owner|product lead|head of product|product director|scrum master|delivery manager|business analyst)\b/],
@@ -330,9 +334,24 @@ const FUNCTION_RULES: Array<[JobFunction, RegExp]> = [
   ["Customer Support", /\b(customer (support|service|success|care|experience)|client services|help ?desk|contact centre|call centre|complaints)\b/],
   ["Consulting & Strategy", /\b(consultant|consulting|strategy|strategic|advisory|transformation|change manager)\b/],
   ["Education & Training", /\b(teacher|teaching|lecturer|tutor|professor|academic|trainer|training|education|school|nursery practitioner|teaching assistant)\b/],
-  ["Construction & Property", /\b(construction|quantity surveyor|site manager|architect(ural)?|civil engineer|structural|surveyor|estate agent|property|facilities|building)\b/],
-  ["Manufacturing & Engineering Trades", /\b(manufacturing|production (operative|manager|planner)|machine operator|maintenance (engineer|technician)|mechanical engineer|electrical engineer|technician|fitter|welder|cnc|assembly|plant)\b/],
-  ["Retail & Hospitality", /\b(retail|store (manager|assistant)|shop|sales assistant|cashier|merchandis|chef|cook|waiter|waitress|barista|bartender|hotel|housekeep|hospitality|restaurant|kitchen)\b/],
+  // QUANTITY SURVEYING AND PROJECT CONTROLS ARE CONSTRUCTION. Turner & Townsend's
+  // whole req list — "Cost Manager", "Estimating", "Project Controls", "Planning &
+  // Scheduling" — was unclassifiable. This is the professional core of the UK
+  // construction industry and the taxonomy could not name any of it.
+  //
+  // NOT added: a bare "Risk Manager" / "Risk Management - all levels". In a
+  // construction consultancy that means project risk; in a bank it means credit
+  // risk; on its own it means neither. Per the precision rule, `null` is the honest
+  // answer and `include_unknown` (default TRUE) keeps the job reachable anyway.
+  // Guessing here would misfile bank risk jobs into Construction.
+  ["Construction & Property", /\b(construction|quantity surveyor|\bqs\b|cost (manager|consultant|management)|estimator|estimating|project controls|planning (and|&) scheduling|site manager|architect(ural)?|civil engineer|structural|surveyor|estate agent|property|facilities|building)\b/],
+  ["Manufacturing & Engineering Trades", /\b(manufacturing|production|machine operator|maintenance (engineer|technician)|mechanical engineer|electrical engineer|technician|fitter|welder|cnc|assembly|plant)\b/],
+  // FRONT OF HOUSE IS A JOB. Greene King's "Bar & Waiting Staff" (853 postings —
+  // the single largest title in the entire corpus) and Nando's "Back of House
+  // Nandoca" matched NOTHING. The taxonomy knew "chef" and "waiter" but not the
+  // words UK hospitality employers actually advertise with, so the biggest source
+  // of genuinely nationwide, every-town supply we have was invisible to the filter.
+  ["Retail & Hospitality", /\b(retail|store (manager|assistant)|shop|sales assistant|cashier|merchandis|chef|cook|waiter|waitress|waiting staff|bar (staff|team)|bartender|barista|front of house|back of house|nandoca|team member|kitchen porter|hotel|housekeep|hospitality|restaurant|kitchen|pub|catering|food service|soft play)\b/],
   ["Operations", /\b(operations|ops\b|programme manager|project manager|process improvement|continuous improvement|lean|business operations|general manager)\b/],
   ["Admin & Business Support", /\b(administrator|administrative|admin\b|receptionist|secretary|executive assistant|personal assistant|\bpa\b|office manager|data entry|coordinator|clerk)\b/],
 ];

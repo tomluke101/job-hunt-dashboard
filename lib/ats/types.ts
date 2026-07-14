@@ -195,10 +195,18 @@ export type SeniorityLevel =
  * visible" — every provider did set it, and ingest.ts never read it. It was
  * visible to nobody. See assertNoSilentTruncation() in ingest.ts.
  *
- * 3000 clears the largest board we have seen with room to spare. If a board ever
- * exceeds it the ingest now says so LOUDLY rather than quietly serving 77% of it.
+ * ⚠️ AND THEN 3000 WAS NOT ENOUGH EITHER. Greene King — a pub company, ~2,700 sites
+ * — pulled exactly 3000 and flagged truncated. Note what kind of employer that is:
+ * the cap does not bite the tech scaleups, it bites the HIGH-SITE-COUNT, NATIONWIDE
+ * employers (pubs, retail chains, care homes, logistics depots), which are exactly
+ * the ones whose jobs are spread across every town in Britain rather than piled up
+ * in London. So the job cap was, quietly, a LONDON BIAS: it truncated the boards
+ * that carry regional coverage and never touched the ones that don't.
+ *
+ * 6000 clears the largest board we have seen with room to spare. If a board ever
+ * exceeds it the ingest says so LOUDLY rather than quietly serving 77% of it.
  */
-export const MAX_JOBS_PER_BOARD = 3000;
+export const MAX_JOBS_PER_BOARD = 6000;
 
 /** Per-request timeout. ATS endpoints are usually fast; Workday can be slow. */
 export const ATS_FETCH_TIMEOUT_MS = 20_000;

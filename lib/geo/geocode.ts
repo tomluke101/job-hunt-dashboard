@@ -296,6 +296,60 @@ export async function geocodeUk(query: string): Promise<ResolvedPlace | null> {
 }
 
 /**
+ * Is there a UK postcode within 2km of this point?
+ *
+ * THE PROBLEM THIS SOLVES: a UK bounding box is not the UK. Ireland sits
+ * entirely inside the UK's lat/lng envelope, and a bbox CANNOT separate
+ * Northern Ireland (UK) from the Republic 40km south. The first leak of this
+ * shape (Primark Dublin, via SmartRecruiters) was closed with "an explicit
+ * provider country code beats the bbox" — but the jsonld provider surfaced the
+ * case that fix can't reach: coordinates with NO country code at all (Boots
+ * writes "-" in addressCountry, and its Drogheda store's coords are inside the
+ * bbox). The postcode network IS the UK, Northern Ireland included: Lisburn
+ * answers BT27, Drogheda answers nothing. Verified live 2026-07-16.
+ *
+ * Cached both ways in geo_cache on a ~110m grid — every staffed workplace has a
+ * postcode within 2km, and an ingest run sees the same few hundred sites.
+ */
+export async function ukPostcodeNear(lat: number, lng: number): Promise<boolean> {
+  const key = `rev:${lat.toFixed(3)},${lng.toFixed(3)}`;
+
+  const mem = MEM.get(key);
+  if (mem !== undefined) return mem !== null;
+
+  const cached = await dbGet(key);
+  if (cached !== undefined) {
+    MEM.set(key, cached);
+    return cached !== null;
+  }
+
+  const d = await fetchJson(
+    `https://api.postcodes.io/postcodes?lon=${lng}&lat=${lat}&radius=2000&limit=1`
+  );
+  // Network failure ≠ "no postcode here". Deny the point for THIS run (dropping
+  // a UK job on a blip is recoverable next ingest; admitting an Irish one is
+  // wrong forever) but never CACHE the denial.
+  if (d === null) return false;
+  const results = d?.result as Array<Record<string, unknown>> | null | undefined;
+  const hit = Array.isArray(results) ? results[0] : undefined;
+
+  const entry: CacheEntry =
+    hit && typeof hit.latitude === "number" && typeof hit.longitude === "number"
+      ? {
+          name: typeof hit.postcode === "string" ? hit.postcode : key,
+          country: "GB",
+          lat: hit.latitude,
+          lng: hit.longitude,
+          source: "postcodes.io",
+        }
+      : null;
+
+  MEM.set(key, entry);
+  void dbPut([{ key, entry, source: entry ? "postcodes.io:rev" : "postcodes.io:rev-miss" }]);
+  return entry !== null;
+}
+
+/**
  * Resolve the USER's origin: a UK postcode ("B1 1AA", "B1") or a town name.
  * Returns null when we can't place them — the caller must then refuse to run a
  * radius search rather than silently searching the whole country

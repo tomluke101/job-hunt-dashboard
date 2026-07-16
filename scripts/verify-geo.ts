@@ -186,6 +186,63 @@ async function main() {
     );
   }
 
+  console.log("\n=== 2c. PROVIDER COORDINATES WITHOUT A COUNTRY — the bbox is not the UK\n");
+
+  // 🔴 Found live on the first jsonld pull (Boots, 2026-07-16). The employer's
+  // JSON-LD ships coordinates but writes "-" in addressCountry, so the "explicit
+  // country beats the bbox" fix never fires — and Boots' Drogheda (Republic of
+  // Ireland) store sits INSIDE the UK lat/lng envelope. A bbox cannot separate
+  // NI from the Republic; the postcode network can (ukPostcodeNear): Lisburn
+  // answers BT27, Drogheda answers nothing.
+  const drogheda = await resolveJobLocation("Drogheda, Scotch Hall SC", {
+    candidates: ["Drogheda"],
+    lat: 53.714388197,
+    lng: -6.348159826,
+  });
+  check(
+    "Drogheda coords (in-bbox, no country) -> is_foreign",
+    drogheda.is_foreign && drogheda.places.length === 0,
+    summarise(drogheda)
+  );
+
+  const lisburnNi = await resolveJobLocation("Lisburn, Sprucefield Shopping Centre", {
+    candidates: ["Lisburn, Sprucefield Shopping Centre"],
+    lat: 54.490536739,
+    lng: -6.056974434,
+  });
+  check(
+    "Lisburn NI coords -> GB (the fix must not cost Northern Ireland)",
+    !lisburnNi.is_foreign && lisburnNi.places.some((pl) => pl.country === "GB"),
+    summarise(lisburnNi)
+  );
+
+  // The both-countries town, by coordinates. The STRING "Bray" matches Bray in
+  // Berkshire; the coords say Bray, Co. Wicklow. Coordinates are the truth about
+  // WHERE — they must veto the gazetteer mis-hit, not lose to it.
+  const brayIe = await resolveJobLocation("Bray, Southern Cross Road", {
+    candidates: ["Bray"],
+    lat: 53.19095,
+    lng: -6.11214,
+  });
+  check(
+    "Bray (Wicklow) coords veto the Bray-in-Berkshire gazetteer match",
+    brayIe.is_foreign && brayIe.places.length === 0,
+    summarise(brayIe)
+  );
+
+  // A rural UK site must still pass — every staffed workplace has a postcode
+  // within 2km, so the reverse lookup is not a false-negative machine.
+  const aviemore = await resolveJobLocation("Aviemore", {
+    candidates: ["Aviemore"],
+    lat: 57.1947,
+    lng: -3.8259,
+  });
+  check(
+    "Aviemore (rural Highlands) coords -> GB",
+    !aviemore.is_foreign && aviemore.places.some((pl) => pl.country === "GB"),
+    summarise(aviemore)
+  );
+
   console.log("\n=== 3. THE ORDERING TEST — a foreign qualifier must beat the UK gazetteer\n");
 
   const bhamUk = await resolveJobLocation("Birmingham");

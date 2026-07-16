@@ -389,10 +389,12 @@ async function main() {
   // never contribute a job, and the harness cheerfully listed it as present.
   //
   // A check that cannot fail is not a check. Count the CARDS.
-  const ATS_SOURCES = ["greenhouse", "lever", "ashby", "smartrecruiters", "workday", "recruitee"];
+  // "company site" is JobCard's user-facing label for source=jsonld — the
+  // universal JobPosting reader is first-party supply like the rest.
+  const ATS_SOURCES = ["greenhouse", "lever", "ashby", "smartrecruiters", "workday", "recruitee", "company site"];
   const cardSources = (
     await page
-      .locator("text=/^(reed|adzuna|greenhouse|lever|ashby|smartrecruiters|workday|recruitee)$/i")
+      .locator("text=/^(reed|adzuna|greenhouse|lever|ashby|smartrecruiters|workday|recruitee|company site)$/i")
       .allTextContents()
   ).map((s) => s.trim().toLowerCase());
 
@@ -430,7 +432,7 @@ async function main() {
   // Aldi and ZEISS), because ranking had a first-party BONUS and no recruiter PENALTY.
   const firstCardSource = (
     await page
-      .locator("text=/^(reed|adzuna|greenhouse|lever|ashby|smartrecruiters|workday)$/i")
+      .locator("text=/^(reed|adzuna|greenhouse|lever|ashby|smartrecruiters|workday|recruitee|company site)$/i")
       .first()
       .textContent()
       .catch(() => null)

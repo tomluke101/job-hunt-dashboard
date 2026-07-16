@@ -33,7 +33,11 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "unauthorised" }, { status: 401 });
   }
 
-  const boards = await listPollableBoards(400);
+  // skipRenderNeeded: a serverless function has no chromium, so a jsonld board
+  // whose careers site needs JS rendering cannot be pulled here. Polling it
+  // anyway would log five phantom failures and mark a healthy board dead; those
+  // boards refresh via the offline scripts/ingest-ats.ts run instead.
+  const boards = await listPollableBoards(400, { skipRenderNeeded: true });
   if (!boards.length) {
     return NextResponse.json(
       { ok: false, error: "registry empty — run scripts/discover-ats.ts" },

@@ -3,7 +3,11 @@
 //   npx tsx scripts/discover-ats.ts --seed              # the curated UK seed list
 //   npx tsx scripts/discover-ats.ts --from-enrichment   # every company we've already enriched
 //   npx tsx scripts/discover-ats.ts --from-postings     # every employer seen in any search
+//   npx tsx scripts/discover-ats.ts --from-gaps         # every cached MISS, re-run through the
+//                                                       # full ladder incl. rendered + jsonld rungs
+//                                                       # (implies --recheck for those companies)
 //   npx tsx scripts/discover-ats.ts --company "Monzo"   # one company
+//   ... --careers-url URL  use this careers page (skips domain guessing; with --company)
 //   ... --probe-only     token probe only (fast, free — no crawl, no LLM)
 //   ... --llm            allow the LLM domain-resolution rung (~$0.001/company)
 //   ... --limit N        cap how many companies to attempt
@@ -22,6 +26,7 @@ import { discoverForCompany } from "../lib/ats/discover";
 import { upsertBoard, loadDiscoveryBlocklist, recordDiscoveryAttempt } from "../lib/ats/registry";
 import { SEED_COMPANIES } from "../lib/ats/seed-companies";
 import { normaliseCompanyName, isUnmatchableName } from "../lib/enrichment/normalise-company";
+import { detectRecruiter } from "../lib/enrichment/recruiter-detect";
 
 const argv = process.argv.slice(2);
 const has = (f: string) => argv.includes(f);
@@ -42,7 +47,11 @@ const LIMIT = parseInt(val("--limit") ?? "0", 10) || 0;
 // slow path is a MISS: it walks ~10 TLD guesses and then ~10 careers-page paths,
 // each with its own timeout, so one miss can take two minutes of pure waiting.
 // At 6 workers a 465-company seed run took ~3 hours, nearly all of it idle sockets.
-const CONCURRENCY = 12;
+//
+// ⚠️ BUT the rendered-crawl and jsonld rungs launch a HEADLESS CHROMIUM per
+// company. Twelve concurrent browsers (~150MB each) will swamp a laptop — use
+// --concurrency 4-6 for any run that reaches those rungs (--from-gaps does).
+const CONCURRENCY = parseInt(val("--concurrency") ?? "12", 10) || 12;
 
 async function companiesFromEnrichment(): Promise<string[]> {
   const supabase = createServerSupabaseClient();
@@ -119,14 +128,88 @@ async function companiesFromPostings(): Promise<string[]> {
   return kept;
 }
 
+/**
+ * Every company where discovery ran and MISSED. Two kinds, and both matter now:
+ *   "no ATS embed found on X"        → we reached their careers page and could
+ *                                      not read it. The domains in the note are
+ *                                      REUSED, so no re-guessing and no LLM.
+ *   "could not resolve a website"    → never found them; the ladder re-derives.
+ * These were terminal misses when the ladder ended at the static crawl. The
+ * rendered-crawl and jsonld rungs exist precisely to re-litigate them.
+ */
+async function companiesFromGaps(): Promise<Array<{ name: string; domains: string[] }>> {
+  const supabase = createServerSupabaseClient();
+  const out: Array<{ name: string; domains: string[] }> = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase
+      .from("company_ats_discovery")
+      .select("company_name, notes, found")
+      .eq("found", false)
+      .range(from, from + 999);
+    if (error) throw new Error(`read company_ats_discovery: ${error.message}`);
+    const batch = data ?? [];
+    for (const r of batch) {
+      const notes = (r.notes as string) ?? "";
+      const m = notes.match(/^no ATS embed found on (.+)$/);
+      out.push({
+        name: r.company_name as string,
+        domains: m ? m[1].split(/,\s*/).map((d) => d.trim()).filter(Boolean) : [],
+      });
+    }
+    if (batch.length < 1000) break;
+  }
+
+  // 🔴 THE GAP CACHE IS FULL OF AGENCIES — old --from-postings runs queued them
+  // before the recruiter filter existed, and their misses were cached. The old
+  // ladder could never "find" an agency (no first-party board), so the hole was
+  // invisible — until the jsonld rung, which reads any careers page, registered
+  // NINE agencies as verified boards on the first sweep (Ernest Gordon, Lorien,
+  // Anson Mccade…). An agency stamps its own name on every client ad, so no
+  // downstream org check can save us from probing it. Filter at the source:
+  // enrichment's flag PLUS the name heuristic (either alone misses half).
+  const recruiters = new Set<string>();
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase
+      .from("company_enrichment")
+      .select("normalised_name")
+      .eq("is_likely_recruiter", true)
+      .range(from, from + 999);
+    if (error) throw new Error(`read company_enrichment: ${error.message}`);
+    const batch = data ?? [];
+    for (const r of batch) recruiters.add(r.normalised_name as string);
+    if (batch.length < 1000) break;
+  }
+  const kept = out.filter(
+    (g) =>
+      !recruiters.has(normaliseCompanyName(g.name)) &&
+      !detectRecruiter(null, g.name).is_recruiter
+  );
+  if (kept.length !== out.length) {
+    console.log(
+      `From gaps: ${out.length} cached misses, ${out.length - kept.length} dropped as ` +
+        `recruitment agencies (an agency's careers page is client ads, not a first-party board).`
+    );
+  }
+  return kept;
+}
+
 async function main() {
   let companies: string[] = [];
   const one = val("--company");
+  const careersUrl = val("--careers-url") ?? null;
+  const fromGaps = has("--from-gaps");
+  const knownDomains = new Map<string, string[]>();
 
   if (one) companies = [one];
   else if (has("--from-enrichment")) companies = await companiesFromEnrichment();
   else if (has("--from-postings")) companies = await companiesFromPostings();
-  else if (has("--seed")) companies = SEED_COMPANIES;
+  else if (fromGaps) {
+    const gaps = await companiesFromGaps();
+    companies = gaps.map((g) => g.name);
+    for (const g of gaps) {
+      if (g.domains.length) knownDomains.set(normaliseCompanyName(g.name), g.domains);
+    }
+  } else if (has("--seed")) companies = SEED_COMPANIES;
   else companies = [...SEED_COMPANIES];
 
   // De-dupe on the normalised key and drop placeholders ("Confidential", "N/A").
@@ -138,7 +221,9 @@ async function main() {
     return true;
   });
 
-  if (!RECHECK && !DRY_RUN) {
+  // --from-gaps IS a recheck by definition: every one of these companies is a
+  // cached miss, and filtering them against the blocklist would empty the run.
+  if (!RECHECK && !DRY_RUN && !fromGaps) {
     const blocked = await loadDiscoveryBlocklist();
     const before = companies.length;
     companies = companies.filter((c) => !blocked.has(normaliseCompanyName(c)));
@@ -171,6 +256,8 @@ async function main() {
         const { board, providersTried, notes } = await discoverForCompany(name, {
           probeOnly: PROBE_ONLY,
           useLlm: USE_LLM,
+          careersUrl: one ? careersUrl : null, // --careers-url only makes sense for --company
+          knownDomains: knownDomains.get(normaliseCompanyName(name)),
         });
 
         if (board) {

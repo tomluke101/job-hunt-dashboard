@@ -29,7 +29,7 @@ import {
   normalise,
   type ResolvedPlace,
 } from "./gazetteer";
-import { geocodeUk } from "./geocode";
+import { geocodeUk, ukPostcodeNear } from "./geocode";
 
 export interface JobLocation {
   raw: string;
@@ -440,20 +440,36 @@ export async function resolveJobLocation(
     // alone happily admitted Primark's Dublin jobs — country_code "IE" and all —
     // straight into a UK corpus. When the provider has TOLD us the country, believe
     // it: an explicit ISO code beats a rectangle.
+    // ⚠️ AND A BBOX HIT ALONE IS STILL NOT THE UK — the case the country-code fix
+    // cannot reach is coordinates with NO code at all. Boots' JSON-LD writes "-"
+    // in addressCountry, and its Drogheda (Republic of Ireland) store sits inside
+    // the UK envelope; a bbox cannot separate it from Lisburn 40km north, which
+    // IS the UK. When nothing but the rectangle vouches for the point, ask the
+    // postcode network (ukPostcodeNear): Lisburn answers BT27, Drogheda answers
+    // nothing. Cached, so a warm corpus costs zero calls.
     const lat = hints?.lat;
     const lng = hints?.lng;
+    let coordsForeign = false;
+    let coordsPlace: ResolvedPlace | null = null;
     if (typeof lat === "number" && typeof lng === "number" && Number.isFinite(lat) && Number.isFinite(lng)) {
       if (hintIsForeign) {
         foreignHits++;
-      } else if (isInUkBbox({ lat, lng })) {
-        places.push({
+      } else if (!isInUkBbox({ lat, lng })) {
+        foreignHits++;
+      } else if (hintIsUk || (await ukPostcodeNear(lat, lng))) {
+        coordsPlace = {
           name: rawStr || "Provider coordinates",
           country: "GB",
           lat,
           lng,
           source: "provider",
-        });
+        };
       } else {
+        // Inside the rectangle, no UK postcode within 2km: Ireland (or Calais).
+        // The coordinates are the TRUTH about where this job is — so they also
+        // VETO any gazetteer text match (see below): "Bray" the string matches
+        // Bray in Berkshire, but these coords say Bray, Co. Wicklow.
+        coordsForeign = true;
         foreignHits++;
       }
     }
@@ -465,6 +481,12 @@ export async function resolveJobLocation(
       const hit = await geocodeUk(q);
       if (hit) places.push(hit);
     }
+
+    // The coords place goes LAST: its name is the raw string ("Dalkeith, High
+    // Street"), so any place with a real TOWN name — gazetteer or geocoder —
+    // should win places[0], which is what job cards display and what the town
+    // histogram counts. The coords still vouch for the job either way.
+    if (coordsPlace) places.push(coordsPlace);
 
     // Dedupe places by canonical name.
     const byName = new Map<string, ResolvedPlace>();
@@ -492,11 +514,11 @@ export async function resolveJobLocation(
     // provider country code must BEAT the bbox") — but that fix was applied ONLY to
     // the coordinate path. The gazetteer path had the identical hole. A signal that
     // is authoritative is authoritative everywhere, not just where we first got bitten.
-    if (hintIsForeign) {
+    if (hintIsForeign || coordsForeign) {
       finalPlaces = [];
     }
 
-    const is_foreign = hintIsForeign || (finalPlaces.length === 0 && foreignHits > 0);
+    const is_foreign = hintIsForeign || coordsForeign || (finalPlaces.length === 0 && foreignHits > 0);
     const is_country_only = finalPlaces.length === 0 && !is_foreign && countryOnly;
     const is_unresolved = finalPlaces.length === 0 && !is_foreign && !is_country_only;
 

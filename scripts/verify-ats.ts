@@ -156,7 +156,7 @@ async function partB(): Promise<void> {
     .in("status", ["active", "empty"]);
   check("registry has pollable boards", (boardCount ?? 0) > 0, `boards=${boardCount}`);
 
-  const ATS = ["greenhouse", "lever", "ashby", "smartrecruiters", "recruitee", "workday"];
+  const ATS = ["greenhouse", "lever", "ashby", "smartrecruiters", "recruitee", "workday", "jsonld"];
   const { count: corpusCount } = await supabase
     .from("job_postings")
     .select("id", { count: "exact", head: true })

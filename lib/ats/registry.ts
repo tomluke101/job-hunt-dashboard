@@ -32,6 +32,7 @@ function rowToBoard(r: Record<string, unknown>): RegistryBoard {
     status: (r.status as RegistryBoard["status"]) ?? "active",
     lastJobCount: (r.last_job_count as number) ?? null,
     consecutiveFailures: (r.consecutive_failures as number) ?? 0,
+    renderMode: (r.render_mode as RegistryBoard["renderMode"]) ?? undefined,
   };
 }
 
@@ -54,6 +55,9 @@ export async function upsertBoard(d: DiscoveredBoard): Promise<string | null> {
         workday_site: d.workday?.site ?? null,
         board_company_name: d.board_company_name,
         discovered_via: d.discovered_via,
+        // jsonld boards only: "playwright" = needs a headless browser to pull,
+        // so the Vercel cron must skip it (see listPollableBoards).
+        render_mode: d.renderMode ?? null,
         // An unverified board is one whose token we GUESSED and which reports no
         // company name of its own. It stays out of the active pool until proven —
         // attaching the wrong employer's jobs to a company is worse than missing it.
@@ -78,12 +82,28 @@ export async function upsertBoard(d: DiscoveredBoard): Promise<string | null> {
 }
 
 /** Boards worth polling. `unverified` and `dead` are excluded by design. */
-export async function listPollableBoards(limit = 5000): Promise<RegistryBoard[]> {
+export async function listPollableBoards(
+  limit = 5000,
+  opts?: {
+    /**
+     * Exclude boards that need a headless browser (render_mode = playwright).
+     * The Vercel cron MUST pass this: a serverless function has no chromium, so
+     * polling such a board there produces five phantom failures and marks a
+     * perfectly healthy board dead. Those boards refresh only via the offline
+     * scripts/ingest-ats.ts run.
+     */
+    skipRenderNeeded?: boolean;
+  }
+): Promise<RegistryBoard[]> {
   const supabase = createServerSupabaseClient();
-  const { data, error } = await supabase
+  let query = supabase
     .from("company_ats")
     .select("*")
-    .in("status", ["active", "empty"])
+    .in("status", ["active", "empty"]);
+  if (opts?.skipRenderNeeded) {
+    query = query.or("render_mode.is.null,render_mode.neq.playwright");
+  }
+  const { data, error } = await query
     // Oldest-polled first, so a run that hits its budget still makes forward
     // progress across the whole registry instead of re-polling the same head.
     .order("last_polled_at", { ascending: true, nullsFirst: true })

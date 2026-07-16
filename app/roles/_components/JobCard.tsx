@@ -46,8 +46,15 @@ export default function JobCard({ entry, onInterested, onReject, onApplied, onDe
       ? "bg-blue-50 text-blue-700 border-blue-200"
       : "bg-slate-50 text-slate-600 border-slate-200";
 
-  const sourceLabel = p.source === "reed" ? "Reed" : p.source.charAt(0).toUpperCase() + p.source.slice(1);
-  const openOnSourceLabel = `Open on ${sourceLabel}`;
+  // "jsonld" is an implementation detail — to the user those jobs came straight
+  // from the employer's own careers site, so say that.
+  const sourceLabel =
+    p.source === "reed"
+      ? "Reed"
+      : p.source === "jsonld"
+      ? "Company site"
+      : p.source.charAt(0).toUpperCase() + p.source.slice(1);
+  const openOnSourceLabel = p.source === "jsonld" ? "Open on company site" : `Open on ${sourceLabel}`;
 
   return (
     <article className="rounded-xl border border-slate-200 bg-white p-5 hover:border-slate-300 transition-colors">

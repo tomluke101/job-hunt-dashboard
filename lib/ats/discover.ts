@@ -32,12 +32,15 @@
 // reports no name, the board is stored as `unverified` and its jobs are held back
 // until a human or a later signal confirms it. Wrong data is worse than none.
 
-import { getProvider, ATS_PROVIDERS } from "./providers";
+import { getProvider, detectBoard, ATS_PROVIDERS } from "./providers";
 import { ENABLED_PROVIDERS, type AtsBoard, type AtsProviderId } from "./types";
 import { normaliseCompanyName } from "@/lib/enrichment/normalise-company";
+import { probeJsonLdSite } from "./providers/jsonld";
+import { renderingAvailable, withBrowser } from "./render";
+import { detectRecruiter } from "@/lib/enrichment/recruiter-detect";
 
 export interface DiscoveredBoard extends AtsBoard {
-  discovered_via: "token-probe" | "careers-crawl" | "seed" | "manual";
+  discovered_via: "token-probe" | "careers-crawl" | "rendered-crawl" | "jsonld-crawl" | "seed" | "manual";
   board_company_name: string | null;
   job_count: number;
   /** verified = the board itself confirms who it belongs to. */
@@ -47,6 +50,12 @@ export interface DiscoveredBoard extends AtsBoard {
 export interface DiscoverOptions {
   /** Known careers page. Skips domain guessing entirely. */
   careersUrl?: string | null;
+  /**
+   * Domains already known to belong to this company (e.g. recorded in a prior
+   * discovery attempt's notes). Skips the guess/LLM rung — re-deriving a domain
+   * we already resolved is wasted time and wasted Haiku.
+   */
+  knownDomains?: string[];
   /** Providers to try. Defaults to the verified set. */
   providers?: AtsProviderId[];
   /** Allow the LLM domain-resolution rung. Off by default: it costs money. */
@@ -139,6 +148,9 @@ const TOKEN_PROBE_TRUSTED: Record<AtsProviderId, boolean> = {
   workday: true,
   workable: true,
   recruitee: false,
+  // jsonld has no token namespace to probe at all (its candidateTokens() is
+  // empty) — the crawl rung below is its only entry point.
+  jsonld: false,
 };
 
 /** Recruitee/Workable trial boards ship with these. A demo board is not an employer. */
@@ -387,18 +399,32 @@ export function detectBoardsInHtml(html: string, companyName: string): AtsBoard[
 async function crawlCareers(
   companyName: string,
   careersUrl: string | null,
-  domains: string[]
+  domains: string[],
+  /**
+   * OUT: careers pages that returned HTML but yielded no board — WITH their
+   * HTML, so the rungs below (careers-hop, rendered crawl, jsonld) can read
+   * them without re-fetching. Re-fetching is not merely slow: a bot-walled site
+   * that let one request through may 403 the next.
+   */
+  reachedPages?: ReachedPage[]
 ): Promise<DiscoveredBoard | null> {
   const candidates: Array<{ url: string; sourceDomain: string | null }> = [];
   if (careersUrl) candidates.push({ url: careersUrl, sourceDomain: hostOf(careersUrl) || null });
   for (const domain of domains) {
     const base = domain.startsWith("http") ? domain : `https://${domain}`;
     for (const p of CAREERS_PATHS) candidates.push({ url: base + p, sourceDomain: registrable(domain) });
+    // The HOMEPAGE, last: it rarely embeds the ATS itself, but its footer is
+    // where the "Careers" link to a sibling domain lives (aldi.co.uk →
+    // aldirecruitment.co.uk) — the careers-hop rung reads it.
+    candidates.push({ url: base, sourceDomain: registrable(domain) });
   }
 
   for (const { url, sourceDomain } of candidates) {
     const page = await fetchText(url);
     if (!page) continue;
+    if (reachedPages && reachedPages.length < 6) {
+      reachedPages.push({ url, finalUrl: page.finalUrl, sourceDomain, html: page.html });
+    }
 
     const detected = detectBoardsInHtml(page.html, companyName);
 
@@ -447,6 +473,315 @@ async function crawlCareers(
         verified: !crossDomain,
       };
     }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Rung 2a — the SAME-ORG CAREERS HOP: jobs on a sibling domain
+// ---------------------------------------------------------------------------
+
+type ReachedPage = {
+  url: string;
+  finalUrl: string;
+  sourceDomain: string | null;
+  /** The HTML we already have — never re-fetch (bot walls are stateful). */
+  html: string;
+  /** True when this HTML came out of a headless browser (post-JS DOM). */
+  rendered?: boolean;
+};
+
+const CAREERS_LINK_RE = /career|jobs|vacanc|recruit|join.?us|work.?with|apply/i;
+
+/**
+ * Big employers put their JOBS on a different registrable domain and merely LINK
+ * it from the marketing site: boots.com → boots.jobs, aldi.co.uk →
+ * aldirecruitment.co.uk, lidl.co.uk → careers.lidl.com. The first gap dry-run
+ * (2026-07-16) showed this exact shape on most of its misses — the crawl reached
+ * boots.com/careers, found no embed, and stopped one click short of an entire
+ * careers site.
+ *
+ * So: follow ONE careers-looking offsite link per reached page — but only when
+ * sameOrg() vouches that the target still bears the company's name. That guard
+ * is what keeps this from becoming the agency trap: "see our jobs on Reed"
+ * points at a host with no "boots" in it and is never followed.
+ *
+ * Each hop page gets the static embed check here; the caller also feeds the hops
+ * into the rendered and jsonld rungs below.
+ */
+async function followCareersHops(
+  companyName: string,
+  reached: ReachedPage[]
+): Promise<{ board: DiscoveredBoard | null; hops: ReachedPage[] }> {
+  const hops: ReachedPage[] = [];
+  const seenHosts = new Set<string>();
+
+  for (const r of reached.slice(0, 6)) {
+    const srcDom = r.sourceDomain ?? hostOf(r.finalUrl);
+    if (!srcDom) continue;
+
+    for (const m of r.html.matchAll(/href\s*=\s*["']([^"']+)["']/gi)) {
+      let abs: URL;
+      try {
+        abs = new URL(m[1], r.finalUrl);
+      } catch {
+        continue;
+      }
+      if (abs.protocol !== "https:" && abs.protocol !== "http:") continue;
+      const host = registrable(abs.hostname);
+      if (host === srcDom || seenHosts.has(host)) continue; // same site / already hopped
+      if (!CAREERS_LINK_RE.test(abs.href)) continue; // not a careers link
+      // The one rule that matters: the target must still be THIS organisation.
+      if (!sameOrg(abs.hostname.toLowerCase(), srcDom, companyName)) continue;
+      // An ATS host itself is not a "careers site" hop — detectBoardsInHtml on
+      // the source page already handled those links.
+      if (detectBoard(abs.toString())) continue;
+
+      seenHosts.add(host);
+      const hopUrl = abs.origin + abs.pathname;
+      const hopPage = await fetchText(hopUrl);
+      if (!hopPage) continue;
+
+      hops.push({ url: hopUrl, finalUrl: hopPage.finalUrl, sourceDomain: srcDom, html: hopPage.html });
+
+      // Static embed check on the hop page, same trust rules as the main crawl.
+      const detected = detectBoardsInHtml(hopPage.html, companyName);
+      const distinct = new Set(detected.map((b) => `${b.provider}|${b.token}`));
+      if (distinct.size > 1) continue;
+      for (const board of detected) {
+        const provider = getProvider(board.provider);
+        if (!provider) continue;
+        const res = await provider.probe(board).catch(() => null);
+        if (!res?.exists) continue;
+        const landedOn = hostOf(hopPage.finalUrl);
+        const crossDomain = !sameOrg(landedOn, srcDom, companyName);
+        return {
+          board: {
+            ...board,
+            discovered_via: "careers-crawl",
+            board_company_name: res.boardCompanyName ?? null,
+            job_count: res.jobCount,
+            verified: !crossDomain,
+          },
+          hops,
+        };
+      }
+      if (hops.length >= 3) break;
+    }
+  }
+  return { board: null, hops };
+}
+
+// ---------------------------------------------------------------------------
+// Rung 2b — RENDERED crawl: the embed a static fetch cannot see
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-crawl pages we already reached, this time through a headless browser.
+ *
+ * Why this rung exists: careers.bp.com serves a static shell whose Workday link
+ * (`bpinternational.wd3.myworkdayjobs.com`) only materialises in the DOM. The
+ * gap census (scripts/.gap.log) put 120 employers in "no recognised fingerprint"
+ * for exactly this reason — a JS-rendered page hides its ATS host from a raw
+ * HTML fetch. Some of those 120 are on ATSs we ALREADY support, and rendering
+ * the page is all it takes to find out. A native adapter is strictly better
+ * data than the jsonld scrape, so this rung runs BEFORE jsonld.
+ *
+ * Same trust rules as the static crawl: >1 distinct board on a page ⇒ jobs
+ * board, trust nothing; a cross-domain landing forfeits auto-verification.
+ */
+async function renderedCrawl(
+  companyName: string,
+  reached: ReachedPage[]
+): Promise<DiscoveredBoard | null> {
+  if (!reached.length) return null;
+  const result = await withBrowser(async (render) => {
+    for (const { url, finalUrl, sourceDomain, html, rendered } of reached.slice(0, 4)) {
+      // A page that ALREADY came out of a browser (the bot-wall rescue) needs
+      // no second render — read the DOM we have.
+      const page = rendered ? { html, finalUrl } : await render(url);
+      if (!page) continue;
+
+      const detected = detectBoardsInHtml(page.html, companyName);
+      const distinct = new Set(detected.map((b) => `${b.provider}|${b.token}`));
+      if (distinct.size > 1) continue; // a jobs board, not an employer's page
+
+      for (const board of detected) {
+        const provider = getProvider(board.provider);
+        if (!provider) continue;
+        const res = await provider.probe(board).catch(() => null);
+        if (!res?.exists) continue;
+
+        const landedOn = hostOf(page.finalUrl);
+        const crossDomain =
+          Boolean(sourceDomain) && !sameOrg(landedOn, sourceDomain as string, companyName);
+
+        return {
+          ...board,
+          discovered_via: "rendered-crawl" as const,
+          board_company_name: res.boardCompanyName ?? null,
+          job_count: res.jobCount,
+          verified: !crossDomain,
+        };
+      }
+    }
+    return null;
+  });
+  return result ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// The agency gates for jsonld candidates
+// ---------------------------------------------------------------------------
+
+/**
+ * 🔴 A RECRUITMENT AGENCY'S CAREERS PAGE PASSES EVERY MARKUP-LEVEL CHECK.
+ * It names ONE org (itself) in every JobPosting, its name matches, its domain is
+ * its own. The first live sweep registered NINE agencies as verified boards —
+ * Ernest Gordon (1,100 client ads), Lorien, 83zero… — recruiter supply wearing
+ * the first-party badge, the exact inversion of the moat.
+ *
+ * No single signal catches them all (measured 2026-07-16):
+ *   name patterns   catch "Ernest Gordon RECRUITMENT", miss "83zero"
+ *   CH SIC codes    catch Anson Mccade (78109), miss 83zero (filed as 62020 IT
+ *                   consultancy) and Certain Advantage (70229 mgmt consultancy)
+ *   ad boilerplate  catches the Conduct-Regs line, but these agencies scrub it
+ * So the gate is LAYERED, cheapest first, and the last layer is a Haiku read of
+ * the ads themselves — "we're partnered with a leading global…" is unmistakable
+ * to a language model and invisible to a regex. Discovery-time only (pennies,
+ * cached via company_ats_discovery refusals); the nightly pull never pays it.
+ */
+export async function llmAgencyVerdict(
+  companyName: string,
+  sampleJds: string[]
+): Promise<"AGENCY" | "EMPLOYER" | "UNSURE"> {
+  const key = process.env.ANTHROPIC_API_KEY;
+  const ads = sampleJds.filter((t) => t && t.length > 80).slice(0, 3);
+  if (!key || !ads.length) return "UNSURE";
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 10,
+        messages: [
+          {
+            role: "user",
+            content:
+              `Company: "${companyName}". Below are excerpts of job ads published on this company's own website.\n\n` +
+              ads.map((a, i) => `AD ${i + 1}: ${a.slice(0, 500)}`).join("\n\n") +
+              `\n\nIs "${companyName}" a recruitment/staffing agency advertising vacancies AT OTHER employers, ` +
+              `or an employer advertising its own staff vacancies? Agencies describe the hiring company in the ` +
+              `third person ("our client", "we're partnered with a leading firm", "a business based in…"). ` +
+              `Reply with exactly one word: AGENCY, EMPLOYER, or UNSURE.`,
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) return "UNSURE";
+    const data = (await res.json()) as { content?: Array<{ text?: string }> };
+    const text = (data.content?.[0]?.text ?? "").trim().toUpperCase();
+    if (text.startsWith("AGENCY")) return "AGENCY";
+    if (text.startsWith("EMPLOYER")) return "EMPLOYER";
+    return "UNSURE";
+  } catch {
+    return "UNSURE";
+  }
+}
+
+/**
+ * All agency gates for a jsonld candidate, cheapest first.
+ * "refuse" = do not register at all; "hold" = register unverified (a human
+ * decides); "pass" = clean.
+ */
+export async function agencyGate(
+  companyName: string,
+  sampleJds: string[]
+): Promise<{ verdict: "refuse" | "hold" | "pass"; why: string }> {
+  const byName = detectRecruiter(null, companyName);
+  if (byName.is_recruiter) return { verdict: "refuse", why: `agency by name (${byName.reason})` };
+
+  // Companies House SIC via the (cached) enrichment row. Import is dynamic so a
+  // bare script without enrichment env can still run discovery.
+  try {
+    const { enrichCompany } = await import("@/lib/enrichment/service");
+    const row = await enrichCompany(companyName);
+    if (row?.is_likely_recruiter) {
+      return { verdict: "refuse", why: `agency by enrichment (${row.recruiter_reason ?? "flag"})` };
+    }
+  } catch {
+    /* enrichment unavailable — the other gates still stand */
+  }
+
+  const llm = await llmAgencyVerdict(companyName, sampleJds);
+  if (llm === "AGENCY") return { verdict: "refuse", why: "agency by LLM read of its own ads" };
+  if (llm === "UNSURE") return { verdict: "hold", why: "LLM unsure whether agency — held for review" };
+  return { verdict: "pass", why: "employer" };
+}
+
+// ---------------------------------------------------------------------------
+// Rung 4 (LAST) — the universal JobPosting JSON-LD reader
+// ---------------------------------------------------------------------------
+
+/**
+ * No supported ATS embed anywhere, static or rendered. Final question: does the
+ * employer's own careers site publish schema.org JobPosting markup we can read
+ * directly? (Nearly every employer does — it is how Google for Jobs indexes
+ * them.) Registered with provider "jsonld" and token = the careers URL.
+ *
+ * VERIFICATION: the hiringOrganization name inside the JSON-LD is board-authored
+ * content (the provider never echoes our own name back), so namesMatch() against
+ * it is a real check. A manually supplied --careers-url is human provenance and
+ * verifies even when the org name differs (brand vs legal entity).
+ */
+async function jsonldCrawl(
+  companyName: string,
+  careersUrl: string | null,
+  reached: Array<{ url: string; finalUrl: string; sourceDomain: string | null }>
+): Promise<DiscoveredBoard | null> {
+  const allowRendering = await renderingAvailable();
+
+  // Prefer the page we LANDED on over the URL we guessed — bp.com/careers.html
+  // redirects to careers.bp.com, and the landing host is where the jobs are.
+  const candidates: string[] = [];
+  const push = (u: string | null | undefined) => {
+    if (u && !candidates.includes(u)) candidates.push(u);
+  };
+  push(careersUrl);
+  for (const r of reached.slice(0, 3)) {
+    push(r.finalUrl);
+    push(r.url);
+  }
+
+  for (const url of candidates.slice(0, 4)) {
+    const probe = await probeJsonLdSite(url, allowRendering, companyName).catch(() => null);
+    if (!probe) continue;
+    if ("error" in probe) continue; // multi-org or robots refusal — not this URL
+
+    // The agency gates (name → SIC → LLM read of the ads). A refusal here is a
+    // refusal of the COMPANY, not just this URL — stop, don't try the next one.
+    const gate = await agencyGate(companyName, probe.sampleJds);
+    if (gate.verdict === "refuse") return null;
+
+    const orgSaysItself = probe.orgNames.some((n) => namesMatch(companyName, n));
+    const manual = Boolean(careersUrl && url === careersUrl);
+
+    return {
+      provider: "jsonld",
+      token: url,
+      companyName,
+      renderMode: probe.renderMode,
+      discovered_via: "jsonld-crawl",
+      board_company_name: probe.orgNames[0] ?? null,
+      job_count: probe.jobCount,
+      // Unverified boards are held back from ingest (registry.ts) — a scraped
+      // site whose postings name a DIFFERENT org than we asked for is exactly
+      // the "wrong data is worse than none" case; same for one the LLM couldn't
+      // confidently call an employer.
+      verified: (orgSaysItself || manual) && gate.verdict === "pass",
+    };
   }
   return null;
 }
@@ -602,19 +937,25 @@ export async function discoverForCompany(
   // first domain that happened to return HTML.
   const domains: string[] = [];
   if (!opts.careersUrl) {
-    if (opts.useLlm) {
-      const d = await llmDomain(companyName);
-      if (d) domains.push(registrable(d));
-    }
-    for (const d of await guessDomains(companyName)) {
-      if (!domains.includes(d)) domains.push(d);
+    if (opts.knownDomains?.length) {
+      // Already resolved on a previous attempt — don't re-guess (or re-MIS-guess).
+      domains.push(...opts.knownDomains.map(registrable));
+    } else {
+      if (opts.useLlm) {
+        const d = await llmDomain(companyName);
+        if (d) domains.push(registrable(d));
+      }
+      for (const d of await guessDomains(companyName)) {
+        if (!domains.includes(d)) domains.push(d);
+      }
     }
   }
   if (!opts.careersUrl && domains.length === 0) {
     return { board: null, providersTried: tried, notes: "no board; could not resolve a website" };
   }
 
-  const crawled = await crawlCareers(companyName, opts.careersUrl ?? null, domains);
+  const reached: ReachedPage[] = [];
+  const crawled = await crawlCareers(companyName, opts.careersUrl ?? null, domains, reached);
   if (crawled) {
     return {
       board: crawled,
@@ -622,6 +963,86 @@ export async function discoverForCompany(
       notes:
         `careers-crawl via ${opts.careersUrl ?? domains.join("/")}` +
         (crawled.verified ? "" : " — CROSS-DOMAIN redirect, held back for review"),
+    };
+  }
+
+  // BOT-WALL RESCUE. Aldi's and Boots' retail sites 403 every plain fetch
+  // (Akamai/Imperva) — while a real chromium sails straight through the same
+  // wall. Any domain we RESOLVED but could not read a single page of gets its
+  // homepage + /careers rendered, and that DOM feeds the rungs below. Per
+  // DOMAIN, not per company: Aldi's aldi.com country-selector was reachable
+  // while aldi.co.uk (where the careers link lives) 403'd — a company-level
+  // check would have called that "reached" and starved the hop rung anyway.
+  if ((opts.careersUrl || domains.length) && (await renderingAvailable())) {
+    const reachedDomains = new Set(reached.map((r) => r.sourceDomain).filter(Boolean));
+    const rescueTargets: Array<{ url: string; sourceDomain: string | null }> = [];
+    if (opts.careersUrl && !reached.some((r) => r.url === opts.careersUrl)) {
+      rescueTargets.push({ url: opts.careersUrl, sourceDomain: hostOf(opts.careersUrl) || null });
+    }
+    for (const d of domains.slice(0, 3)) {
+      if (reachedDomains.has(d)) continue;
+      const base = d.startsWith("http") ? d : `https://${d}`;
+      rescueTargets.push({ url: `${base}/careers`, sourceDomain: d });
+      rescueTargets.push({ url: base, sourceDomain: d });
+    }
+    if (rescueTargets.length) {
+      await withBrowser(async (render) => {
+        let rescued = 0;
+        for (const t of rescueTargets) {
+          if (rescued >= 3) break;
+          const page = await render(t.url);
+          if (!page || page.html.length < 2_000) continue; // a challenge stub, not a page
+          reached.push({ ...t, finalUrl: page.finalUrl, html: page.html, rendered: true });
+          rescued++;
+        }
+        return null;
+      });
+    }
+  }
+
+  // Rung 2a — follow ONE same-org careers link off each reached page. The jobs
+  // often live on a sibling domain (boots.com → boots.jobs) and the crawl above
+  // stops one click short of them.
+  const { board: hopBoard, hops } = await followCareersHops(companyName, reached);
+  if (hopBoard) {
+    return {
+      board: hopBoard,
+      providersTried: tried,
+      notes:
+        `careers-hop via ${hops[hops.length - 1]?.url ?? "?"}` +
+        (hopBoard.verified ? "" : " — CROSS-DOMAIN redirect, held back for review"),
+    };
+  }
+  // Hops FIRST: the hop target is the dedicated careers site; the pages we
+  // guessed our way onto are the fallback.
+  const careersPages = [...hops, ...reached];
+
+  // Rung 2b — render the pages we reached: a JS-built page can link a supported
+  // ATS that the static fetch never saw (careers.bp.com → Workday). A native
+  // adapter beats a scrape, so this runs before jsonld.
+  if (await renderingAvailable()) {
+    const rendered = await renderedCrawl(companyName, careersPages);
+    if (rendered) {
+      return {
+        board: rendered,
+        providersTried: tried,
+        notes:
+          `rendered-crawl via ${rendered.token} — embed only visible after JS` +
+          (rendered.verified ? "" : " — CROSS-DOMAIN redirect, held back for review"),
+      };
+    }
+  }
+
+  // Rung 4 (LAST) — no supported ATS anywhere. Read the site's own schema.org
+  // JobPosting JSON-LD.
+  const jsonld = await jsonldCrawl(companyName, opts.careersUrl ?? null, careersPages);
+  if (jsonld) {
+    return {
+      board: jsonld,
+      providersTried: [...tried, "jsonld"],
+      notes:
+        `jsonld-crawl via ${jsonld.token} (${jsonld.renderMode})` +
+        (jsonld.verified ? "" : " — org name does not match, held back for review"),
     };
   }
 

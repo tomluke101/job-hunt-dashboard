@@ -214,7 +214,7 @@ export async function mapWithConcurrency<T, R>(
   limit: number,
   deadlineAt: number,
   fn: (item: T, index: number) => Promise<R>
-): Promise<{ results: (R | null)[]; timedOut: boolean }> {
+): Promise<{ results: (R | null)[]; timedOut: boolean; attempted: number }> {
   const results: (R | null)[] = new Array(items.length).fill(null);
   let cursor = 0;
   let timedOut = false;
@@ -239,7 +239,10 @@ export async function mapWithConcurrency<T, R>(
 
   const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
   await Promise.all(workers);
-  return { results, timedOut };
+  // How many items were STARTED before the clock ran out. Items are taken in
+  // index order, so a caller that front-loads its list (jsonld's UK-first
+  // ordering) can tell whether a timeout cut into the part it cares about.
+  return { results, timedOut, attempted: Math.min(cursor, items.length) };
 }
 
 // ---------------------------------------------------------------------------

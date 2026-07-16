@@ -14,6 +14,7 @@ import { smartrecruitersProvider } from "./smartrecruiters";
 import { recruiteeProvider } from "./recruitee";
 import { workdayProvider } from "./workday";
 import { workableProvider } from "./workable";
+import { jsonldProvider } from "./jsonld";
 
 const IMPLS: Record<AtsProviderId, AtsProviderImpl> = {
   greenhouse: greenhouseProvider,
@@ -23,6 +24,7 @@ const IMPLS: Record<AtsProviderId, AtsProviderImpl> = {
   recruitee: recruiteeProvider,
   workday: workdayProvider,
   workable: workableProvider,
+  jsonld: jsonldProvider,
 };
 
 /** The contract surface. `listJobs(board)` — no options; see pullBoard() for those. */

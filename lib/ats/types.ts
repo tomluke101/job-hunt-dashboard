@@ -47,7 +47,13 @@ export type AtsProviderId =
   | "smartrecruiters"
   | "recruitee"
   | "workday"
-  | "workable";
+  | "workable"
+  // The universal reader. Not one vendor's API — a crawler for the schema.org
+  // JobPosting JSON-LD that employers embed in their public careers pages so
+  // Google for Jobs can index them. The LAST rung of the discovery ladder: it
+  // only ever runs when no supported ATS embed was found, because a native API
+  // adapter is always better data than scraped markup. token = the careers URL.
+  | "jsonld";
 
 /**
  * Verified = probed live and seen to return real jobs.
@@ -70,6 +76,9 @@ export const PROVIDER_STATUS: Record<AtsProviderId, "verified" | "unverified"> =
   recruitee: "verified",
   workday: "verified",
   workable: "unverified",
+  // Probed live 2026-07-16: boots.jobs detail pages return complete JobPosting
+  // JSON-LD (title, JD, geo coords, salary, validThrough) from a static fetch.
+  jsonld: "verified",
 };
 
 export const ENABLED_PROVIDERS: AtsProviderId[] = (
@@ -106,6 +115,14 @@ export interface AtsBoard {
     /** e.g. "Careers", "External" — the career-site id. */
     site: string;
   };
+  /**
+   * jsonld only. "playwright" = the careers site injects its job links (or the
+   * JSON-LD itself) via JavaScript, so this board can only be pulled where a
+   * headless browser exists — i.e. the offline ingest script, never the Vercel
+   * cron. The cron SKIPS these boards rather than failing them: five phantom
+   * "failures" would mark a perfectly healthy board dead.
+   */
+  renderMode?: "static" | "playwright";
   /** The company we BELIEVE this board belongs to. Used to verify discovery. */
   companyName?: string | null;
 }

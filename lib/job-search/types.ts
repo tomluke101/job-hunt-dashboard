@@ -16,6 +16,10 @@ export type SourceType =
   | "recruitee"
   | "workday"
   | "workable"
+  // The universal reader: schema.org JobPosting JSON-LD scraped from the
+  // employer's OWN careers site. Still first-party — the employer authored the
+  // markup so Google for Jobs could index it; we read the same markup.
+  | "jsonld"
   | "apify_linkedin"
   | "apify_indeed"
   | "agent";
@@ -27,6 +31,7 @@ export type SourceType =
  */
 export const ATS_SOURCES: readonly SourceType[] = [
   "greenhouse", "lever", "ashby", "smartrecruiters", "recruitee", "workday", "workable",
+  "jsonld",
 ] as const;
 
 export function isAtsSource(s: SourceType): boolean {

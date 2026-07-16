@@ -32,6 +32,17 @@ export interface AtsPullOptions {
   budgetMs?: number;
   /** Override the per-board job cap (defaults to MAX_JOBS_PER_BOARD). */
   maxJobs?: number;
+  /**
+   * jsonld only: page URLs already represented in the corpus (job_postings.
+   * source_url for this board). A URL that is STILL ENUMERATED by the site's
+   * sitemap/listing is a job that is still open — the provider reports it in
+   * `stillListedUrls` WITHOUT re-fetching the page, and spends its page budget
+   * exclusively on NEW urls. This is what makes a 3,000-page global board
+   * affordable nightly: enumeration is one sitemap fetch; only the delta costs
+   * page fetches. Boards larger than one run's cap complete themselves across
+   * consecutive runs (each run fetches the next cap-worth of new pages).
+   */
+  skipUrls?: Set<string>;
 }
 
 /**

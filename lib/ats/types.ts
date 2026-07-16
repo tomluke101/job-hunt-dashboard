@@ -139,6 +139,21 @@ export interface AtsPullResult {
   error?: string;
   /** True when the board has more jobs than we pulled (pagination cap hit). */
   truncated?: boolean;
+  /**
+   * jsonld only: page URLs from `skipUrls` that the site STILL ENUMERATES.
+   * Each is a job that is still open whose page we did not re-fetch; ingest
+   * bumps its last_seen_at so prune-corpus keeps it. Absent for providers
+   * whose pull is a single API call (they always return the full board).
+   */
+  stillListedUrls?: string[];
+  /**
+   * jsonld only: page URLs actually FETCHED this pull (HTTP 200). Ingest diffs
+   * these against the rows it kept — a fetched page that produced no UK job
+   * (a global board's US pages, editorial pages under /jobs/) goes into the
+   * jsonld_seen_urls negative cache so it is never fetched again. Without
+   * this, FedEx's 3,500 mostly-US pages would be re-crawled every night.
+   */
+  fetchedUrls?: string[];
 }
 
 export interface AtsProbeResult {

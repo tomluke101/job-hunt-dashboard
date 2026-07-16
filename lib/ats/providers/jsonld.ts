@@ -813,20 +813,38 @@ export const jsonldProvider: AtsProviderImpl = {
         return { jobs: [], boardCompanyName: board.companyName ?? null };
       }
 
+      // INCREMENTAL REFRESH. A URL the site still enumerates is a job still
+      // open — report it without re-fetching, and spend the page budget on NEW
+      // urls only. First pull of a big board fetches cap-worth; the rest
+      // arrives on subsequent runs (paging for free); steady state costs one
+      // sitemap fetch plus the day's new postings.
+      const skip = opts?.skipUrls;
+      const stillListedUrls = skip ? enumerated.urls.filter((u) => skip.has(u)) : [];
+      const newUrls = skip ? enumerated.urls.filter((u) => !skip.has(u)) : enumerated.urls;
+
       const cap = Math.min(
         jobCap(opts),
         enumerated.neededRendering ? MAX_RENDERED_PAGES : MAX_STATIC_PAGES
       );
-      const urls = enumerated.urls.slice(0, cap);
-      const truncatedByEnum = enumerated.urls.length > cap;
+      const urls = newUrls.slice(0, cap);
+      const truncatedByEnum = newUrls.length > cap;
+
+      // A quiet day: everything the site lists is already in the corpus.
+      // (Without this, an empty fetch list would fall through to the
+      // "enumerated N but parsed 0" error and mark a healthy board broken.)
+      if (!urls.length && stillListedUrls.length) {
+        return { jobs: [], stillListedUrls, boardCompanyName: null, truncated: false };
+      }
 
       // Detail pages are usually static even when the LISTING is JS-rendered
       // (boots.jobs). So always try static first; only fall back to rendering
       // details if a sample proves the static fetch carries no JSON-LD.
+      const fetchedOk: string[] = [];
       const fetchDetailStatic = async (url: string): Promise<JsonLdNode[]> => {
         const res = await httpText(url);
         await politePause();
         if (!res || res.status !== 200) return [];
+        fetchedOk.push(url);
         return parseJobPostings(res.text).map((jp) => ({ ...jp, __pageUrl: url }));
       };
 
@@ -866,7 +884,10 @@ export const jsonldProvider: AtsProviderImpl = {
             }
             attemptedCount++;
             const page = await render(url, "JobPosting");
-            if (page) acc.push(...parseJobPostings(page.html).map((jp) => ({ ...jp, __pageUrl: url })));
+            if (page) {
+              fetchedOk.push(url);
+              acc.push(...parseJobPostings(page.html).map((jp) => ({ ...jp, __pageUrl: url })));
+            }
           }
           return acc;
         });
@@ -943,7 +964,9 @@ export const jsonldProvider: AtsProviderImpl = {
       // Honest limitation: a UK job whose URL carries no locale hint can still
       // sit in the cut tail of a GLOBAL board — invisible until we page across
       // runs. All-UK boards are unaffected (they fit inside the 1,500 cap).
-      const ukHintedCount = enumerated.urls.filter((u) => UK_URL_HINT.test(u)).length;
+      // Coverage is judged over the NEW urls only — a still-listed page that
+      // wasn't re-fetched is refreshed supply, not lost supply.
+      const ukHintedCount = newUrls.filter((u) => UK_URL_HINT.test(u)).length;
       const ukCutByCap = truncatedByEnum && ukHintedCount > cap;
       const ukCutByClock = timedOut && attemptedCount < Math.min(ukHintedCount, urls.length);
       const truncatedForUk = ukHintedCount > 0
@@ -954,6 +977,8 @@ export const jsonldProvider: AtsProviderImpl = {
         jobs,
         boardCompanyName: boardOrg,
         truncated: truncatedForUk,
+        stillListedUrls,
+        fetchedUrls: fetchedOk,
       };
     } catch (e) {
       return { jobs: [], error: `jsonld ${board.token}: ${errMsg(e)}` };

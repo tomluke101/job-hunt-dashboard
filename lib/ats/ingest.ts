@@ -13,7 +13,7 @@
 // supply rather than a bolt-on.
 
 import { createServerSupabaseClient } from "@/lib/supabase-server";
-import { getProvider } from "./providers";
+import { getProvider, pullBoard } from "./providers";
 import { PROVIDER_STATUS, type AtsProviderId } from "./types";
 import type { RegistryBoard } from "./registry";
 import { markPolled } from "./registry";
@@ -117,16 +117,115 @@ function geoColumns(loc: JobLocation) {
   };
 }
 
+/**
+ * Every page URL this board already has in the corpus. Fuel for the jsonld
+ * provider's incremental refresh: a URL still enumerated by the site is a job
+ * still open, reported WITHOUT re-fetching its page. That is what makes a
+ * 1,000-page employer cost one sitemap fetch per night instead of a re-crawl —
+ * and what lets boards bigger than one run's page cap complete themselves
+ * across consecutive runs.
+ */
+async function knownSourceUrls(boardId: string): Promise<Set<string>> {
+  const supabase = createServerSupabaseClient();
+  const known = new Set<string>();
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase
+      .from("job_postings")
+      .select("source_url")
+      .eq("ats_board_id", boardId)
+      .range(from, from + 999);
+    if (error) return known; // degrade to a full re-fetch, never fail the board
+    const batch = data ?? [];
+    for (const r of batch) if (r.source_url) known.add(r.source_url as string);
+    if (batch.length < 1000) break;
+  }
+  // Pages fetched before that produced NO UK job (a global board's US pages).
+  // Without these, FedEx's 3,500 mostly-foreign pages re-crawl every night.
+  // Schema-guarded: if the table isn't there yet, we merely re-fetch — waste,
+  // never wrongness.
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase
+      .from("jsonld_seen_urls")
+      .select("url")
+      .eq("board_id", boardId)
+      .range(from, from + 999);
+    if (error) break;
+    const batch = data ?? [];
+    for (const r of batch) known.add(r.url as string);
+    if (batch.length < 1000) break;
+  }
+  return known;
+}
+
+/**
+ * Remember fetched pages that yielded nothing we kept, so they are never
+ * fetched again. Only HTTP-200 pages reach here — a transient failure stays
+ * un-cached and retries next run. A page whose posting later turns UK would be
+ * missed; acceptable: postings don't change country, they expire.
+ */
+async function recordSeenNegatives(
+  boardId: string,
+  urls: string[],
+  verdict: string
+): Promise<void> {
+  if (!urls.length) return;
+  const supabase = createServerSupabaseClient();
+  for (let i = 0; i < urls.length; i += 200) {
+    const rows = urls.slice(i, i + 200).map((url) => ({ url, board_id: boardId, verdict }));
+    const { error } = await supabase.from("jsonld_seen_urls").upsert(rows, { onConflict: "url" });
+    if (error) return; // table not applied yet — degrade quietly to re-fetching
+  }
+}
+
+/** Refresh last_seen_at for jobs whose page the provider verified as still listed. */
+async function bumpStillListed(boardId: string, urls: string[]): Promise<number> {
+  if (!urls.length) return 0;
+  const supabase = createServerSupabaseClient();
+  let bumped = 0;
+  const now = new Date().toISOString();
+  for (let i = 0; i < urls.length; i += 50) {
+    const chunk = urls.slice(i, i + 50);
+    const { error, count } = await supabase
+      .from("job_postings")
+      .update({ last_seen_at: now }, { count: "exact" })
+      .eq("ats_board_id", boardId)
+      .in("source_url", chunk);
+    if (!error) bumped += count ?? 0;
+  }
+  return bumped;
+}
+
 async function ingestBoard(
   board: RegistryBoard,
   stats: IngestStats,
-  opts: IngestOptions
+  opts: IngestOptions,
+  /** The RUN's deadline. A board pull must never outlive the run — on Vercel the
+   * function itself dies at maxDuration, killing the pull mid-board with no
+   * markPolled, so the same (still oldest-polled) board would head the queue
+   * again next night: a livelock where nothing else ever refreshes. */
+  runDeadline?: number
 ): Promise<void> {
   const provider = getProvider(board.provider);
   if (!provider) return;
 
-  const result = await provider.listJobs(board);
+  // jsonld boards get the incremental treatment; API providers return the full
+  // board in one or few calls and need none of it.
+  const skipUrls = board.provider === "jsonld" ? await knownSourceUrls(board.id) : undefined;
+  const pullOpts = {
+    ...(skipUrls?.size ? { skipUrls } : {}),
+    ...(runDeadline ? { budgetMs: Math.max(20_000, runDeadline - Date.now()) } : {}),
+  };
+  const result = await pullBoard(board, Object.keys(pullOpts).length ? pullOpts : undefined);
   stats.provider_boards[board.provider] = (stats.provider_boards[board.provider] ?? 0) + 1;
+
+  // Still-listed pages are LIVE jobs confirmed by enumeration — bump their
+  // last_seen_at so prune-corpus keeps them, and count them as seen so a
+  // steady-state night (0 new pages anywhere) doesn't read as a dead provider.
+  if (!opts.dryRun && result.stillListedUrls?.length) {
+    const bumped = await bumpStillListed(board.id, result.stillListedUrls);
+    stats.jobs_seen += bumped;
+    stats.provider_counts[board.provider] = (stats.provider_counts[board.provider] ?? 0) + bumped;
+  }
 
   // A PARTIAL board is not a complete board. Every provider has always set this
   // flag and nothing has ever read it — which is how AstraZeneca quietly served
@@ -153,6 +252,9 @@ async function ingestBoard(
     (stats.provider_counts[board.provider] ?? 0) + result.jobs.length;
 
   const rows: Record<string, unknown>[] = [];
+  // Which fetched pages produced a row we KEPT — the complement feeds the
+  // jsonld negative cache (see recordSeenNegatives).
+  const keptPages = new Set<string>();
 
   for (const raw of result.jobs) {
     const loc = await resolveJobLocation(raw.location_raw, {
@@ -250,6 +352,9 @@ async function ingestBoard(
       ats_board_id: board.id,
       last_seen_at: new Date().toISOString(),
     });
+
+    const pageUrl = (raw.raw as { __pageUrl?: string } | undefined)?.__pageUrl;
+    if (pageUrl) keptPages.add(pageUrl);
   }
 
   if (opts.dryRun) {
@@ -273,7 +378,23 @@ async function ingestBoard(
     }
   }
   stats.jobs_upserted += upserted;
-  await markPolled(board.id, result.jobs.length, upserted, null);
+
+  // Fetched pages we kept nothing from — mostly a global board's foreign
+  // pages, plus editorial pages living under job-ish paths. Never fetch again.
+  if (result.fetchedUrls?.length) {
+    const negatives = result.fetchedUrls.filter((u) => !keptPages.has(u));
+    await recordSeenNegatives(board.id, negatives, "no_uk_job");
+  }
+
+  // The board's live size = newly fetched + still-listed. Counting only the
+  // fetched delta would flip an incremental jsonld board to "empty" on any
+  // night with no new postings.
+  await markPolled(
+    board.id,
+    result.jobs.length + (result.stillListedUrls?.length ?? 0),
+    upserted,
+    null
+  );
 }
 
 export async function ingestBoards(
@@ -310,7 +431,7 @@ export async function ingestBoards(
       if (i >= boards.length) return;
       const board = boards[i];
       try {
-        await ingestBoard(board, stats, opts);
+        await ingestBoard(board, stats, opts, started + budgetMs);
       } catch (e) {
         // One malformed board must never take down an ingest of thousands.
         stats.boards_failed++;

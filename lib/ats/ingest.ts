@@ -104,6 +104,9 @@ export function assertNoSilentTruncation(stats: IngestStats): string[] {
   return problems;
 }
 
+/** Cyrillic, CJK, Kana, Hangul, Arabic, Thai — scripts no UK job ad is titled in. */
+export const NON_LATIN_TITLE = /[Ѐ-ӿ一-鿿぀-ヿ가-힯؀-ۿ฀-๿]/;
+
 /** Map a resolved location onto the columns job_postings stores. */
 function geoColumns(loc: JobLocation) {
   const place = loc.places[0];
@@ -257,6 +260,16 @@ async function ingestBoard(
   const keptPages = new Set<string>();
 
   for (const raw of result.jobs) {
+    // A UK job ad has a Latin-script title. A Cyrillic/CJK/Arabic title is a
+    // foreign posting whose LOCATION the geo layer cannot read either — PepsiCo
+    // writes "Москва завод Шерризон", which is not in any UK gazetteer, so the
+    // job sails through as "unresolved" and the keep-unresolved policy (meant
+    // for UK towns postcodes.io missed) stores it. 94 such rows were live in
+    // the corpus before this check existed (2026-07-16).
+    if (NON_LATIN_TITLE.test(raw.title)) {
+      stats.jobs_dropped_foreign++;
+      continue;
+    }
     const loc = await resolveJobLocation(raw.location_raw, {
       candidates: raw.location_candidates,
       countryHint: raw.country_hint,

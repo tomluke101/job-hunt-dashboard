@@ -208,6 +208,20 @@ async function partB(): Promise<void> {
     leaked.length ? `${leaked.length} leaked, e.g. ${leaked.slice(0, 3).join(" | ")}` : ""
   );
 
+  // No non-Latin-script titles. A Cyrillic/CJK title is a foreign posting whose
+  // location the geo layer couldn't read either (PepsiCo's "Москва завод…" rows
+  // entered as "unresolved" and were kept). The re-resolve loop above cannot
+  // catch these — the location strings are unreadable to it BY CONSTRUCTION —
+  // so they get their own assertion.
+  const nonLatin = (rows ?? []).filter((r) =>
+    /[Ѐ-ӿ一-鿿぀-ヿ가-힯؀-ۿ฀-๿]/.test((r.title as string) ?? "")
+  );
+  check(
+    "no non-Latin-script titles in the corpus",
+    nonLatin.length === 0,
+    nonLatin.length ? `${nonLatin.length} found, e.g. ${(nonLatin[0].title as string).slice(0, 40)}` : ""
+  );
+
   // Every ingested row must carry a canonical key, or cross-source dedupe is blind.
   const { count: noKey } = await supabase
     .from("job_postings")

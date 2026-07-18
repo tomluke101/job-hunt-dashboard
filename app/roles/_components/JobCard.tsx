@@ -425,7 +425,10 @@ function RankingExplanation({ entry }: { entry: ShortlistEntry }) {
   const scores = [
     { label: "Match to search", value: entry.match_to_search_score },
     { label: "Job quality", value: entry.quality_score },
-    { label: "Match to you", value: entry.match_to_user_score, comingSoon: true },
+    // Live: the semantic (embedding) match between this JD and the user's own
+    // description. Null for aggregator jobs and any not-yet-embedded posting, which
+    // the tile renders as "—" — an honest blank, never a fake zero.
+    { label: "Match to you", value: entry.match_to_user_score },
     { label: "Career fit", value: entry.career_fit_score, comingSoon: true },
   ];
   const explanation = entry.ranking_explanation as Record<string, unknown> | null;
@@ -433,6 +436,7 @@ function RankingExplanation({ entry }: { entry: ShortlistEntry }) {
   const keywordHits = explanation?.keyword_hits as string[] | undefined;
   const qualityReasons = explanation?.quality_reasons as string[] | undefined;
   const salaryFit = explanation?.salary_fit as number | undefined;
+  const semanticScore = explanation?.semantic_score as number | null | undefined;
 
   return (
     <div className="space-y-3">
@@ -441,8 +445,14 @@ function RankingExplanation({ entry }: { entry: ShortlistEntry }) {
           <ScoreTile key={s.label} label={s.label} value={s.value} comingSoon={s.comingSoon} />
         ))}
       </div>
-      {(keywordHits?.length || qualityReasons?.length || salaryFit !== undefined) && (
+      {(keywordHits?.length || qualityReasons?.length || salaryFit !== undefined || semanticScore != null) && (
         <div className="rounded-md border border-slate-200 bg-slate-50/60 p-3 space-y-2">
+          {semanticScore != null && (
+            <p className="text-xs text-slate-600">
+              <span className="font-semibold text-slate-500 uppercase tracking-wider mr-2 text-[10px]">Meaning match</span>
+              {semanticScore}/100 — how closely this role matches what you described
+            </p>
+          )}
           {keywordHits && keywordHits.length > 0 && (
             <p className="text-xs text-slate-700">
               <span className="font-semibold text-slate-500 uppercase tracking-wider mr-2 text-[10px]">Keyword hits</span>

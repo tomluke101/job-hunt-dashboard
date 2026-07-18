@@ -31,16 +31,24 @@ const MAX_QUERY_CHARS = 4000;
 
 // Similarity → 0-100 score calibration.
 //
-// Cosine similarity from text-embedding-3-large is compressed: a strong JD↔query
-// match lands around 0.40-0.55, a loose one around 0.25-0.35, unrelated text
-// around 0.10-0.20. Mapping raw cosine straight to a percentage would put even the
-// best matches in the 40s. This linear stretch maps the useful band to [0, 100].
+// Cosine similarity from text-embedding-3-large is compressed, and this linear
+// stretch maps the useful band to [0, 100]. The bounds below were MEASURED against
+// the live 11.8k-job corpus across 8 diverse queries (title queries + a natural-
+// language one), not guessed:
+//   noise floor ~0.05-0.17 · typical candidate median ~0.22-0.28 ·
+//   strong match ~0.48-0.56 · near-perfect / self-match ~0.60-0.72 (avg max 0.505)
 //
-// These bounds are an initial calibration. scripts/verify-embeddings.ts prints the
-// real similarity distribution over the live corpus — tune SIM_FLOOR/SIM_CEIL to
-// what the data actually shows before trusting the absolute score.
-export const SIM_FLOOR = 0.2;
-export const SIM_CEIL = 0.55;
+// FLOOR 0.12 sits just above pure noise, so a genuinely unrelated job scores ~0
+// (honest) without crushing the whole on-topic field to zero. CEIL 0.60 lets a
+// strong match (~0.50) score ~79 and a near-perfect one hit 100.
+//
+// The map is deliberately ABSOLUTE, not normalised within a search: normalising
+// would paint the least-bad result "100/100" even when nothing actually fits (a
+// user searching for a role the corpus lacks) — the exact silent-wrongness this
+// product refuses to ship. Re-run scripts/verify-embeddings.ts after any corpus
+// shift to confirm these still fit.
+export const SIM_FLOOR = 0.12;
+export const SIM_CEIL = 0.6;
 
 let client: OpenAI | null = null;
 function getClient(): OpenAI {

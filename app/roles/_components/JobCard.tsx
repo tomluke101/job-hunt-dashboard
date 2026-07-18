@@ -23,8 +23,11 @@ import {
   ChevronUp,
   Users,
   Briefcase,
+  Sparkles,
+  Loader2,
+  AlertCircle,
 } from "lucide-react";
-import type { ShortlistEntry } from "@/app/actions/searches";
+import { explainJobFit, type ShortlistEntry } from "@/app/actions/searches";
 
 interface Props {
   entry: ShortlistEntry;
@@ -37,6 +40,32 @@ interface Props {
 
 export default function JobCard({ entry, onInterested, onReject, onApplied, onDelete, onRestore }: Props) {
   const [expanded, setExpanded] = useState(false);
+  // "Why this fits" — on-demand, cached per card. Seeded from the persisted
+  // jd_fit_summary so a previously-generated read shows immediately on reload.
+  const [fit, setFit] = useState<string | null>(entry.jd_fit_summary);
+  const [fitLoading, setFitLoading] = useState(false);
+  const [fitError, setFitError] = useState<string | null>(null);
+  const [fitNudge, setFitNudge] = useState(false);
+
+  async function handleExplainFit() {
+    if (fitLoading) return; // cost-guard: one request in flight per card
+    setFitLoading(true);
+    setFitError(null);
+    try {
+      const res = await explainJobFit(entry.id);
+      if (res.error) {
+        setFitError(res.error);
+      } else if (res.summary) {
+        setFit(res.summary);
+        setFitNudge(res.hadProfile === false);
+      }
+    } catch {
+      setFitError("Something went wrong. Please try again.");
+    } finally {
+      setFitLoading(false);
+    }
+  }
+
   const p = entry.posting;
   if (!p) return null;
 
@@ -133,11 +162,13 @@ export default function JobCard({ entry, onInterested, onReject, onApplied, onDe
         </div>
       )}
 
-      {entry.jd_fit_summary && (
-        <p className="mt-3 text-sm text-slate-700 bg-blue-50/50 border border-blue-100 rounded-lg px-3 py-2">
-          {entry.jd_fit_summary}
-        </p>
-      )}
+      <FitSection
+        text={fit}
+        loading={fitLoading}
+        error={fitError}
+        nudge={fitNudge}
+        onExplain={handleExplainFit}
+      />
 
       <button
         onClick={() => setExpanded((v) => !v)}
@@ -220,6 +251,114 @@ export default function JobCard({ entry, onInterested, onReject, onApplied, onDe
       </div>
     </article>
   );
+}
+
+// "Why this fits" panel. Four states: idle (button), loading, error (retry), and
+// resolved (the read). The resolved text is stored as labelled lines ("Label: body")
+// which we render as styled rows; any non-conforming line (or a legacy paragraph)
+// falls back to plain prose so nothing ever renders as raw label soup.
+function FitSection({
+  text,
+  loading,
+  error,
+  nudge,
+  onExplain,
+}: {
+  text: string | null;
+  loading: boolean;
+  error: string | null;
+  nudge: boolean;
+  onExplain: () => void;
+}) {
+  if (text) {
+    const lines = parseFitLines(text);
+    return (
+      <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50/50 px-3 py-2.5">
+        <div className="mb-1.5 flex items-center gap-1.5">
+          <Sparkles size={12} className="text-blue-500" />
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-blue-700">
+            Why this fits
+          </span>
+        </div>
+        <div className="space-y-1">
+          {lines.map((ln, i) =>
+            ln.label ? (
+              <p key={i} className="text-sm leading-snug text-slate-700">
+                <span className="font-semibold text-slate-900">{ln.label}:</span> {ln.body}
+              </p>
+            ) : (
+              <p key={i} className="text-sm leading-snug text-slate-700">
+                {ln.body}
+              </p>
+            )
+          )}
+        </div>
+        {nudge && (
+          <p className="mt-2 text-xs text-blue-700/80">
+            This is a general read.{" "}
+            <a
+              href="/profile"
+              className="font-medium underline decoration-blue-300 underline-offset-2 hover:text-blue-800"
+            >
+              Add your profile
+            </a>{" "}
+            for a take on how you fit.
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-600">
+        <Loader2 size={13} className="animate-spin" /> Reading your fit…
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+        <span className="inline-flex items-center gap-1.5 text-rose-700">
+          <AlertCircle size={13} /> {error}
+        </span>
+        <button
+          onClick={onExplain}
+          className="font-medium text-blue-600 underline decoration-blue-300 underline-offset-2 hover:text-blue-700"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={onExplain}
+      className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-100"
+      title="Get a short, honest read on how you fit this role"
+    >
+      <Sparkles size={13} /> Why this fits
+    </button>
+  );
+}
+
+type FitLine = { label: string | null; body: string };
+
+// Parse the stored fit text into labelled rows. A line shaped "Label: body" (short
+// label, then a colon) becomes a styled row; anything else is plain prose. Keeps the
+// column a single string with no schema change and degrades gracefully for a legacy
+// row saved as one paragraph.
+function parseFitLines(text: string): FitLine[] {
+  return text
+    .split(/\n+/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      const m = l.match(/^([^:]{2,40}):\s*(.+)$/);
+      return m ? { label: m[1].trim(), body: m[2].trim() } : { label: null, body: l };
+    });
 }
 
 /**

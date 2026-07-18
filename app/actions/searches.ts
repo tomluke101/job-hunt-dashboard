@@ -18,6 +18,8 @@ import {
 import { runSearch } from "@/lib/job-search/pipeline";
 import { htmlToText, tidyText } from "@/lib/job-search/html-to-text";
 import { parseDescriptionServerSide, descriptionHash } from "@/lib/job-search/ai-parse";
+import { explainFitServerSide } from "@/lib/job-search/ai-fit";
+import { getDefaultMasterProfile } from "@/app/actions/cv-tailoring";
 import { ensureSearchEmbedding } from "@/lib/job-search/search-embedding";
 
 // Attaches the AI read-back (ai_parsed) to the criteria on save. This is a paid
@@ -508,6 +510,80 @@ export async function restoreShortlist(id: string): Promise<{ error?: string }> 
   if (error) return { error: error.message };
   revalidatePath("/roles");
   return {};
+}
+
+// On-demand "Why this fits" for a single shortlisted job. Generates a short, honest
+// read (why you fit / your gap / your angle) from the user's master profile + the JD,
+// persists it to jd_fit_summary, and returns it for immediate render. Signed-in only.
+//
+// Cost-guarded: a card that already has a summary returns the cached text WITHOUT
+// spending a model call unless refresh=true. The "one request in flight per card"
+// guard lives in the client (the button disables while a request is open). When the
+// user has no master profile we still generate a JD-only read and flag hadProfile:false
+// so the card can nudge them to build one for a personalised version.
+export async function explainJobFit(
+  shortlistId: string,
+  opts?: { refresh?: boolean }
+): Promise<{ summary?: string; hadProfile?: boolean; error?: string }> {
+  const { userId } = await auth();
+  if (!userId) return { error: "Unauthorised" };
+  const supabase = createServerSupabaseClient();
+
+  const { data, error } = await supabase
+    .from("job_shortlist")
+    .select(
+      `id, jd_fit_summary,
+       posting:job_postings ( title, company, jd_text, jd_html )`
+    )
+    .eq("id", shortlistId)
+    .eq("user_id", userId)
+    .single();
+  if (error || !data) return { error: "Job not found" };
+
+  // Supabase returns a to-one embed as an object here (same as listShortlist), but
+  // guard for an array shape defensively.
+  const rawPosting = (data as { posting: unknown }).posting;
+  const posting = (Array.isArray(rawPosting) ? rawPosting[0] : rawPosting) as
+    | { title: string | null; company: string | null; jd_text: string | null; jd_html: string | null }
+    | null
+    | undefined;
+  if (!posting) return { error: "This job's details are missing." };
+
+  // The user's profile drives both the prompt mode and the nudge. Best-effort:
+  // a lookup failure just falls back to JD-only mode.
+  const master = await getDefaultMasterProfile();
+  const profile = master?.summary?.trim() || null;
+  const hadProfile = !!profile;
+
+  // Cache per card: reuse the stored summary unless an explicit refresh is asked.
+  const cached = (data as { jd_fit_summary: string | null }).jd_fit_summary;
+  if (cached && cached.trim() && !opts?.refresh) {
+    return { summary: cached, hadProfile };
+  }
+
+  const jdText = repairJd(posting.jd_text, posting.jd_html);
+  const result = await explainFitServerSide({
+    profile,
+    jdText,
+    title: posting.title ?? "",
+    company: posting.company ?? "",
+  });
+  if (!result) {
+    return { error: "Couldn't generate this right now. Please try again." };
+  }
+
+  const { error: saveError } = await supabase
+    .from("job_shortlist")
+    .update({ jd_fit_summary: result.text })
+    .eq("id", shortlistId)
+    .eq("user_id", userId);
+  if (saveError) {
+    // Generation worked; only the save failed. Return the text so the user still
+    // sees it this session rather than losing the spend to a transient DB blip.
+    console.error("[explainJobFit] save failed", saveError);
+  }
+
+  return { summary: result.text, hadProfile: result.hadProfile };
 }
 
 export async function listRuns(searchId: string, limit = 10): Promise<RunRecord[]> {

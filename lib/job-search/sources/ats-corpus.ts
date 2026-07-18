@@ -61,7 +61,7 @@ export async function pullFromCorpus(input: CorpusPullInput): Promise<CorpusPull
     let q = supabase
       .from("job_postings")
       .select(
-        "source, source_id, source_url, company, title, location_raw, jd_text, jd_html, " +
+        "id, source, source_id, source_url, company, title, location_raw, jd_text, jd_html, " +
           "posted_at, expires_at, salary_min, salary_max, salary_currency, " +
           "department, employment_type, seniority_hint, job_function, " +
           "is_remote, country_code, place_name, lat, lng"
@@ -131,6 +131,9 @@ export async function pullFromCorpus(input: CorpusPullInput): Promise<CorpusPull
 
       jobs.push({
         source,
+        // Corpus rows carry their job_postings.id so the ranker can fetch their
+        // semantic similarity by id. Network jobs never have this.
+        posting_id: r.id as string,
         source_id: r.source_id as string,
         source_url: (r.source_url as string) ?? null,
         company: (r.company as string) ?? "",

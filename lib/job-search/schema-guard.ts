@@ -32,7 +32,32 @@ export async function atsColumnsAvailable(supabase: SupabaseClient): Promise<boo
   return cached;
 }
 
-/** Test seam — reset the memoised probe. */
+let embeddingsCached: boolean | null = null;
+
+/**
+ * Is the embeddings migration (supabase-embeddings-schema.sql) live on THIS
+ * database? Same reasoning and same hand-applied-SQL ordering risk as
+ * atsColumnsAvailable: the pipeline may deploy before the SQL is run. Selecting
+ * jd_embedding when the column doesn't exist errors the WHOLE query — so we probe
+ * once, cache, and let the caller drop the semantic axis (ranking still works on
+ * the heuristic axes) instead of failing the search.
+ */
+export async function embeddingColumnsAvailable(supabase: SupabaseClient): Promise<boolean> {
+  if (embeddingsCached !== null) return embeddingsCached;
+  const { error } = await supabase.from("job_postings").select("jd_embedding").limit(1);
+  embeddingsCached = !error;
+  if (!embeddingsCached) {
+    console.warn(
+      "[schema-guard] job_postings.jd_embedding is missing — the embeddings migration " +
+        "has not been applied. Semantic ranking is OFF; ranking falls back to the " +
+        "heuristic axes. Apply supabase-embeddings-schema.sql."
+    );
+  }
+  return embeddingsCached;
+}
+
+/** Test seam — reset the memoised probes. */
 export function __resetSchemaGuard(): void {
   cached = null;
+  embeddingsCached = null;
 }

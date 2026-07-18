@@ -17,6 +17,7 @@ import {
 import { runSearch } from "@/lib/job-search/pipeline";
 import { htmlToText, tidyText } from "@/lib/job-search/html-to-text";
 import { parseDescriptionWithAI } from "@/lib/job-search/ai-parse";
+import { ensureSearchEmbedding } from "@/lib/job-search/search-embedding";
 import { getApiKeyValues } from "@/app/actions/api-keys";
 import { getTaskPreferences } from "@/app/actions/preferences";
 
@@ -243,6 +244,22 @@ export async function createSearch(input: {
     enabled: true,
   });
 
+  // Warm the query embedding in the background so it's ready before the first run.
+  // Best-effort: a failure here just means the pipeline embeds it lazily instead.
+  const newId = data.id as string;
+  after(async () => {
+    try {
+      await ensureSearchEmbedding(createServerSupabaseClient(), {
+        searchId: newId,
+        criteria,
+        description: input.description ?? null,
+        name: input.name.trim(),
+      });
+    } catch (e) {
+      console.error("[createSearch] embedding warm failed", e);
+    }
+  });
+
   revalidatePath("/roles");
   return { id: data.id };
 }
@@ -270,6 +287,36 @@ export async function updateSearch(
     .eq("id", id)
     .eq("user_id", userId);
   if (error) return { error: error.message };
+
+  // Re-embed the query in the background if anything that feeds it may have changed.
+  // The hash guard inside ensureSearchEmbedding makes this a no-op when the query
+  // text is actually unchanged, so firing on any of these fields is cheap and safe.
+  const queryTouched =
+    patchWithAI.criteria !== undefined ||
+    patch.description !== undefined ||
+    patch.name !== undefined;
+  if (queryTouched) {
+    after(async () => {
+      try {
+        const bg = createServerSupabaseClient();
+        const { data: s } = await bg
+          .from("job_searches")
+          .select("name, description, criteria")
+          .eq("id", id)
+          .single();
+        if (!s) return;
+        await ensureSearchEmbedding(bg, {
+          searchId: id,
+          criteria: s.criteria as SearchCriteria,
+          description: (s.description as string | null) ?? null,
+          name: (s.name as string | null) ?? null,
+        });
+      } catch (e) {
+        console.error("[updateSearch] embedding refresh failed", e);
+      }
+    });
+  }
+
   revalidatePath("/roles");
   return {};
 }

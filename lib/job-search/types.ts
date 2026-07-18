@@ -111,6 +111,12 @@ export interface RawJob {
   /** SmartRecruiters ships lat/lng on every posting — no geocoding needed. */
   lat?: number | null;
   lng?: number | null;
+
+  /** job_postings.id, set ONLY for rows read back from the local corpus. It's how
+   *  the ranker asks match_job_embeddings() for this posting's semantic similarity
+   *  without re-looking-it-up. Network (Reed/Adzuna) jobs have no corpus id at pull
+   *  time, so they carry no semantic score — see lib/job-search/pipeline.ts. */
+  posting_id?: string;
 }
 
 export interface JobSourceAdapter {

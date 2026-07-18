@@ -34,7 +34,9 @@ import { buildTargets, titleRelevantAny, type TargetTitle } from "./title-match"
 import { classifyJob } from "./classify";
 import { canonicalKey, dedupeByCanonicalKey } from "./canonical";
 import { parseSalaryFromText } from "./salary-parse";
-import { atsColumnsAvailable } from "./schema-guard";
+import { atsColumnsAvailable, embeddingColumnsAvailable } from "./schema-guard";
+import { ensureSearchEmbedding } from "./search-embedding";
+import { embeddingsConfigured, semanticScoreFromSimilarity } from "@/lib/embeddings";
 import {
   resolveOrigin,
   resolveJobLocation,
@@ -90,6 +92,21 @@ function resolveSearchTerms(
   }
   return { terms: "", source: "browse" };
 }
+
+/**
+ * How much the semantic (embedding) axis moves the final rank.
+ *
+ * The cheap composite already encodes title precision, JD quality, salary fit and
+ * the first-party bonus — signal we do NOT want a fuzzy vector match to override
+ * wholesale. So semantic RE-RANKS within the heuristically-good set rather than
+ * replacing it: at 0.35 a strong semantic match can lift a job several places, but
+ * a job with a wrong title (already gated out upstream) can't semantic its way in.
+ *
+ * A job with no embedding (every aggregator job, and any corpus job not yet
+ * backfilled) keeps its cheap composite unblended — it is scored on what we know,
+ * never penalised for a signal we simply don't have for it.
+ */
+const SEMANTIC_WEIGHT = 0.35;
 
 // Mode-aware minutes → straight-line miles.
 const COMMUTE_MPH: Record<CommuteMode, number> = {
@@ -270,6 +287,50 @@ async function resolveLocations(
     }
   }
   await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  return out;
+}
+
+/**
+ * Semantic similarity for the corpus candidates, computed in the database.
+ *
+ * Returns posting_id → cosine similarity for every candidate that HAS an embedding.
+ * Everything about this is best-effort: no key, no migration, no query vector, or an
+ * RPC error all resolve to an empty map, and ranking silently falls back to the
+ * heuristic axes. A search must never fail because the semantic layer did.
+ *
+ * Only corpus jobs are scored: they carry a job_postings.id (their `posting_id`) and
+ * their JD is embedded by the backfill. Aggregator jobs have neither, so they're
+ * absent here and rank on the cheap axes alone.
+ */
+async function computeSemanticSimilarities(
+  supabase: ReturnType<typeof createServerSupabaseClient>,
+  input: RunSearchInput,
+  description: string | null,
+  candidatePostingIds: string[]
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (candidatePostingIds.length === 0 || !embeddingsConfigured()) return out;
+  if (!(await embeddingColumnsAvailable(supabase))) return out;
+
+  const ensured = await ensureSearchEmbedding(supabase, {
+    searchId: input.searchId,
+    criteria: input.criteria,
+    description,
+    name: input.name,
+  });
+  if (!ensured.present) return out;
+
+  const { data, error } = await supabase.rpc("match_job_embeddings", {
+    p_search_id: input.searchId,
+    p_posting_ids: candidatePostingIds,
+  });
+  if (error) {
+    console.error("[runSearch] match_job_embeddings failed", error);
+    return out;
+  }
+  for (const row of (data ?? []) as Array<{ posting_id: string; similarity: number }>) {
+    if (typeof row.similarity === "number") out.set(row.posting_id, row.similarity);
+  }
   return out;
 }
 
@@ -560,7 +621,7 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     kept.push({ job: j, loc, key: entry.key, also_seen_on: entry.also_seen_on });
   }
 
-  // ---- Cheap ranking ----
+  // ---- Ranking: heuristic axes fused with the semantic (embedding) axis ----
   const { data: searchRow } = await supabase
     .from("job_searches")
     .select("description")
@@ -568,9 +629,52 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     .single();
   const description = (searchRow?.description as string | null | undefined) ?? null;
 
+  // Semantic similarity for the corpus candidates (best-effort — see the helper).
+  const candidatePostingIds = kept
+    .map((e) => e.job.posting_id)
+    .filter((id): id is string => !!id);
+  const semanticByPostingId = await computeSemanticSimilarities(
+    supabase,
+    input,
+    description,
+    candidatePostingIds
+  );
+
   const ranked = kept
-    .map((e) => ({ ...e, r: cheapRankScore(e.job, input.criteria, input.name, description) }))
+    .map((e) => {
+      const cheap = cheapRankScore(e.job, input.criteria, input.name, description);
+      const sim = e.job.posting_id ? semanticByPostingId.get(e.job.posting_id) ?? null : null;
+      const semantic_score = sim !== null ? semanticScoreFromSimilarity(sim) : null;
+      // Blend only when we have a semantic score. The cheap composite already
+      // carries the first-party bonus and recruiter penalty, so both survive here.
+      const composite =
+        semantic_score !== null
+          ? Math.max(
+              0,
+              Math.min(
+                100,
+                Math.round(cheap.composite * (1 - SEMANTIC_WEIGHT) + semantic_score * SEMANTIC_WEIGHT)
+              )
+            )
+          : cheap.composite;
+      return {
+        ...e,
+        r: {
+          composite,
+          cheap_composite: cheap.composite,
+          match_to_search: cheap.match_to_search,
+          quality: cheap.quality,
+          salary_fit: cheap.salary_fit,
+          semantic_score,
+          semantic_similarity: sim,
+          hits: cheap.hits,
+          phase: semantic_score !== null ? ("fused" as const) : ("cheap-only" as const),
+        },
+      };
+    })
     .sort((a, b) => b.r.composite - a.r.composite);
+
+  const semanticScored = ranked.filter((e) => e.r.semantic_score !== null).length;
 
   // ---- Companies House enrichment (best-effort, budget-capped) ----
   const ENRICH_POOL_MAX = 50;
@@ -776,12 +880,22 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     const rankingPayload = {
       quality_score: r.quality,
       match_to_search_score: r.match_to_search,
+      // The semantic score IS the match-to-you axis: how close the JD sits to the
+      // user's own description in embedding space. Populating the existing column
+      // lights up the axis tile the UI already renders. Null when unscored.
+      match_to_user_score: r.semantic_score,
       composite_rank: r.composite,
       ranking_explanation: {
-        phase: "cheap-only",
+        phase: r.phase,
         match_to_search: r.match_to_search,
         quality: r.quality,
         salary_fit: r.salary_fit,
+        // The semantic axis. cheap_composite is the pre-blend heuristic score, kept
+        // so the panel can show exactly what the embedding match moved.
+        semantic_score: r.semantic_score,
+        semantic_similarity: r.semantic_similarity,
+        cheap_composite: r.cheap_composite,
+        semantic_weight: r.semantic_score !== null ? SEMANTIC_WEIGHT : 0,
         keyword_hits: r.hits,
         quality_reasons: j.quality_reasons,
         first_party: isAtsSource(j.source),
@@ -835,6 +949,23 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     }
   }
 
+  // Semantic-axis observability. A silently-absent axis is exactly the failure mode
+  // this codebase keeps getting bitten by — so the run record says out loud how many
+  // candidates were semantically scored and what the similarity distribution was.
+  // verify-embeddings.ts uses the same shape to calibrate SIM_FLOOR/SIM_CEIL.
+  const sims = ranked
+    .map((e) => e.r.semantic_similarity)
+    .filter((s): s is number => s !== null)
+    .sort((a, b) => a - b);
+  const semanticStats = {
+    scored: semanticScored,
+    of: ranked.length,
+    weight: SEMANTIC_WEIGHT,
+    sim_min: sims.length ? Number(sims[0].toFixed(4)) : null,
+    sim_median: sims.length ? Number(sims[Math.floor(sims.length / 2)].toFixed(4)) : null,
+    sim_max: sims.length ? Number(sims[sims.length - 1].toFixed(4)) : null,
+  };
+
   const searchTermsUsed: string[] =
     resolved.source === "keywords"
       ? [keywords]
@@ -860,6 +991,7 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
         ranked_pool: ranked.length,
         jobs_per_run_target: input.jobsPerRun,
         origin_resolved: !!origin,
+        semantic: semanticStats,
         warnings: sourceWarnings,
       },
       filter_drops: filterDrops,

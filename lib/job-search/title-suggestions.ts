@@ -352,14 +352,35 @@ function parseRolePhrase(phrase: string): ParsedRole | null {
   return { qualifier: qualifierWords.join(" "), noun };
 }
 
+// "Container" words a job-hunter wraps around a real title — "Data Analyst JOBS",
+// "graduate ROLES", "my SEARCH". They are never the role itself, and because
+// parseRolePhrase() keys on the LAST word, a trailing "jobs" makes "Data Analyst
+// jobs" parse to nothing. Strip them from both ends before parsing. This is also
+// what makes a search NAME ("Data Analyst jobs") a usable suggestion source.
+const LIST_FILLER = new Set<string>([
+  "job", "jobs", "role", "roles", "vacancy", "vacancies", "position", "positions",
+  "opportunity", "opportunities", "career", "careers", "opening", "openings",
+  "post", "posts", "work", "hiring", "search", "searches", "wanted", "needed",
+  "list", "listing", "listings", "vacancie",
+]);
+
+function stripListFiller(part: string): string {
+  const words = normalise(part).split(/\s+/).filter(Boolean);
+  while (words.length && LIST_FILLER.has(words[words.length - 1])) words.pop();
+  while (words.length && LIST_FILLER.has(words[0])) words.shift();
+  return words.join(" ");
+}
+
 // Extract phrases the user typed as an explicit list — Name or Keywords.
 // Yields both parseable role phrases AND bare qualifier phrases (project,
 // legal, supply chain) so downstream logic can suggest for either.
 function extractPhrasesFromList(text: string): string[] {
   if (!text) return [];
   const out = new Set<string>();
-  for (const part of text.split(/[,/\n]|\band\b/i).map((s) => s.trim())) {
-    if (part.length < 2 || part.length > 60) continue;
+  for (const raw of text.split(/[,/\n]|\band\b/i).map((s) => s.trim())) {
+    if (raw.length < 2 || raw.length > 60) continue;
+    const part = stripListFiller(raw);
+    if (part.length < 2) continue; // was pure filler ("my search", "jobs")
     if (parseRolePhrase(part)) {
       out.add(part);
       continue;
@@ -934,7 +955,8 @@ export function suggestTitles(
   // that's their intent — ignore Name/Keywords/Description as suggestion
   // sources and use only the buffer. Behaves like a live search-as-you-type.
   const activeBuffer = (inputs.buffer ?? "").trim();
-  if (activeBuffer.length >= 2) {
+  const isActive = activeBuffer.length >= 2;
+  if (isActive) {
     collect(extractPhrasesFromList(activeBuffer));
   } else {
     collect(extractPhrasesFromList(inputs.name ?? ""));
@@ -1007,7 +1029,14 @@ export function suggestTitles(
     // words (Manager, Analyst, Engineer). This matches how real job boards
     // actually title jobs — a construction "Foreman" job is titled Foreman,
     // not "Construction Foreman".
-    if (bareQualifier && bareQualifier !== parsed?.noun) {
+    // Bare-qualifier expansion ("test" → Test Engineer / Analyst / Manager) is
+    // speculative — it invents roles from a single adjective. Only do it while the
+    // user is actively TYPING in the chip box, where they want completions. From a
+    // passive source (Name / Keywords / Description) it manufactured nonsense
+    // ("Test" → three fake roles, "supply" → Supply Teacher) — exactly why Name was
+    // barred as a source. Gate it, and passive sources only ever suggest a role the
+    // user actually NAMED.
+    if (isActive && bareQualifier && bareQualifier !== parsed?.noun) {
       const nouns = NOUNS_BY_QUALIFIER[bareQualifier] ?? [];
       const qualifierPretty = prettyPhrase(bareQualifier);
       for (const n of nouns) {

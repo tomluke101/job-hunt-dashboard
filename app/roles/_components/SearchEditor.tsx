@@ -83,23 +83,25 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
   const wmChoices: FilterableWorkingModel[] = ["remote", "hybrid", "office"];
 
   // Two modes based on whether the user is actively typing in the chip input:
-  // - buffer empty → "Related roles" derived from Keywords / Description
   // - buffer >= 2 chars → live autocomplete driven by the buffer only
+  // - buffer empty → "Related roles" aggregated from Name + Description + Keywords,
+  //   so a role the user names in ANY of those three surfaces as a click-to-add chip.
   //
-  // The search NAME is deliberately NOT a suggestion source. It's a label the
-  // user picks for themselves, not a query — the run pipeline already refuses
-  // to search on it for exactly this reason. Feeding it in meant naming a
-  // search "Test" produced "Test Engineer / Test Analyst / Test Manager"
-  // (`test` is a real QA qualifier in the taxonomy), and naming it "Birmingham
-  // roles" or "My search" produced comparable nonsense.
+  // The search NAME used to be barred here: it's a label, not a query, and feeding
+  // it in produced nonsense — "Test" → "Test Engineer / Test Analyst / Test Manager",
+  // "My search" / "Birmingham roles" → junk. That was a symptom of a crude extractor,
+  // now fixed (lib/job-search/title-suggestions.ts): filler words are stripped ("Data
+  // Analyst jobs" → Data Analyst) and passive sources no longer speculatively expand a
+  // lone qualifier ("Test" → nothing). With that, Name is a SAFE source — it only ever
+  // surfaces a role the user actually named — so it's back in, on purpose.
   const titleSuggestions = useMemo(
     () =>
       suggestTitles(
-        { keywords: criteria.keywords, description, buffer: titleBuffer },
+        { name, keywords: criteria.keywords, description, buffer: titleBuffer },
         titles,
         8
       ),
-    [criteria.keywords, description, titles, titleBuffer]
+    [name, criteria.keywords, description, titles, titleBuffer]
   );
   const isAutocomplete = titleBuffer.trim().length >= 2;
 
@@ -262,7 +264,7 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
               onChange={setTitles}
               suggestions={titleSuggestions}
               suggestionLabel={isAutocomplete ? "Matches:" : "Related roles:"}
-              emptyPlaceholder="Type a title and press Enter — e.g. Product Manager"
+              emptyPlaceholder="Start typing a role — pick a suggestion or press Enter (e.g. Product Manager)"
               onBufferChange={setTitleBuffer}
             />
           </Field>

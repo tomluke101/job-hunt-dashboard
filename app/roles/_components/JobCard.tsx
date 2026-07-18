@@ -11,6 +11,7 @@ import {
   ExternalLink,
   Heart,
   X,
+  Check,
   CheckCheck,
   RotateCcw,
   MapPin,
@@ -38,6 +39,8 @@ export default function JobCard({ entry, onInterested, onReject, onApplied, onDe
   const [expanded, setExpanded] = useState(false);
   const p = entry.posting;
   if (!p) return null;
+
+  const mustHaveHits = readStringArray(entry.ranking_explanation?.must_have_hits);
 
   const rankColor =
     (entry.composite_rank ?? 0) >= 75
@@ -113,6 +116,22 @@ export default function JobCard({ entry, onInterested, onReject, onApplied, onDe
           </a>
         )}
       </div>
+
+      {mustHaveHits.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700">
+            <Check size={12} /> Matches what you asked for:
+          </span>
+          {mustHaveHits.map((h) => (
+            <span
+              key={h}
+              className="inline-flex items-center rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs px-2 py-0.5"
+            >
+              {h}
+            </span>
+          ))}
+        </div>
+      )}
 
       {entry.jd_fit_summary && (
         <p className="mt-3 text-sm text-slate-700 bg-blue-50/50 border border-blue-100 rounded-lg px-3 py-2">
@@ -437,6 +456,7 @@ function RankingExplanation({ entry }: { entry: ShortlistEntry }) {
   const qualityReasons = explanation?.quality_reasons as string[] | undefined;
   const salaryFit = explanation?.salary_fit as number | undefined;
   const semanticScore = explanation?.semantic_score as number | null | undefined;
+  const mustHaveHits = readStringArray(explanation?.must_have_hits);
 
   return (
     <div className="space-y-3">
@@ -445,8 +465,16 @@ function RankingExplanation({ entry }: { entry: ShortlistEntry }) {
           <ScoreTile key={s.label} label={s.label} value={s.value} comingSoon={s.comingSoon} />
         ))}
       </div>
-      {(keywordHits?.length || qualityReasons?.length || salaryFit !== undefined || semanticScore != null) && (
+      {(keywordHits?.length || qualityReasons?.length || salaryFit !== undefined || semanticScore != null || mustHaveHits.length > 0) && (
         <div className="rounded-md border border-slate-200 bg-slate-50/60 p-3 space-y-2">
+          {mustHaveHits.length > 0 && (
+            <p className="text-xs text-slate-700">
+              <span className="font-semibold text-emerald-600 uppercase tracking-wider mr-2 text-[10px]">You asked for</span>
+              {mustHaveHits.map((h) => (
+                <span key={h} className="inline-block bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5 text-xs text-emerald-700 mr-1 mb-1">{h}</span>
+              ))}
+            </p>
+          )}
           {semanticScore != null && (
             <p className="text-xs text-slate-600">
               <span className="font-semibold text-slate-500 uppercase tracking-wider mr-2 text-[10px]">Meaning match</span>
@@ -478,6 +506,13 @@ function RankingExplanation({ entry }: { entry: ShortlistEntry }) {
       {note && <p className="text-xs text-slate-500 italic">{note}</p>}
     </div>
   );
+}
+
+// ranking_explanation is stored JSONB (Record<string, unknown>), so pull typed
+// arrays out defensively — an old row won't have must_have_hits at all.
+function readStringArray(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
 }
 
 function postedAgo(iso: string): string {

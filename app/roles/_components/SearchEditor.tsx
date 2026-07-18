@@ -7,16 +7,18 @@ import {
   useState,
   useTransition,
 } from "react";
-import { X, Loader2, Sparkles, ChevronDown, ChevronRight } from "lucide-react";
+import { X, Loader2, Sparkles, ChevronDown, ChevronRight, Check, RefreshCw } from "lucide-react";
 import {
   createSearch,
   getSearch,
   updateSearch,
+  analyzeDescription,
   type Search,
 } from "@/app/actions/searches";
 import {
   DEFAULT_CRITERIA,
   DEFAULT_WEIGHTS,
+  type AIParsedCriteria,
   type SearchCriteria,
   type CriteriaWeights,
   type FilterableWorkingModel,
@@ -33,6 +35,7 @@ import {
   JOB_FUNCTIONS,
   JOB_TYPE_LABELS,
   SENIORITY_LABELS,
+  type Seniority,
 } from "@/lib/job-search/classify";
 import { suggestTitles, extractSearchTerms } from "@/lib/job-search/title-suggestions";
 
@@ -62,6 +65,35 @@ function findExistingChip(chips: string[], candidate: string): number {
   return chips.findIndex((c) => normaliseForCompare(c) === norm);
 }
 
+const WM_LABELS: Record<FilterableWorkingModel, string> = {
+  remote: "Remote",
+  hybrid: "Hybrid",
+  office: "Office-based",
+};
+
+// The AI parse speaks {entry, graduate, junior, mid, senior, lead, director}; the
+// Experience-level filter speaks the classifier's Seniority union. "graduate" folds
+// into "entry" (whose label is already "Entry / Graduate"). Anything unmapped → null.
+function mapSeniority(s: AIParsedCriteria["seniority"]): Seniority | null {
+  switch (s) {
+    case "entry":
+    case "graduate":
+      return "entry";
+    case "junior":
+      return "junior";
+    case "mid":
+      return "mid";
+    case "senior":
+      return "senior";
+    case "lead":
+      return "lead";
+    case "director":
+      return "director";
+    default:
+      return null;
+  }
+}
+
 export default function SearchEditor({ mode, initial, onClose, onSaved }: Props) {
   const [name, setName] = useState(initial?.name ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
@@ -78,6 +110,20 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
   const [titleBuffer, setTitleBuffer] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(
     (initial?.criteria?.keywords ?? "").trim().length > 0
+  );
+
+  // AI "here's what we understood" — the description read-back + suggestions.
+  // Seeded from the saved parse so re-opening an edited search shows it instantly
+  // without a fresh (paid) call.
+  const persistedCriteria = (initial?.criteria ?? null) as SearchCriteria | null;
+  const [aiParsed, setAiParsed] = useState<AIParsedCriteria | null>(persistedCriteria?.ai_parsed ?? null);
+  const [aiParsedHash, setAiParsedHash] = useState<string | null>(persistedCriteria?.ai_parsed_hash ?? null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  // The exact (trimmed) description that produced `aiParsed`, so we can tell when the
+  // user has edited it since and nudge a re-read instead of showing stale suggestions.
+  const [analyzedText, setAnalyzedText] = useState<string>(
+    persistedCriteria?.ai_parsed ? (initial?.description ?? "").trim() : ""
   );
 
   const wmChoices: FilterableWorkingModel[] = ["remote", "hybrid", "office"];
@@ -118,6 +164,148 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
   const hasExplicitIntent =
     (criteria.keywords ?? "").trim().length > 0 || titles.length > 0;
 
+  const descTrimmed = description.trim();
+  const canAnalyze = descTrimmed.length >= 8;
+  const analyzeStale = aiParsed != null && descTrimmed !== analyzedText;
+
+  // Call the server-side parse and show the read-back. Explicit (button-driven) so a
+  // paid Sonnet call only happens when the user asks for it — no surprise spend on
+  // every blur. Self-guards against re-running for an unchanged description.
+  async function runAnalyze() {
+    const desc = description.trim();
+    if (desc.length < 8 || analyzing) return;
+    if (aiParsed && desc === analyzedText) return;
+    setAnalyzing(true);
+    setAnalyzeError(null);
+    try {
+      const res = await analyzeDescription(desc);
+      setAnalyzedText(desc);
+      if (res.parsed) {
+        setAiParsed(res.parsed);
+        setAiParsedHash(res.hash);
+      } else {
+        setAiParsed(null);
+        setAiParsedHash(null);
+        setAnalyzeError("We couldn't read that just now — but you can still save.");
+      }
+    } catch {
+      setAnalyzeError("We couldn't read that just now — but you can still save.");
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  // Turn the parse into suggestions the user can accept — computed against the CURRENT
+  // form state, so anything already applied (or already present) drops off the list.
+  const suggestions = useMemo(() => {
+    if (!aiParsed) return null;
+    const titleKeys = new Set(titles.map((t) => normaliseForCompare(t)));
+    const newTitles = (aiParsed.role_types ?? [])
+      .map((t) => t.trim())
+      .filter((t) => t && !titleKeys.has(normaliseForCompare(t)));
+
+    const excludeKeys = new Set(parsedIndustriesExclude.map((x) => x.toLowerCase().trim()));
+    const avoidSeen = new Set<string>();
+    const newAvoid: string[] = [];
+    for (const raw of [...(aiParsed.industries_avoid ?? []), ...(aiParsed.deal_breakers ?? [])]) {
+      const term = raw.trim();
+      const key = term.toLowerCase();
+      if (!term || key.length < 3 || excludeKeys.has(key) || avoidSeen.has(key)) continue;
+      avoidSeen.add(key);
+      newAvoid.push(term);
+    }
+
+    const mappedSeniority = mapSeniority(aiParsed.seniority);
+    const seniorityAccepted = criteria.seniority?.accepted ?? [];
+    const suggestSeniority =
+      mappedSeniority && !(seniorityAccepted.length === 1 && seniorityAccepted[0] === mappedSeniority)
+        ? mappedSeniority
+        : null;
+
+    const wm = aiParsed.working_model;
+    const wmAccepted = criteria.working_model.accepted;
+    const suggestWM = wm && !(wmAccepted.length === 1 && wmAccepted[0] === wm) ? wm : null;
+
+    const suggestFloor =
+      aiParsed.salary_floor != null && criteria.salary.floor == null ? aiParsed.salary_floor : null;
+    const suggestTarget =
+      aiParsed.salary_target != null && criteria.salary.target == null ? aiParsed.salary_target : null;
+
+    const hasApplicable =
+      newTitles.length > 0 ||
+      newAvoid.length > 0 ||
+      suggestSeniority != null ||
+      suggestWM != null ||
+      suggestFloor != null ||
+      suggestTarget != null;
+
+    return {
+      newTitles,
+      newAvoid,
+      suggestSeniority,
+      suggestWM,
+      suggestFloor,
+      suggestTarget,
+      locationHint: aiParsed.location_hint,
+      mustHaves: aiParsed.must_haves ?? [],
+      hasApplicable,
+    };
+  }, [
+    aiParsed,
+    titles,
+    parsedIndustriesExclude,
+    criteria.seniority,
+    criteria.working_model.accepted,
+    criteria.salary.floor,
+    criteria.salary.target,
+  ]);
+
+  function addTitleSuggestion(t: string) {
+    const norm = normaliseForCompare(t);
+    if (titles.some((c) => normaliseForCompare(c) === norm)) return;
+    setTitles([...titles, t.trim()]);
+  }
+  function addAvoidTerms(terms: string[]) {
+    const existing = new Set(parsedIndustriesExclude.map((x) => x.toLowerCase().trim()));
+    const merged = [...parsedIndustriesExclude];
+    for (const raw of terms) {
+      const term = raw.trim();
+      const key = term.toLowerCase();
+      if (!term || existing.has(key)) continue;
+      existing.add(key);
+      merged.push(term);
+    }
+    setIndustriesExcludeRaw(merged.join(", "));
+  }
+  function applySeniority(s: Seniority) {
+    setCriteria((c) => ({
+      ...c,
+      seniority: { accepted: [s], include_unknown: c.seniority?.include_unknown ?? true },
+    }));
+  }
+  function applyWorkingModel(wm: FilterableWorkingModel) {
+    setCriteria((c) => ({ ...c, working_model: { ...c.working_model, accepted: [wm] } }));
+  }
+  function applyFloor(n: number) {
+    setCriteria((c) => ({ ...c, salary: { ...c.salary, floor: n } }));
+  }
+  function applyTarget(n: number) {
+    setCriteria((c) => ({ ...c, salary: { ...c.salary, target: n } }));
+  }
+  function applyAllSuggestions() {
+    if (!suggestions) return;
+    if (suggestions.newTitles.length) {
+      const norm = new Set(titles.map((t) => normaliseForCompare(t)));
+      const add = suggestions.newTitles.filter((t) => !norm.has(normaliseForCompare(t)));
+      if (add.length) setTitles([...titles, ...add]);
+    }
+    if (suggestions.newAvoid.length) addAvoidTerms(suggestions.newAvoid);
+    if (suggestions.suggestSeniority) applySeniority(suggestions.suggestSeniority);
+    if (suggestions.suggestWM) applyWorkingModel(suggestions.suggestWM);
+    if (suggestions.suggestFloor != null) applyFloor(suggestions.suggestFloor);
+    if (suggestions.suggestTarget != null) applyTarget(suggestions.suggestTarget);
+  }
+
   function toggleWM(m: FilterableWorkingModel) {
     setCriteria((c) => {
       const accepted = new Set(c.working_model.accepted);
@@ -149,6 +337,10 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
       ...criteria,
       target_titles: titles,
       industries_exclude: parsedIndustriesExclude,
+      // Round-trip the read-back so the server reuses it (no duplicate Sonnet call)
+      // when the description is unchanged, and re-parses when the hash no longer matches.
+      ai_parsed: aiParsed,
+      ai_parsed_hash: aiParsedHash,
     };
     startSave(async () => {
       if (mode === "create") {
@@ -257,6 +449,139 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
               </div>
             )}
           </Field>
+
+          {canAnalyze && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50/40 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-800">
+                  <Sparkles size={13} className="text-blue-500" />
+                  {aiParsed ? "Here's what we understood" : "Understand my description"}
+                </span>
+                <button
+                  type="button"
+                  onClick={runAnalyze}
+                  disabled={analyzing}
+                  className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 hover:text-blue-900 disabled:opacity-50"
+                >
+                  {analyzing ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                  {analyzing ? "Reading…" : aiParsed ? "Re-read" : "Read my description"}
+                </button>
+              </div>
+
+              {!aiParsed && !analyzing && (
+                <p className="mt-2 text-xs text-slate-600">
+                  {analyzeError ??
+                    "We'll turn what you wrote into suggested titles, an avoid-list, and filter pre-fills — all optional, nothing is applied until you say so."}
+                </p>
+              )}
+
+              {aiParsed && (
+                <div className="mt-3 space-y-3">
+                  {aiParsed.summary && <p className="text-sm text-slate-700">{aiParsed.summary}</p>}
+                  {analyzeStale && (
+                    <p className="text-xs text-amber-600">
+                      You&apos;ve edited your description since — hit &ldquo;Re-read&rdquo; to refresh these.
+                    </p>
+                  )}
+
+                  {suggestions?.newTitles.length ? (
+                    <div>
+                      <p className="text-xs font-medium text-slate-500 mb-1">Add these roles</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {suggestions.newTitles.map((t) => (
+                          <button
+                            key={t}
+                            type="button"
+                            onClick={() => addTitleSuggestion(t)}
+                            className="text-xs rounded-md border border-blue-200 bg-white hover:bg-blue-50 hover:border-blue-300 text-blue-700 px-2 py-0.5"
+                          >
+                            + {t}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {suggestions?.newAvoid.length ? (
+                    <div>
+                      <p className="text-xs font-medium text-slate-500 mb-1">Avoid jobs mentioning</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {suggestions.newAvoid.map((t) => (
+                          <button
+                            key={t}
+                            type="button"
+                            onClick={() => addAvoidTerms([t])}
+                            className="text-xs rounded-md border border-rose-200 bg-white hover:bg-rose-50 hover:border-rose-300 text-rose-700 px-2 py-0.5"
+                          >
+                            + {t}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {suggestions?.suggestSeniority ? (
+                    <AiApplyRow
+                      label={`Experience level — ${SENIORITY_LABELS[suggestions.suggestSeniority]}`}
+                      onApply={() => applySeniority(suggestions.suggestSeniority!)}
+                    />
+                  ) : null}
+                  {suggestions?.suggestWM ? (
+                    <AiApplyRow
+                      label={`Working model — ${WM_LABELS[suggestions.suggestWM]}`}
+                      onApply={() => applyWorkingModel(suggestions.suggestWM!)}
+                    />
+                  ) : null}
+                  {suggestions?.suggestFloor != null ? (
+                    <AiApplyRow
+                      label={`Salary floor — £${suggestions.suggestFloor.toLocaleString("en-GB")}`}
+                      onApply={() => applyFloor(suggestions.suggestFloor!)}
+                    />
+                  ) : null}
+                  {suggestions?.suggestTarget != null ? (
+                    <AiApplyRow
+                      label={`Salary target — £${suggestions.suggestTarget.toLocaleString("en-GB")}`}
+                      onApply={() => applyTarget(suggestions.suggestTarget!)}
+                    />
+                  ) : null}
+
+                  {suggestions?.locationHint ? (
+                    <p className="text-xs text-slate-500">
+                      You mentioned{" "}
+                      <span className="font-medium text-slate-700">{suggestions.locationHint}</span> — set your
+                      postcode or &ldquo;Anywhere&rdquo; under Location below.
+                    </p>
+                  ) : null}
+
+                  {suggestions?.mustHaves.length ? (
+                    <div>
+                      <p className="text-xs text-slate-500 mb-1">We&apos;ll prioritise roles that mention:</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {suggestions.mustHaves.map((m) => (
+                          <span
+                            key={m}
+                            className="inline-flex items-center rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs px-2 py-0.5"
+                          >
+                            {m}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {suggestions?.hasApplicable && (
+                    <button
+                      type="button"
+                      onClick={applyAllSuggestions}
+                      className="inline-flex items-center gap-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md px-3 py-1.5"
+                    >
+                      <Check size={12} /> Apply all suggestions
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           <Field label="Job titles to accept">
             <TitleChipInput
@@ -835,6 +1160,24 @@ function TitleChipInput({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// One suggested filter pre-fill from the AI read-back, with a one-click Apply. The
+// suggestion self-removes once applied (the parent recomputes `suggestions` against
+// the updated form state), so this never needs an "applied" state of its own.
+function AiApplyRow({ label, onApply }: { label: string; onApply: () => void }) {
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-md bg-white/70 border border-blue-100 px-2.5 py-1.5">
+      <span className="text-xs text-slate-700">{label}</span>
+      <button
+        type="button"
+        onClick={onApply}
+        className="shrink-0 inline-flex items-center gap-1 text-xs font-medium text-blue-700 hover:text-white hover:bg-blue-600 border border-blue-300 rounded px-2 py-0.5 transition-colors"
+      >
+        <Check size={11} /> Apply
+      </button>
     </div>
   );
 }

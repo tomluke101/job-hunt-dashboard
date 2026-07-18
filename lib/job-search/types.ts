@@ -231,6 +231,12 @@ export interface SearchCriteria {
   // description. Structured intent used by the pipeline in addition to
   // heuristic extraction. See lib/job-search/ai-parse.ts.
   ai_parsed?: AIParsedCriteria | null;
+  // sha256 of the description that produced `ai_parsed`. The parse is a paid
+  // Sonnet call, so both the editor (live "understand" action) and the save
+  // path key on this hash: an unchanged description re-uses the stored parse
+  // and never spends a second call; a changed one re-parses. Null when there
+  // is no parse (no description, or the parse failed).
+  ai_parsed_hash?: string | null;
 }
 
 /**

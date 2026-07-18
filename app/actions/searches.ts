@@ -10,61 +10,64 @@ import {
   DEFAULT_CRITERIA,
   DEFAULT_RANKING_WEIGHTS,
   DEFAULT_WEIGHTS,
+  type AIParsedCriteria,
   type CriteriaWeights,
   type SearchCriteria,
   type ShortlistState,
 } from "@/lib/job-search/types";
 import { runSearch } from "@/lib/job-search/pipeline";
 import { htmlToText, tidyText } from "@/lib/job-search/html-to-text";
-import { parseDescriptionWithAI } from "@/lib/job-search/ai-parse";
+import { parseDescriptionServerSide, descriptionHash } from "@/lib/job-search/ai-parse";
 import { ensureSearchEmbedding } from "@/lib/job-search/search-embedding";
-import { getApiKeyValues } from "@/app/actions/api-keys";
-import { getTaskPreferences } from "@/app/actions/preferences";
 
-// Runs the AI parse on save when description is present. Uses the user's
-// connected providers via the existing BYOK infrastructure. Merges the
-// parsed output into the criteria the user typed — user's explicit inputs
-// always win, AI adds inferred detail on top.
+// Attaches the AI read-back (ai_parsed) to the criteria on save. This is a paid
+// server-side Sonnet call, so it is HASH-GUARDED: the editor's live "understand"
+// action already stashes ai_parsed + ai_parsed_hash into the criteria it saves, so
+// an unchanged description here is a no-op (no second call); only a description the
+// user edited after (or never) analysing triggers a fresh parse.
+//
+// It deliberately does NOT merge anything into the explicit filters. The parse's
+// suggestions (titles, avoid-list, seniority, working model, salary, location) are
+// applied by the USER in the editor — silently forcing them here would re-impose a
+// suggestion the user dismissed, and "never silently enforce" is the whole point.
+// What ai_parsed drives downstream is honest: must_haves nudge ranking (and are
+// shown on the card), deal_breakers only bite once the user confirms them into the
+// Avoid list, and the summary is a trust read-back.
 async function enrichCriteriaWithAI(
   description: string | undefined | null,
   criteria: SearchCriteria
 ): Promise<SearchCriteria> {
-  if (!description?.trim()) return criteria;
+  const desc = description?.trim();
+  if (!desc) return { ...criteria, ai_parsed: null, ai_parsed_hash: null };
+  const hash = descriptionHash(desc);
+  // Unchanged description → reuse the parse the editor already produced.
+  if (criteria.ai_parsed && criteria.ai_parsed_hash === hash) return criteria;
   try {
-    const [keys, taskPrefs] = await Promise.all([getApiKeyValues(), getTaskPreferences()]);
-    const parsed = await parseDescriptionWithAI({
-      description,
-      connectedProviders: keys,
-      providerPreference: taskPrefs["job-match"],
-    });
-    if (!parsed) return { ...criteria, ai_parsed: null };
-    return {
-      ...criteria,
-      ai_parsed: parsed,
-      target_titles: mergeStringArrays(criteria.target_titles, parsed.role_types),
-      industries_exclude: mergeStringArrays(criteria.industries_exclude, parsed.industries_avoid),
-      salary: {
-        ...criteria.salary,
-        floor: criteria.salary.floor ?? parsed.salary_floor,
-        target: criteria.salary.target ?? parsed.salary_target,
-      },
-    };
+    const parsed = await parseDescriptionServerSide(desc);
+    // Record the hash only on success, so a transient failure re-parses next save
+    // rather than being cached as "no parse" forever.
+    if (!parsed) return { ...criteria, ai_parsed: null, ai_parsed_hash: null };
+    return { ...criteria, ai_parsed: parsed, ai_parsed_hash: hash };
   } catch (e) {
     console.error("[enrichCriteriaWithAI] failed", e);
-    return criteria;
+    return { ...criteria, ai_parsed: null, ai_parsed_hash: null };
   }
 }
 
-function mergeStringArrays(user: string[], ai: string[]): string[] {
-  const seen = new Set(user.map((s) => s.toLowerCase().trim()));
-  const out = [...user];
-  for (const s of ai) {
-    const key = s.toLowerCase().trim();
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    out.push(s);
-  }
-  return out;
+// Live "here's what we understood" for the editor. The editor calls this as the
+// user finishes writing their description, shows the read-back + suggestions, and
+// stashes { parsed, hash } into the criteria it later saves so the save path's
+// hash guard skips a duplicate parse. Signed-in only; best-effort (null on any
+// failure — the editor just shows nothing rather than an error).
+export async function analyzeDescription(
+  description: string
+): Promise<{ parsed: AIParsedCriteria | null; hash: string | null }> {
+  const { userId } = await auth();
+  if (!userId) return { parsed: null, hash: null };
+  const desc = (description ?? "").trim();
+  if (desc.length < 8) return { parsed: null, hash: null };
+  const parsed = await parseDescriptionServerSide(desc);
+  return { parsed, hash: parsed ? descriptionHash(desc) : null };
 }
 
 // Old shortlist rows were saved with jd_text that hadn't been HTML-decoded or

@@ -108,6 +108,41 @@ function resolveSearchTerms(
  */
 const SEMANTIC_WEIGHT = 0.35;
 
+/**
+ * Must-have boost.
+ *
+ * The AI parse (lib/job-search/ai-parse.ts) turns "with a strong training programme"
+ * in the user's description into a must_have. When a job description actually mentions
+ * it, that is a real, specific reason this role fits the user better than one that
+ * doesn't — so it earns a small, bounded, EXPLAINED nudge, surfaced on the card as
+ * "matches what you asked for: training programme".
+ *
+ * It is a bonus, never a filter (silent-drop rule): a job that matches none of the
+ * must-haves simply gets no boost, it is not removed. Additive to the semantic axis
+ * and capped, so it can lift a genuinely-matching job a few places without letting a
+ * keyword coincidence override title precision or meaning-match.
+ */
+const MUST_HAVE_BONUS_EACH = 3;
+const MUST_HAVE_BONUS_MAX = 9;
+
+function matchMustHaves(j: NormalisedJob, mustHaves: string[]): string[] {
+  if (!mustHaves.length) return [];
+  const hay = `${j.title}\n${j.jd_text}`.toLowerCase();
+  const seen = new Set<string>();
+  const hits: string[] = [];
+  for (const m of mustHaves) {
+    const phrase = m.trim();
+    const needle = phrase.toLowerCase();
+    // Guard against a 1-2 char must-have matching everything.
+    if (needle.length < 3 || seen.has(needle)) continue;
+    if (hay.includes(needle)) {
+      seen.add(needle);
+      hits.push(phrase);
+    }
+  }
+  return hits;
+}
+
 // Mode-aware minutes → straight-line miles.
 const COMMUTE_MPH: Record<CommuteMode, number> = {
   car: 30,
@@ -640,6 +675,10 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     candidatePostingIds
   );
 
+  // Must-haves the user described (empty for a search with no AI parse). Applied as
+  // an explained ranking bonus below, never as a filter.
+  const mustHaves = input.criteria.ai_parsed?.must_haves ?? [];
+
   const ranked = kept
     .map((e) => {
       const cheap = cheapRankScore(e.job, input.criteria, input.name, description);
@@ -647,16 +686,14 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       const semantic_score = sim !== null ? semanticScoreFromSimilarity(sim) : null;
       // Blend only when we have a semantic score. The cheap composite already
       // carries the first-party bonus and recruiter penalty, so both survive here.
-      const composite =
+      const blended =
         semantic_score !== null
-          ? Math.max(
-              0,
-              Math.min(
-                100,
-                Math.round(cheap.composite * (1 - SEMANTIC_WEIGHT) + semantic_score * SEMANTIC_WEIGHT)
-              )
-            )
+          ? Math.round(cheap.composite * (1 - SEMANTIC_WEIGHT) + semantic_score * SEMANTIC_WEIGHT)
           : cheap.composite;
+      // Must-have bonus rides on top of the blend, then the whole thing is clamped.
+      const mustHaveHits = matchMustHaves(e.job, mustHaves);
+      const mustHaveBonus = Math.min(mustHaveHits.length * MUST_HAVE_BONUS_EACH, MUST_HAVE_BONUS_MAX);
+      const composite = Math.max(0, Math.min(100, blended + mustHaveBonus));
       return {
         ...e,
         r: {
@@ -668,6 +705,8 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
           semantic_score,
           semantic_similarity: sim,
           hits: cheap.hits,
+          must_have_hits: mustHaveHits,
+          must_have_bonus: mustHaveBonus,
           phase: semantic_score !== null ? ("fused" as const) : ("cheap-only" as const),
         },
       };
@@ -896,6 +935,10 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
         semantic_similarity: r.semantic_similarity,
         cheap_composite: r.cheap_composite,
         semantic_weight: r.semantic_score !== null ? SEMANTIC_WEIGHT : 0,
+        // What the user said they wanted ("training programme") that this JD actually
+        // mentions — shown on the card as the "matches what you asked for" chips.
+        must_have_hits: r.must_have_hits,
+        must_have_bonus: r.must_have_bonus,
         keyword_hits: r.hits,
         quality_reasons: j.quality_reasons,
         first_party: isAtsSource(j.source),

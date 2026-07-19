@@ -1,6 +1,6 @@
 import PageHeader from "../_components/PageHeader";
 import RolesClient from "./_components/RolesClient";
-import { listSearches, listShortlist, listRuns } from "@/app/actions/searches";
+import { listSearches, listShortlist, listRuns, countShortlistByState } from "@/app/actions/searches";
 
 export const dynamic = "force-dynamic";
 
@@ -14,9 +14,9 @@ export const maxDuration = 300;
 export default async function RolesPage() {
   const searches = await listSearches();
   const activeId = searches[0]?.id ?? null;
-  const [shortlist, runs] = activeId
-    ? await Promise.all([listShortlist(activeId), listRuns(activeId, 5)])
-    : [[], []];
+  const [shortlist, runs, counts] = activeId
+    ? await Promise.all([listShortlist(activeId), listRuns(activeId, 5), countShortlistByState(activeId)])
+    : [[], [], { new: 0, interested: 0, applied: 0, rejected_user: 0, deleted: 0 }];
 
   return (
     <div className="p-8">
@@ -29,6 +29,7 @@ export default async function RolesPage() {
         initialActiveId={activeId}
         initialShortlist={shortlist}
         initialRuns={runs}
+        initialCounts={counts}
       />
     </div>
   );

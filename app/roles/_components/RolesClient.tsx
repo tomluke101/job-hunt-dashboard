@@ -35,6 +35,7 @@ interface Props {
   initialActiveId: string | null;
   initialShortlist: ShortlistEntry[];
   initialRuns: RunRecord[];
+  initialCounts: ShortlistCounts;
 }
 
 type PaneState = "new" | "interested" | "applied" | "rejected_user" | "deleted";
@@ -45,14 +46,14 @@ type SortKey = "best" | "newest" | "salary";
 
 const EMPTY_COUNTS: ShortlistCounts = { new: 0, interested: 0, applied: 0, rejected_user: 0, deleted: 0 };
 
-export default function RolesClient({ initialSearches, initialActiveId, initialShortlist, initialRuns }: Props) {
+export default function RolesClient({ initialSearches, initialActiveId, initialShortlist, initialRuns, initialCounts }: Props) {
   const router = useRouter();
   const [searches, setSearches] = useState(initialSearches);
   const [activeId, setActiveId] = useState<string | null>(initialActiveId);
   const [shortlist, setShortlist] = useState<ShortlistEntry[]>(initialShortlist);
   const [runs, setRuns] = useState<RunRecord[]>(initialRuns);
   const [pane, setPane] = useState<PaneState>("new");
-  const [counts, setCounts] = useState<ShortlistCounts>(EMPTY_COUNTS);
+  const [counts, setCounts] = useState<ShortlistCounts>(initialCounts);
   const [sortKey, setSortKey] = useState<SortKey>("best");
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
@@ -95,22 +96,6 @@ export default function RolesClient({ initialSearches, initialActiveId, initialS
     setRuns(runList);
     setCounts(countList);
   }
-
-  // Load the pane counts for whichever search is active on first paint. The
-  // shortlist itself arrives from the server, but the per-state totals behind
-  // the OTHER tabs (Interested / Applied / …) aren't in that payload, so fetch
-  // them once. Cheap: one column, tallied server-side.
-  useEffect(() => {
-    if (!initialActiveId) return;
-    let live = true;
-    countShortlistByState(initialActiveId).then((c) => {
-      if (live) setCounts(c);
-    });
-    return () => {
-      live = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   function switchSearch(id: string) {
     setActiveId(id);

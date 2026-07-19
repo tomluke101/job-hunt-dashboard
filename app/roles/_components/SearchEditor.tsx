@@ -13,6 +13,7 @@ import {
   getSearch,
   updateSearch,
   analyzeDescription,
+  suggestRelatedRoles,
   validatePostcode,
   type Search,
 } from "@/app/actions/searches";
@@ -183,6 +184,48 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
     [name, criteria.keywords, description, titles, titleBuffer]
   );
   const isAutocomplete = titleBuffer.trim().length >= 2;
+
+  // LLM fallback for related roles. The static taxonomy above is fast and free
+  // but only knows seeded roles — a niche title yields no related-role chips.
+  // This is the fallback: BUTTON-DRIVEN (a paid call happens only when the user
+  // clicks, never on a keystroke), accumulates across clicks, and is deduped
+  // against chosen titles + the free static list at render. Suggestions only —
+  // the user clicks each to accept, nothing is auto-applied.
+  const [aiRoles, setAiRoles] = useState<string[]>([]);
+  const [aiRolesLoading, setAiRolesLoading] = useState(false);
+  const [aiRolesError, setAiRolesError] = useState<string | null>(null);
+  const [aiRolesFetched, setAiRolesFetched] = useState(false);
+
+  async function fetchRelatedRoles() {
+    if (aiRolesLoading || titles.length === 0) return;
+    setAiRolesLoading(true);
+    setAiRolesError(null);
+    try {
+      const res = await suggestRelatedRoles({
+        titles,
+        keywords: criteria.keywords ?? null,
+        description: description.trim() || null,
+      });
+      setAiRolesFetched(true);
+      setAiRoles((prev) => {
+        const seen = new Set(prev.map((r) => normaliseForCompare(r)));
+        return [...prev, ...res.roles.filter((r) => !seen.has(normaliseForCompare(r)))];
+      });
+    } catch {
+      setAiRolesError("Couldn't fetch suggestions just now.");
+    } finally {
+      setAiRolesLoading(false);
+    }
+  }
+
+  const aiRolesToShow = useMemo(() => {
+    if (aiRoles.length === 0) return [];
+    const taken = new Set([
+      ...titles.map((t) => normaliseForCompare(t)),
+      ...titleSuggestions.map((t) => normaliseForCompare(t)),
+    ]);
+    return aiRoles.filter((r) => !taken.has(normaliseForCompare(r)));
+  }, [aiRoles, titles, titleSuggestions]);
 
   // When the user has no explicit keywords or titles, the run pipeline falls
   // back to extracting search terms from the description. Show those live so
@@ -635,6 +678,52 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
               emptyPlaceholder="Start typing a role — pick a suggestion or press Enter (e.g. Product Manager)"
               onBufferChange={setTitleBuffer}
             />
+            {/* LLM fallback: when a role is chosen and the user isn't mid-type,
+                offer AI-suggested related roles for niche titles the static
+                taxonomy doesn't know. Button-driven; suggestions only. */}
+            {!isAutocomplete && titles.length >= 1 && (
+              <div className="mt-2 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={fetchRelatedRoles}
+                    disabled={aiRolesLoading}
+                    className="inline-flex items-center gap-1.5 text-xs rounded-md border border-slate-200 bg-white hover:bg-blue-50 hover:border-blue-300 hover:text-blue-700 text-slate-600 px-2.5 py-1 disabled:opacity-60"
+                  >
+                    {aiRolesLoading ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <Sparkles size={12} className="text-blue-500" />
+                    )}
+                    {aiRolesFetched ? "Suggest more related roles" : "Suggest related roles"}
+                  </button>
+                  {aiRolesError && <span className="text-xs text-red-600">{aiRolesError}</span>}
+                  {aiRolesFetched && !aiRolesLoading && !aiRolesError && aiRolesToShow.length === 0 && (
+                    <span className="text-xs text-slate-400">No further related roles found.</span>
+                  )}
+                </div>
+                {aiRolesToShow.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="inline-flex items-center gap-1 text-xs text-slate-400">
+                      <Sparkles size={11} className="text-blue-400" /> AI suggestions:
+                    </span>
+                    {aiRolesToShow.map((r) => (
+                      <button
+                        key={`ai-${r}`}
+                        type="button"
+                        onClick={() => {
+                          const norm = normaliseForCompare(r);
+                          if (!titles.some((t) => normaliseForCompare(t) === norm)) setTitles([...titles, r]);
+                        }}
+                        className="text-xs rounded-md border border-blue-200 bg-blue-50/60 hover:bg-blue-100 hover:border-blue-300 text-blue-700 px-2 py-0.5"
+                      >
+                        + {r}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </Field>
 
           <div className="space-y-3">

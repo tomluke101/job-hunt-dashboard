@@ -847,6 +847,16 @@ const NOUNS_BY_QUALIFIER: Record<string, string[]> = (() => {
   return map;
 })();
 
+// Ambiguous single-word fragments that the inversion resolves to the WRONG
+// domain. "Supply" is listed as a teacher qualifier ("Supply Teacher"), so the
+// inverted map made a bare "supply" resolve to Teacher — nonsense for the many
+// more people who type "supply" meaning supply chain. We pin these fragments to
+// their dominant job-search sense. The minority sense stays reachable the
+// natural way ("Supply Teacher" still comes from typing "teacher").
+const BARE_QUALIFIER_ALIASES: Record<string, string> = {
+  supply: "supply chain",
+};
+
 // If the user typed a bare qualifier (project, legal, supply chain), return
 // it normalised so we can expand it in suggestTitles. Otherwise null.
 // Also handles typos ("marketng" → "marketing") and autocomplete prefixes
@@ -854,6 +864,7 @@ const NOUNS_BY_QUALIFIER: Record<string, string[]> = (() => {
 function parseBareQualifier(phrase: string): string | null {
   const norm = normalise(phrase);
   if (!norm) return null;
+  if (BARE_QUALIFIER_ALIASES[norm]) return BARE_QUALIFIER_ALIASES[norm];
   if (NOUNS_BY_QUALIFIER[norm]) return norm;
   if (KNOWN_QUALIFIERS.has(norm)) return norm;
   const allKeys = new Set<string>([

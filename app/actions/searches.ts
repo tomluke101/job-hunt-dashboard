@@ -16,6 +16,7 @@ import { runSearch } from "@/lib/job-search/pipeline";
 import { geocodeUk } from "@/lib/geo";
 import { htmlToText, tidyText } from "@/lib/job-search/html-to-text";
 import { parseDescriptionServerSide, descriptionHash } from "@/lib/job-search/ai-parse";
+import { suggestRelatedRolesServerSide } from "@/lib/job-search/ai-related-roles";
 import { explainFitServerSide } from "@/lib/job-search/ai-fit";
 import { getDefaultMasterProfile } from "@/app/actions/cv-tailoring";
 import { ensureSearchEmbedding } from "@/lib/job-search/search-embedding";
@@ -68,6 +69,27 @@ export async function analyzeDescription(
   if (desc.length < 8) return { parsed: null, hash: null };
   const parsed = await parseDescriptionServerSide(desc);
   return { parsed, hash: parsed ? descriptionHash(desc) : null };
+}
+
+// LLM fallback for "related roles" in the editor. Button-driven (never on a
+// keystroke), so a paid call only happens when the user asks for it. The static
+// taxonomy handles the common/typed cases for free; this covers niche titles it
+// doesn't know. Returns [] on any failure — the editor just shows nothing extra.
+export async function suggestRelatedRoles(input: {
+  titles: string[];
+  keywords?: string | null;
+  description?: string | null;
+}): Promise<{ roles: string[] }> {
+  const { userId } = await auth();
+  if (!userId) return { roles: [] };
+  const titles = (input.titles ?? []).map((t) => String(t).trim()).filter(Boolean).slice(0, 12);
+  if (titles.length === 0) return { roles: [] };
+  const roles = await suggestRelatedRolesServerSide({
+    titles,
+    keywords: input.keywords ?? null,
+    description: input.description ?? null,
+  });
+  return { roles };
 }
 
 // Old shortlist rows were saved with jd_text that hadn't been HTML-decoded or

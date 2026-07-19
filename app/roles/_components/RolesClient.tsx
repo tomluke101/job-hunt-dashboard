@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import {
   Plus,
@@ -11,16 +11,19 @@ import {
   Sparkles,
   AlertCircle,
   AlertTriangle,
+  ArrowDownWideNarrow,
 } from "lucide-react";
 import {
   createSearch,
   deleteSearch,
   listShortlist,
   listRuns,
+  countShortlistByState,
   runSearchNow,
   updateSearch,
   type Search,
   type ShortlistEntry,
+  type ShortlistCounts,
   type RunRecord,
 } from "@/app/actions/searches";
 import SearchEditor from "./SearchEditor";
@@ -36,6 +39,12 @@ interface Props {
 
 type PaneState = "new" | "interested" | "applied" | "rejected_user" | "deleted";
 
+// In-results sort. "best" is the pipeline's composite rank (how the DB already
+// returns rows), so it's the identity order — no client re-sort, no surprise.
+type SortKey = "best" | "newest" | "salary";
+
+const EMPTY_COUNTS: ShortlistCounts = { new: 0, interested: 0, applied: 0, rejected_user: 0, deleted: 0 };
+
 export default function RolesClient({ initialSearches, initialActiveId, initialShortlist, initialRuns }: Props) {
   const router = useRouter();
   const [searches, setSearches] = useState(initialSearches);
@@ -43,6 +52,9 @@ export default function RolesClient({ initialSearches, initialActiveId, initialS
   const [shortlist, setShortlist] = useState<ShortlistEntry[]>(initialShortlist);
   const [runs, setRuns] = useState<RunRecord[]>(initialRuns);
   const [pane, setPane] = useState<PaneState>("new");
+  const [counts, setCounts] = useState<ShortlistCounts>(EMPTY_COUNTS);
+  const [sortKey, setSortKey] = useState<SortKey>("best");
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorMode, setEditorMode] = useState<"create" | "edit">("create");
   const [rejectingId, setRejectingId] = useState<string | null>(null);
@@ -55,6 +67,7 @@ export default function RolesClient({ initialSearches, initialActiveId, initialS
   const [isDeleting, startDelete] = useTransition();
 
   const active = useMemo(() => searches.find((s) => s.id === activeId) ?? null, [searches, activeId]);
+  const sortedShortlist = useMemo(() => sortShortlist(shortlist, sortKey), [shortlist, sortKey]);
 
   async function refreshActive(searchId: string, keepPane: PaneState = pane) {
     const states: Record<PaneState, ("new" | "interested" | "applied" | "rejected_user" | "deleted")[]> = {
@@ -73,13 +86,31 @@ export default function RolesClient({ initialSearches, initialActiveId, initialS
     //
     // A panel of numbers that silently belongs to something else is worse than no
     // panel: it is the stats equivalent of a source returning zero.
-    const [list, runList] = await Promise.all([
+    const [list, runList, countList] = await Promise.all([
       listShortlist(searchId, { states: states[keepPane] }),
       listRuns(searchId),
+      countShortlistByState(searchId),
     ]);
     setShortlist(list);
     setRuns(runList);
+    setCounts(countList);
   }
+
+  // Load the pane counts for whichever search is active on first paint. The
+  // shortlist itself arrives from the server, but the per-state totals behind
+  // the OTHER tabs (Interested / Applied / …) aren't in that payload, so fetch
+  // them once. Cheap: one column, tallied server-side.
+  useEffect(() => {
+    if (!initialActiveId) return;
+    let live = true;
+    countShortlistByState(initialActiveId).then((c) => {
+      if (live) setCounts(c);
+    });
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function switchSearch(id: string) {
     setActiveId(id);
@@ -128,22 +159,27 @@ export default function RolesClient({ initialSearches, initialActiveId, initialS
     });
   }
 
-  function handleDelete() {
+  function confirmDelete() {
     if (!active) return;
-    if (!confirm(`Delete search "${active.name}"? All shortlisted jobs for it will also be removed.`)) return;
     setError(null);
     startDelete(async () => {
       const res = await deleteSearch(active.id);
       if (res.error) {
         setError(res.error);
+        setConfirmDeleteOpen(false);
         return;
       }
       const next = searches.filter((s) => s.id !== active.id);
       setSearches(next);
       const nextActive = next[0]?.id ?? null;
       setActiveId(nextActive);
+      setPane("new");
       if (nextActive) await refreshActive(nextActive, "new");
-      else setShortlist([]);
+      else {
+        setShortlist([]);
+        setCounts(EMPTY_COUNTS);
+      }
+      setConfirmDeleteOpen(false);
     });
   }
 
@@ -236,7 +272,7 @@ export default function RolesClient({ initialSearches, initialActiveId, initialS
                   <Pencil size={13} /> Edit
                 </button>
                 <button
-                  onClick={handleDelete}
+                  onClick={() => setConfirmDeleteOpen(true)}
                   disabled={isDeleting}
                   className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white hover:bg-red-50 hover:border-red-200 hover:text-red-700 text-slate-700 text-sm font-medium px-3 py-2 disabled:opacity-60"
                   title="Delete search"
@@ -294,11 +330,18 @@ export default function RolesClient({ initialSearches, initialActiveId, initialS
 
             <PaneTabs
               value={pane}
+              counts={counts}
               onChange={(next) => {
                 setPane(next);
                 if (active) refreshActive(active.id, next);
               }}
             />
+
+            {shortlist.length > 1 && (
+              <div className="mt-3 flex items-center justify-end">
+                <SortControl value={sortKey} onChange={setSortKey} />
+              </div>
+            )}
 
             <div className="mt-4 space-y-3">
               {shortlist.length === 0 && (
@@ -316,7 +359,7 @@ export default function RolesClient({ initialSearches, initialActiveId, initialS
                   )}
                 </div>
               )}
-              {shortlist.map((entry) => (
+              {sortedShortlist.map((entry) => (
                 <JobCard
                   key={entry.id}
                   entry={entry}
@@ -348,6 +391,31 @@ export default function RolesClient({ initialSearches, initialActiveId, initialS
             setRejectingId(null);
             await handleDecide(id, "rejected_user", reason);
           }}
+        />
+      )}
+      {confirmDeleteOpen && active && (
+        <ConfirmDialog
+          title={`Delete “${active.name}”?`}
+          body={
+            <>
+              This removes the search and everything shortlisted under it
+              {counts.new + counts.interested + counts.applied + counts.rejected_user + counts.deleted > 0 && (
+                <>
+                  {" "}
+                  (<span className="font-medium text-slate-700">
+                    {counts.new + counts.interested + counts.applied + counts.rejected_user + counts.deleted} job
+                    {counts.new + counts.interested + counts.applied + counts.rejected_user + counts.deleted === 1 ? "" : "s"}
+                  </span>
+                  , including any you marked applied)
+                </>
+              )}
+              . This can&apos;t be undone.
+            </>
+          }
+          confirmLabel="Delete search"
+          busy={isDeleting}
+          onCancel={() => setConfirmDeleteOpen(false)}
+          onConfirm={confirmDelete}
         />
       )}
     </div>
@@ -382,23 +450,170 @@ function paneLabel(p: PaneState): string {
   }[p];
 }
 
-function PaneTabs({ value, onChange }: { value: PaneState; onChange: (v: PaneState) => void }) {
+function PaneTabs({
+  value,
+  counts,
+  onChange,
+}: {
+  value: PaneState;
+  counts: ShortlistCounts;
+  onChange: (v: PaneState) => void;
+}) {
   const tabs: PaneState[] = ["new", "interested", "applied", "rejected_user", "deleted"];
   return (
-    <div className="flex gap-1 border-b border-slate-200">
-      {tabs.map((t) => (
-        <button
-          key={t}
-          onClick={() => onChange(t)}
-          className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-            value === t
-              ? "border-blue-600 text-blue-700"
-              : "border-transparent text-slate-500 hover:text-slate-700"
-          }`}
-        >
-          {paneLabel(t)}
-        </button>
-      ))}
+    <div className="flex gap-1 border-b border-slate-200 overflow-x-auto">
+      {tabs.map((t) => {
+        const n = counts[t];
+        const activeTab = value === t;
+        return (
+          <button
+            key={t}
+            onClick={() => onChange(t)}
+            className={`flex items-center gap-1.5 whitespace-nowrap px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              activeTab
+                ? "border-blue-600 text-blue-700"
+                : "border-transparent text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            {paneLabel(t)}
+            <span
+              className={`inline-flex min-w-[1.25rem] justify-center rounded-full px-1.5 py-0.5 text-[11px] font-semibold tabular-nums ${
+                activeTab
+                  ? "bg-blue-100 text-blue-700"
+                  : n > 0
+                    ? "bg-slate-100 text-slate-600"
+                    : "bg-transparent text-slate-300"
+              }`}
+            >
+              {n}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+const SORT_OPTIONS: { key: SortKey; label: string }[] = [
+  { key: "best", label: "Best match" },
+  { key: "newest", label: "Newest" },
+  { key: "salary", label: "Highest salary" },
+];
+
+function SortControl({ value, onChange }: { value: SortKey; onChange: (v: SortKey) => void }) {
+  return (
+    <label className="flex items-center gap-1.5 text-xs text-slate-500">
+      <ArrowDownWideNarrow size={13} className="text-slate-400" />
+      <span>Sort</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as SortKey)}
+        className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+      >
+        {SORT_OPTIONS.map((o) => (
+          <option key={o.key} value={o.key}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+// Client-side re-order of the already-fetched shortlist. "Best match" is the
+// identity order (the DB returns composite_rank desc), so it's a no-op — never
+// re-sorting on the default means the pipeline's ranking is what the user sees
+// unless they deliberately ask for something else.
+//   newest  — posted date, falling back to when we first saw it; undated last.
+//   salary  — top of the listed range; jobs with no listed salary sink to the
+//             bottom rather than pretending to be £0.
+function sortShortlist(entries: ShortlistEntry[], key: SortKey): ShortlistEntry[] {
+  if (key === "best") return entries;
+  const copy = [...entries];
+  if (key === "newest") {
+    copy.sort((a, b) => dateValue(b) - dateValue(a));
+  } else if (key === "salary") {
+    copy.sort((a, b) => salaryValue(b) - salaryValue(a));
+  }
+  return copy;
+}
+
+function dateValue(e: ShortlistEntry): number {
+  const iso = e.posting?.posted_at ?? e.seen_at;
+  const t = iso ? new Date(iso).getTime() : NaN;
+  return Number.isFinite(t) ? t : -Infinity;
+}
+
+function salaryValue(e: ShortlistEntry): number {
+  const p = e.posting;
+  if (!p || !p.salary_listed) return -1;
+  return p.salary_max ?? p.salary_min ?? -1;
+}
+
+// A real, styled confirmation modal in place of the browser's native confirm().
+// Overlay-click and Escape both cancel; the confirm button is auto-focused and
+// styled destructive so an accidental Enter can't quietly nuke a search.
+function ConfirmDialog({
+  title,
+  body,
+  confirmLabel,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  title: string;
+  body: ReactNode;
+  confirmLabel: string;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape" && !busy) onCancel();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [busy, onCancel]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+      onClick={() => !busy && onCancel()}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="w-full max-w-md rounded-xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="p-5">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 shrink-0 rounded-full bg-red-100 p-2">
+              <AlertTriangle size={16} className="text-red-600" />
+            </div>
+            <div>
+              <h3 className="text-base font-semibold text-slate-900">{title}</h3>
+              <p className="mt-1 text-sm text-slate-600">{body}</p>
+            </div>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 rounded-b-xl border-t border-slate-200 bg-slate-50 p-4">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-md px-3 py-1.5 text-sm text-slate-600 hover:text-slate-800 disabled:opacity-60"
+          >
+            Cancel
+          </button>
+          <button
+            autoFocus
+            onClick={onConfirm}
+            disabled={busy}
+            className="flex items-center gap-1.5 rounded-md bg-red-600 px-3.5 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-60"
+          >
+            {busy && <Loader2 size={13} className="animate-spin" />}
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -498,6 +498,38 @@ export async function listShortlist(
   return rows;
 }
 
+// Counts per shortlist state for one search, so the pane tabs can show how many
+// jobs sit behind each ("New 12 · Interested 3 · …"). A tab with a number the
+// user can't see is a tab they won't click. One round-trip pulling only the
+// `state` column (a short enum string per row) and tallied in JS — cheaper than
+// five head-count queries and the payload stays tiny.
+export type ShortlistCounts = Record<
+  "new" | "interested" | "applied" | "rejected_user" | "deleted",
+  number
+>;
+
+export async function countShortlistByState(searchId: string): Promise<ShortlistCounts> {
+  const empty: ShortlistCounts = { new: 0, interested: 0, applied: 0, rejected_user: 0, deleted: 0 };
+  const { userId } = await auth();
+  if (!userId) return empty;
+  const supabase = createServerSupabaseClient();
+  const { data, error } = await supabase
+    .from("job_shortlist")
+    .select("state")
+    .eq("user_id", userId)
+    .eq("search_id", searchId);
+  if (error) {
+    console.error("[countShortlistByState]", error);
+    return empty;
+  }
+  const counts: ShortlistCounts = { ...empty };
+  for (const row of data ?? []) {
+    const s = (row as { state: string }).state;
+    if (s in counts) counts[s as keyof ShortlistCounts] += 1;
+  }
+  return counts;
+}
+
 export async function decideShortlist(
   id: string,
   state: Extract<ShortlistState, "interested" | "rejected_user" | "applied" | "deleted">,

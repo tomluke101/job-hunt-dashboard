@@ -187,15 +187,21 @@ function tokens(s: string): string[] {
 // Driver ads whose JD merely mentions a supply chain. The hard title filter bins
 // most of those; this weighting makes sure any that survive still rank beneath a
 // genuine title match rather than winning on a wall of incidental keywords.
+//
+// The "ask" is exactly what the user told us they want: keywords, target titles
+// and the free-text description. The search NAME is NOT in it — it is a label the
+// user files the search under ("just for you"), never a query, so it must not move
+// any job's rank. (Before this it leaked in here, so naming a search "Birmingham
+// roles" quietly boosted every job mentioning Birmingham.) The doctrine matches
+// resolveSearchTerms() and buildQueryEmbeddingInput(), which also exclude the name.
 function matchToSearchScore(
   j: NormalisedJob,
   criteria: SearchCriteria,
-  searchName: string,
   description: string | null | undefined
 ): { score: number; hits: string[] } {
   const askTerms = new Set([
     ...tokens(criteria.keywords || ""),
-    ...tokens(searchName || ""),
+    ...tokens((criteria.target_titles ?? []).join(" ")),
     ...tokens(description || ""),
   ]);
   if (askTerms.size === 0) return { score: 50, hits: [] };
@@ -270,10 +276,9 @@ function recruiterPenalty(company: string, source: SourceType): number {
 function cheapRankScore(
   j: NormalisedJob,
   criteria: SearchCriteria,
-  searchName: string,
   description: string | null | undefined
 ): { composite: number; match_to_search: number; quality: number; salary_fit: number; hits: string[] } {
-  const mts = matchToSearchScore(j, criteria, searchName, description);
+  const mts = matchToSearchScore(j, criteria, description);
   const q = j.quality_score ?? 50;
   const sf = salaryFitScore(j, criteria);
   const composite = Math.max(
@@ -351,7 +356,6 @@ async function computeSemanticSimilarities(
     searchId: input.searchId,
     criteria: input.criteria,
     description,
-    name: input.name,
   });
   if (!ensured.present) return out;
 
@@ -681,7 +685,7 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
 
   const ranked = kept
     .map((e) => {
-      const cheap = cheapRankScore(e.job, input.criteria, input.name, description);
+      const cheap = cheapRankScore(e.job, input.criteria, description);
       const sim = e.job.posting_id ? semanticByPostingId.get(e.job.posting_id) ?? null : null;
       const semantic_score = sim !== null ? semanticScoreFromSimilarity(sim) : null;
       // Blend only when we have a semantic score. The cheap composite already

@@ -80,12 +80,19 @@ export function buildJdEmbeddingInput(
 }
 
 /** The query vector represents the user's INTENT. Prefer their free-text
- *  description; fold in the concrete titles / keywords / name so a title-only
- *  search (no prose) still produces a meaningful query vector rather than nothing. */
+ *  description; fold in the concrete titles / keywords so a title-only search
+ *  (no prose) still produces a meaningful query vector rather than nothing.
+ *
+ *  The search NAME is deliberately excluded. It is a label the user picks for
+ *  their own filing ("just for you" in the editor) — often "Data jobs" or "London
+ *  round 2" — and must never influence which jobs rank where. resolveSearchTerms()
+ *  in the pipeline already refuses to send it to the job APIs; the embedding and
+ *  the keyword axis (matchToSearchScore) hold the same line. A search whose only
+ *  content is a name has no semantic query and ranks on the heuristic axes — the
+ *  honest outcome when the user has told us nothing to match against. */
 export function buildQueryEmbeddingInput(
   criteria: SearchCriteria,
-  description: string | null | undefined,
-  name: string | null | undefined
+  description: string | null | undefined
 ): string {
   const parts: string[] = [];
   const desc = (description ?? "").trim();
@@ -93,10 +100,6 @@ export function buildQueryEmbeddingInput(
   if (criteria.target_titles?.length) parts.push(criteria.target_titles.join(", "));
   const kw = (criteria.keywords ?? "").trim();
   if (kw) parts.push(kw);
-  const nm = (name ?? "").trim();
-  // The name is a weak signal (often just "Data jobs") — only use it if nothing
-  // better exists, so it can't dominate a real description.
-  if (!parts.length && nm) parts.push(nm);
   return parts.join("\n").slice(0, MAX_QUERY_CHARS);
 }
 

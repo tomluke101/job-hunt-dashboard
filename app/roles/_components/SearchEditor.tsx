@@ -13,14 +13,13 @@ import {
   getSearch,
   updateSearch,
   analyzeDescription,
+  validatePostcode,
   type Search,
 } from "@/app/actions/searches";
 import {
   DEFAULT_CRITERIA,
-  DEFAULT_WEIGHTS,
   type AIParsedCriteria,
   type SearchCriteria,
-  type CriteriaWeights,
   type FilterableWorkingModel,
   type LocationFilterMode,
   type CommuteMode,
@@ -98,7 +97,6 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
   const [name, setName] = useState(initial?.name ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [criteria, setCriteria] = useState<SearchCriteria>(mergeCriteria(initial?.criteria));
-  const [weights, setWeights] = useState<CriteriaWeights>({ ...DEFAULT_WEIGHTS, ...(initial?.weights ?? {}) });
   const [jobsPerRun, setJobsPerRun] = useState<number>(initial?.jobs_per_run ?? 10);
   const [titles, setTitles] = useState<string[]>(mergeCriteria(initial?.criteria).target_titles);
   const [industriesExcludeRaw, setIndustriesExcludeRaw] = useState(mergeCriteria(initial?.criteria).industries_exclude.join(", "));
@@ -111,6 +109,41 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
   const [advancedOpen, setAdvancedOpen] = useState(
     (initial?.criteria?.keywords ?? "").trim().length > 0
   );
+
+  // Live postcode validation. The run pipeline resolves this exact string via
+  // postcodes.io (lib/geo) and, if it can't place it, silently turns distance
+  // filtering OFF for the whole run — a bad postcode looked identical to a good
+  // one until the results came back wrong. Validating as the user types catches it
+  // up front. `pcPlace` is the resolved town/district, echoed back as confirmation.
+  const [pcStatus, setPcStatus] = useState<"idle" | "checking" | "valid" | "invalid">("idle");
+  const [pcPlace, setPcPlace] = useState<string | null>(null);
+  const pcReqId = useRef(0);
+  const postcodeValue = criteria.location.postcode;
+  const postcodeMode = criteria.location.filter_mode;
+  useEffect(() => {
+    const pc = (postcodeValue ?? "").trim();
+    // "Anywhere" doesn't use the postcode, and an empty box isn't an error.
+    if (postcodeMode === "anywhere" || !pc) {
+      setPcStatus("idle");
+      setPcPlace(null);
+      return;
+    }
+    const myId = ++pcReqId.current;
+    setPcStatus("checking");
+    const t = setTimeout(async () => {
+      try {
+        const res = await validatePostcode(pc);
+        if (myId !== pcReqId.current) return; // a newer keystroke superseded this
+        setPcStatus(res.valid ? "valid" : "invalid");
+        setPcPlace(res.place);
+      } catch {
+        if (myId !== pcReqId.current) return;
+        setPcStatus("invalid");
+        setPcPlace(null);
+      }
+    }, 450);
+    return () => clearTimeout(t);
+  }, [postcodeValue, postcodeMode]);
 
   // AI "here's what we understood" — the description read-back + suggestions.
   // Seeded from the saved parse so re-opening an edited search shows it instantly
@@ -348,7 +381,6 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
           name: name.trim(),
           description: description.trim() || undefined,
           criteria: finalCriteria,
-          weights,
           jobs_per_run: jobsPerRun,
         });
         if (res.error || !res.id) {
@@ -362,7 +394,6 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
           name: name.trim(),
           description: description.trim() || null,
           criteria: finalCriteria,
-          weights,
           jobs_per_run: jobsPerRun,
         });
         if (res.error) {
@@ -603,10 +634,32 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
                 <input
                   value={criteria.location.postcode ?? ""}
                   onChange={(e) => setLocationField("postcode", e.target.value || null)}
-                  className="w-full text-sm rounded-md border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50 disabled:text-slate-400"
+                  className={`w-full text-sm rounded-md border px-3 py-2 focus:outline-none focus:ring-2 disabled:bg-slate-50 disabled:text-slate-400 ${
+                    locMode !== "anywhere" && pcStatus === "invalid"
+                      ? "border-amber-400 focus:ring-amber-500"
+                      : locMode !== "anywhere" && pcStatus === "valid"
+                      ? "border-emerald-400 focus:ring-emerald-500"
+                      : "border-slate-300 focus:ring-blue-500"
+                  }`}
                   placeholder="e.g. SW1A 1AA"
                   disabled={locMode === "anywhere"}
+                  aria-invalid={locMode !== "anywhere" && pcStatus === "invalid"}
                 />
+                {locMode !== "anywhere" && pcStatus === "checking" && (
+                  <p className="mt-1 flex items-center gap-1 text-xs text-slate-400">
+                    <Loader2 size={11} className="animate-spin" /> Checking…
+                  </p>
+                )}
+                {locMode !== "anywhere" && pcStatus === "valid" && (
+                  <p className="mt-1 flex items-center gap-1 text-xs text-emerald-600">
+                    <Check size={11} /> {pcPlace ?? "Found"}
+                  </p>
+                )}
+                {locMode !== "anywhere" && pcStatus === "invalid" && (
+                  <p className="mt-1 text-xs text-amber-600">
+                    We couldn&apos;t find that postcode. Distance filtering will be off until it resolves — check it, or switch to &ldquo;Anywhere&rdquo;.
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-xs text-slate-500 mb-1">Filter by</label>

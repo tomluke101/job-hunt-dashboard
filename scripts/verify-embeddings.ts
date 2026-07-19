@@ -100,7 +100,6 @@ async function main() {
       searchId,
       criteria: DEFAULT_CRITERIA,
       description: target.title,
-      name: "verify-embeddings",
     });
     check(ensured.present, "query embedding written to the probe search", ensured.error ?? "");
     if (!ensured.present) fail("could not embed the probe query.");

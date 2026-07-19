@@ -8,14 +8,12 @@ import { enrichBatch } from "@/lib/enrichment/batch";
 import { normaliseCompanyName } from "@/lib/enrichment/normalise-company";
 import {
   DEFAULT_CRITERIA,
-  DEFAULT_RANKING_WEIGHTS,
-  DEFAULT_WEIGHTS,
   type AIParsedCriteria,
-  type CriteriaWeights,
   type SearchCriteria,
   type ShortlistState,
 } from "@/lib/job-search/types";
 import { runSearch } from "@/lib/job-search/pipeline";
+import { geocodeUk } from "@/lib/geo";
 import { htmlToText, tidyText } from "@/lib/job-search/html-to-text";
 import { parseDescriptionServerSide, descriptionHash } from "@/lib/job-search/ai-parse";
 import { explainFitServerSide } from "@/lib/job-search/ai-fit";
@@ -93,8 +91,6 @@ export interface Search {
   name: string;
   description: string | null;
   criteria: SearchCriteria;
-  weights: CriteriaWeights;
-  ranking_weights: Record<string, number>;
   schedule_cron: string | null;
   jobs_per_run: number;
   active: boolean;
@@ -144,7 +140,6 @@ export interface ShortlistEntry {
   quality_score: number | null;
   match_to_user_score: number | null;
   match_to_search_score: number | null;
-  career_fit_score: number | null;
   ranking_explanation: Record<string, unknown> | null;
   jd_fit_summary: string | null;
   seen_at: string;
@@ -208,7 +203,6 @@ export async function createSearch(input: {
   name: string;
   description?: string;
   criteria?: Partial<SearchCriteria>;
-  weights?: Partial<CriteriaWeights>;
   jobs_per_run?: number;
   schedule_cron?: string | null;
 }): Promise<{ id?: string; error?: string }> {
@@ -225,8 +219,9 @@ export async function createSearch(input: {
     salary: { ...DEFAULT_CRITERIA.salary, ...(input.criteria?.salary ?? {}) },
   };
   const criteria = await enrichCriteriaWithAI(input.description, baseCriteria);
-  const weights: CriteriaWeights = { ...DEFAULT_WEIGHTS, ...(input.weights ?? {}) };
 
+  // weights / ranking_weights are intentionally NOT written: they are inert DB
+  // columns (defaults suffice) that no code reads — see the note in types.ts.
   const { data, error } = await supabase
     .from("job_searches")
     .insert({
@@ -234,8 +229,6 @@ export async function createSearch(input: {
       name: input.name.trim(),
       description: input.description ?? null,
       criteria,
-      weights,
-      ranking_weights: DEFAULT_RANKING_WEIGHTS,
       jobs_per_run: input.jobs_per_run ?? 10,
       schedule_cron: input.schedule_cron ?? null,
     })
@@ -258,7 +251,6 @@ export async function createSearch(input: {
         searchId: newId,
         criteria,
         description: input.description ?? null,
-        name: input.name.trim(),
       });
     } catch (e) {
       console.error("[createSearch] embedding warm failed", e);
@@ -273,7 +265,6 @@ export async function updateSearch(
   id: string,
   patch: Partial<Pick<Search, "name" | "description" | "jobs_per_run" | "schedule_cron" | "active" | "auto_gen_summary" | "auto_gen_cv" | "auto_gen_cl">> & {
     criteria?: SearchCriteria;
-    weights?: CriteriaWeights;
   }
 ): Promise<{ error?: string }> {
   const { userId } = await auth();
@@ -306,7 +297,7 @@ export async function updateSearch(
         const bg = createServerSupabaseClient();
         const { data: s } = await bg
           .from("job_searches")
-          .select("name, description, criteria")
+          .select("description, criteria")
           .eq("id", id)
           .single();
         if (!s) return;
@@ -314,7 +305,6 @@ export async function updateSearch(
           searchId: id,
           criteria: s.criteria as SearchCriteria,
           description: (s.description as string | null) ?? null,
-          name: (s.name as string | null) ?? null,
         });
       } catch (e) {
         console.error("[updateSearch] embedding refresh failed", e);
@@ -334,6 +324,37 @@ export async function deleteSearch(id: string): Promise<{ error?: string }> {
   if (error) return { error: error.message };
   revalidatePath("/roles");
   return {};
+}
+
+/**
+ * Validate a home postcode / place at EDIT time, using the exact resolver the
+ * search pipeline uses (lib/geo → postcodes.io). This closes a silent-failure
+ * gap: the pipeline calls resolveOrigin() on the saved postcode, and if it can't
+ * be placed it turns distance filtering OFF for the whole run and only whispers
+ * it in the run warnings. Catching a bad postcode as the user types means the run
+ * never silently widens to the whole country.
+ *
+ * `place` is the resolved district/town name — shown back as confirmation
+ * ("✓ Birmingham") so the user can see we understood them, not just that it parsed.
+ * Accepts anything the pipeline accepts (full postcode, outcode, or a UK town),
+ * because that is precisely what will resolve at run time.
+ */
+export async function validatePostcode(
+  input: string
+): Promise<{ valid: boolean; place: string | null }> {
+  const { userId } = await auth();
+  if (!userId) return { valid: false, place: null };
+  const raw = (input ?? "").trim();
+  if (!raw) return { valid: false, place: null };
+  try {
+    const hit = await geocodeUk(raw);
+    return { valid: !!hit, place: hit?.name ?? null };
+  } catch {
+    // geocodeUk never throws by contract, but a transient DB-cache hiccup
+    // shouldn't turn into a false "invalid postcode" — treat unknown as unproven,
+    // not wrong. The user can still save; the run applies the same resolver.
+    return { valid: false, place: null };
+  }
 }
 
 export async function runSearchNow(id: string): Promise<{
@@ -440,7 +461,7 @@ export async function listShortlist(
     .select(
       `
       id, state, reject_reason, composite_rank, quality_score,
-      match_to_user_score, match_to_search_score, career_fit_score,
+      match_to_user_score, match_to_search_score,
       ranking_explanation, jd_fit_summary, seen_at, decided_at, deleted_at,
       posting:job_postings (
         id, company, title, location_raw, working_model,

@@ -556,7 +556,20 @@ function scoreTier(v: number | null | undefined): { border: string; bg: string; 
   return { border: "border-rose-200", bg: "bg-rose-50", text: "text-rose-800", labelText: "text-rose-700", bar: "bg-rose-500" };
 }
 
-function ScoreTile({ label, value, comingSoon }: { label: string; value: number | null | undefined; comingSoon?: boolean }) {
+function ScoreTile({
+  label,
+  value,
+  naLabel,
+  naTooltip,
+}: {
+  label: string;
+  value: number | null | undefined;
+  // Shown instead of a bare "—" when the axis genuinely can't be scored for this
+  // job (e.g. meaning-match on an aggregator listing). A blank alone reads as a
+  // bug; "n/a" + a reason reads as an honest answer.
+  naLabel?: string;
+  naTooltip?: string;
+}) {
   const tier = scoreTier(value);
   const pct = value != null ? Math.max(0, Math.min(100, value)) : 0;
   return (
@@ -569,27 +582,45 @@ function ScoreTile({ label, value, comingSoon }: { label: string; value: number 
             <p className={`text-[10px] tabular-nums ${tier.text} opacity-70`}>%</p>
           </>
         ) : (
-          <p className="text-sm font-semibold text-slate-400">{comingSoon ? "next" : "—"}</p>
+          <p className="text-sm font-semibold text-slate-400" title={naTooltip}>
+            {naLabel ?? "—"}
+          </p>
         )}
       </div>
-      <div className="mt-1.5 h-1 rounded-full bg-white/60 overflow-hidden">
-        <div className={`h-full rounded-full ${tier.bar}`} style={{ width: `${pct}%` }} />
-      </div>
+      {value != null && (
+        <div className="mt-1.5 h-1 rounded-full bg-white/60 overflow-hidden">
+          <div className={`h-full rounded-full ${tier.bar}`} style={{ width: `${pct}%` }} />
+        </div>
+      )}
     </div>
   );
 }
 
 function RankingExplanation({ entry }: { entry: ShortlistEntry }) {
-  const scores = [
+  const explanation = entry.ranking_explanation as Record<string, unknown> | null;
+
+  // "Match to you" is the semantic (embedding) match between this JD and the user's
+  // own description. It's null for two honest reasons, and the card says which:
+  //   • aggregator listings (Reed / Adzuna) — we only embed first-party JDs, so
+  //     there is nothing to compare against for these;
+  //   • a first-party role we haven't embedded yet, or a search with no free-text
+  //     to match against.
+  // A bare "—" reads as a bug, so the tile shows "n/a" and we explain below.
+  const matchToYou = entry.match_to_user_score;
+  const isFirstParty = explanation?.first_party === true;
+  const matchToYouReason = isFirstParty
+    ? "Match to you isn't scored for this role yet — it needs the meaning-match pass, which runs on employers' own listings."
+    : "Match to you runs on jobs from an employer's own careers site. This one came from an aggregator, so there's nothing to meaning-match against.";
+
+  const scores: Array<{ label: string; value: number | null | undefined; naTooltip?: string }> = [
     { label: "Match to search", value: entry.match_to_search_score },
     { label: "Job quality", value: entry.quality_score },
-    // Live: the semantic (embedding) match between this JD and the user's own
-    // description. Null for aggregator jobs and any not-yet-embedded posting, which
-    // the tile renders as "—" — an honest blank, never a fake zero.
-    { label: "Match to you", value: entry.match_to_user_score },
-    { label: "Career fit", value: entry.career_fit_score, comingSoon: true },
+    {
+      label: "Match to you",
+      value: matchToYou,
+      naTooltip: matchToYou == null ? matchToYouReason : undefined,
+    },
   ];
-  const explanation = entry.ranking_explanation as Record<string, unknown> | null;
   const note = explanation?.note as string | undefined;
   const keywordHits = explanation?.keyword_hits as string[] | undefined;
   const qualityReasons = explanation?.quality_reasons as string[] | undefined;
@@ -599,11 +630,23 @@ function RankingExplanation({ entry }: { entry: ShortlistEntry }) {
 
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-4 gap-2">
+      <div className="grid grid-cols-3 gap-2">
         {scores.map((s) => (
-          <ScoreTile key={s.label} label={s.label} value={s.value} comingSoon={s.comingSoon} />
+          <ScoreTile
+            key={s.label}
+            label={s.label}
+            value={s.value}
+            naLabel={s.label === "Match to you" && s.value == null ? "n/a" : undefined}
+            naTooltip={s.naTooltip}
+          />
         ))}
       </div>
+      {matchToYou == null && (
+        <p className="text-[11px] text-slate-500 leading-snug">
+          <span className="font-semibold text-slate-400 uppercase tracking-wider mr-1.5 text-[10px]">Match to you</span>
+          {matchToYouReason}
+        </p>
+      )}
       {(keywordHits?.length || qualityReasons?.length || salaryFit !== undefined || semanticScore != null || mustHaveHits.length > 0) && (
         <div className="rounded-md border border-slate-200 bg-slate-50/60 p-3 space-y-2">
           {mustHaveHits.length > 0 && (

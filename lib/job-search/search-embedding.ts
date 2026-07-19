@@ -25,7 +25,6 @@ export interface EnsureSearchEmbeddingParams {
   searchId: string;
   criteria: SearchCriteria;
   description: string | null;
-  name: string | null;
 }
 
 export interface EnsureSearchEmbeddingResult {
@@ -45,7 +44,7 @@ export async function ensureSearchEmbedding(
     return { present: false, embedded: false, error: "migration-not-applied" };
   }
 
-  const queryText = buildQueryEmbeddingInput(params.criteria, params.description, params.name);
+  const queryText = buildQueryEmbeddingInput(params.criteria, params.description);
   if (!queryText.trim()) {
     // Nothing to embed (a pure filter/browse search with no titles or prose). Not
     // an error — this search simply has no semantic query, and ranks heuristically.

@@ -288,17 +288,6 @@ export interface AIParsedCriteria {
   summary: string;
 }
 
-// Per-criterion importance (persisted as JSONB on job_searches.weights).
-// 0 = ignore, 0.5 = prefer, 1.0 = essential (hard filter).
-export interface CriteriaWeights {
-  location: number;
-  working_model: number;
-  salary: number;
-  seniority: number;
-  industries: number;
-  keywords: number;
-}
-
 export const DEFAULT_CRITERIA: SearchCriteria = {
   location: {
     postcode: null,
@@ -338,18 +327,11 @@ export const DEFAULT_CRITERIA: SearchCriteria = {
   extra: null,
 };
 
-export const DEFAULT_WEIGHTS: CriteriaWeights = {
-  location: 1.0,
-  working_model: 1.0,
-  salary: 1.0,
-  seniority: 0.5,
-  industries: 0.5,
-  keywords: 1.0,
-};
-
-export const DEFAULT_RANKING_WEIGHTS = {
-  match_to_search: 0.4,
-  match_to_user: 0.3,
-  quality: 0.2,
-  career_fit: 0.1,
-};
+// NOTE (2026-07-19, P4 ranking honesty): the old `CriteriaWeights` /
+// `DEFAULT_WEIGHTS` (per-criterion importance) and `DEFAULT_RANKING_WEIGHTS`
+// (per-axis blend) were removed. Nothing read them: the pipeline's ranking is
+// defined entirely in pipeline.ts (the cheap composite blend + SEMANTIC_WEIGHT),
+// and there was never a UI to set either — `setWeights` was never called. They
+// were stored-but-inert config that implied a tunability the product doesn't
+// have. The DB columns (job_searches.weights / ranking_weights) still exist with
+// their defaults and are simply ignored; no code writes or reads them now.

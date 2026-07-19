@@ -435,8 +435,10 @@ const SIZE_STYLES: Record<string, string> = {
 //      include a real employee count when iXBRL parse succeeded.
 //   2. Enriched but bucket = unknown — dormant/dissolved matched entity or
 //      the accounts-type field is missing. Grey "Unknown size" chip.
-//   3. No enrichment row yet — waiting on the batch to catch up. Grey
-//      "Size pending" chip so the user knows why the info is missing.
+//   3. No enrichment row yet — waiting on the batch to catch up. Rendered as
+//      faint inline text (NOT a bordered chip) so a fresh corpus, where most
+//      cards are un-enriched, doesn't turn into a wall of identical "pending"
+//      badges shouting over the real ones. It recedes; known sizes stand out.
 function CompanySizeBadge({
   enrichment,
 }: {
@@ -447,15 +449,15 @@ function CompanySizeBadge({
     ch_company_name: string | null;
   } | null;
 }) {
-  // State 3: no enrichment row at all
+  // State 3: no enrichment row at all — recessive, not a chip.
   if (!enrichment) {
     return (
       <span
-        className="flex items-center gap-1 rounded-md border border-dashed border-slate-300 bg-white text-slate-400 px-1.5 py-0.5 text-xs"
-        title="Waiting for Companies House lookup on this employer. Should populate on the next run."
+        className="flex items-center gap-1 text-xs italic text-slate-400"
+        title="Waiting for a Companies House lookup on this employer — fills in after the next run."
       >
-        <Users size={11} />
-        Size pending
+        <Users size={11} className="text-slate-300" />
+        Sizing…
       </span>
     );
   }

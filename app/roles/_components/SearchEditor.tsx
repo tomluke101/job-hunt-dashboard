@@ -7,7 +7,7 @@ import {
   useState,
   useTransition,
 } from "react";
-import { X, Loader2, Sparkles, ChevronDown, ChevronRight, Check, RefreshCw } from "lucide-react";
+import { X, Loader2, Sparkles, ChevronDown, ChevronRight, Check, RefreshCw, AlertCircle } from "lucide-react";
 import {
   createSearch,
   getSearch,
@@ -360,9 +360,21 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
     });
   }
 
+  // Salary sanity: the target (what you're aiming for, drives salary-fit ranking)
+  // can't sit below the floor (your minimum, drops jobs under it). A target below
+  // the floor is self-contradictory — you'd be aiming lower than the least you'll
+  // accept — and would quietly skew ranking. Flag it inline and block save.
+  const salaryFloor = criteria.salary.floor;
+  const salaryTarget = criteria.salary.target;
+  const salaryInvalid = salaryFloor != null && salaryTarget != null && salaryTarget < salaryFloor;
+
   function save() {
     if (!name.trim()) {
       setError("Give the search a name");
+      return;
+    }
+    if (salaryInvalid) {
+      setError("Salary target must be at least your salary floor.");
       return;
     }
     setError(null);
@@ -764,7 +776,7 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
           </Field>
 
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Salary floor (£)">
+            <Field label="Salary floor (£)" hint="Jobs paying less are dropped">
               <input
                 type="number"
                 min={0}
@@ -776,11 +788,15 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
                     salary: { ...criteria.salary, floor: e.target.value ? parseInt(e.target.value, 10) : null },
                   })
                 }
-                className="w-full text-sm rounded-md border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className={`w-full text-sm rounded-md border px-3 py-2 focus:outline-none focus:ring-2 ${
+                  salaryInvalid
+                    ? "border-red-400 focus:ring-red-500"
+                    : "border-slate-300 focus:ring-blue-500"
+                }`}
                 placeholder="e.g. 40000"
               />
             </Field>
-            <Field label="Salary target (£)">
+            <Field label="Salary target (£)" hint="What you're aiming for — ranks closer matches higher">
               <input
                 type="number"
                 min={0}
@@ -792,11 +808,22 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
                     salary: { ...criteria.salary, target: e.target.value ? parseInt(e.target.value, 10) : null },
                   })
                 }
-                className="w-full text-sm rounded-md border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className={`w-full text-sm rounded-md border px-3 py-2 focus:outline-none focus:ring-2 ${
+                  salaryInvalid
+                    ? "border-red-400 focus:ring-red-500"
+                    : "border-slate-300 focus:ring-blue-500"
+                }`}
                 placeholder="e.g. 55000"
               />
             </Field>
           </div>
+          {salaryInvalid && (
+            <p className="-mt-3 flex items-center gap-1 text-xs text-red-600">
+              <AlertCircle size={12} className="shrink-0" />
+              Target (£{salaryTarget!.toLocaleString("en-GB")}) is below your floor (£
+              {salaryFloor!.toLocaleString("en-GB")}). Raise the target or lower the floor.
+            </p>
+          )}
 
           <label className="flex items-center gap-2 text-xs text-slate-700">
             <input
@@ -954,7 +981,8 @@ export default function SearchEditor({ mode, initial, onClose, onSaved }: Props)
           </button>
           <button
             onClick={save}
-            disabled={isSaving}
+            disabled={isSaving || salaryInvalid}
+            title={salaryInvalid ? "Salary target must be at least your salary floor" : undefined}
             className="flex items-center gap-1.5 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-md px-3.5 py-1.5 disabled:opacity-60"
           >
             {isSaving && <Loader2 size={13} className="animate-spin" />}

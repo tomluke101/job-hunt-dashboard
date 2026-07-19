@@ -69,6 +69,14 @@ export default function RolesClient({ initialSearches, initialActiveId, initialS
 
   const active = useMemo(() => searches.find((s) => s.id === activeId) ?? null, [searches, activeId]);
   const sortedShortlist = useMemo(() => sortShortlist(shortlist, sortKey), [shortlist, sortKey]);
+  // How many visible cards are still waiting on a Companies House lookup. On a
+  // fresh corpus this is most of them; enrichment warms the cache over the next
+  // run(s). We say so ONCE, quietly, instead of leaving the user to wonder why
+  // every card's size is blank.
+  const pendingSizeCount = useMemo(
+    () => shortlist.filter((e) => e.posting && !e.posting.enrichment).length,
+    [shortlist]
+  );
 
   async function refreshActive(searchId: string, keepPane: PaneState = pane) {
     const states: Record<PaneState, ("new" | "interested" | "applied" | "rejected_user" | "deleted")[]> = {
@@ -326,6 +334,13 @@ export default function RolesClient({ initialSearches, initialActiveId, initialS
               <div className="mt-3 flex items-center justify-end">
                 <SortControl value={sortKey} onChange={setSortKey} />
               </div>
+            )}
+
+            {pendingSizeCount >= 3 && (
+              <p className="mt-3 flex items-center gap-1.5 text-xs text-slate-400">
+                <Loader2 size={12} className="shrink-0 animate-spin text-slate-300" />
+                Company size for {pendingSizeCount} of these is still being looked up — it fills in after the next run.
+              </p>
             )}
 
             <div className="mt-4 space-y-3">

@@ -15,6 +15,7 @@ import {
   CheckCheck,
   RotateCcw,
   MapPin,
+  Navigation,
   Building2,
   PoundSterling,
   Home,
@@ -114,6 +115,7 @@ export default function JobCard({ entry, onInterested, onReject, onApplied, onDe
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-600">
             <span className="flex items-center gap-1"><Building2 size={13} className="text-slate-400" />{p.company}</span>
             {p.location_raw && <span className="flex items-center gap-1"><MapPin size={13} className="text-slate-400" />{p.location_raw}</span>}
+            <DistanceBadge explanation={entry.ranking_explanation} />
             <WorkingModelBadge model={p.working_model} />
             <SalaryBadge min={p.salary_min} max={p.salary_max} currency={p.salary_currency} listed={p.salary_listed} />
             <CompanySizeBadge enrichment={p.enrichment} />
@@ -403,6 +405,26 @@ function ClassifiedBadges({
   );
 }
 
+// How far this job is from the searched location, and the resolved town — the
+// "you searched Sheffield, this one is in Rotherham, 6 miles away" honesty (defect
+// #7). Only rendered for a place-anchored search that could place the job
+// (proximity_applies + a numeric distance); a nationwide / remote search, or a job
+// with no resolvable place, shows nothing — never a misleading "0 mi".
+function DistanceBadge({ explanation }: { explanation: Record<string, unknown> | null }) {
+  if (!explanation || explanation.proximity_applies !== true) return null;
+  const d = explanation.distance_miles;
+  if (typeof d !== "number" || !Number.isFinite(d)) return null;
+  const place = typeof explanation.place === "string" ? explanation.place : null;
+  const label = d <= 0 ? (place ? `In ${place}` : "In town") : `${d} mi away`;
+  const title = place ? `${place} · ${d} miles from where you searched` : `${d} miles from where you searched`;
+  return (
+    <span className="flex items-center gap-1 text-slate-600" title={title}>
+      <Navigation size={12} className="text-slate-400" />
+      {label}
+    </span>
+  );
+}
+
 function WorkingModelBadge({ model }: { model: string | null }) {
   if (!model || model === "unknown") return null;
   const label = model === "remote" ? "Remote" : model === "hybrid" ? "Hybrid" : "Office";
@@ -629,6 +651,10 @@ function RankingExplanation({ entry }: { entry: ShortlistEntry }) {
   const salaryFit = explanation?.salary_fit as number | undefined;
   const semanticScore = explanation?.semantic_score as number | null | undefined;
   const mustHaveHits = readStringArray(explanation?.must_have_hits);
+  const proximityApplies = explanation?.proximity_applies === true;
+  const proximityDistance = explanation?.distance_miles;
+  const proximityPlace = typeof explanation?.place === "string" ? (explanation?.place as string) : null;
+  const showProximity = proximityApplies && typeof proximityDistance === "number";
 
   return (
     <div className="space-y-3">
@@ -649,7 +675,7 @@ function RankingExplanation({ entry }: { entry: ShortlistEntry }) {
           {matchToYouReason}
         </p>
       )}
-      {(keywordHits?.length || qualityReasons?.length || salaryFit !== undefined || semanticScore != null || mustHaveHits.length > 0) && (
+      {(keywordHits?.length || qualityReasons?.length || salaryFit !== undefined || semanticScore != null || mustHaveHits.length > 0 || showProximity) && (
         <div className="rounded-md border border-slate-200 bg-slate-50/60 p-3 space-y-2">
           {mustHaveHits.length > 0 && (
             <p className="text-xs text-slate-700">
@@ -683,6 +709,14 @@ function RankingExplanation({ entry }: { entry: ShortlistEntry }) {
             <p className="text-xs text-slate-600">
               <span className="font-semibold text-slate-500 uppercase tracking-wider mr-2 text-[10px]">Salary fit</span>
               {salaryFit}/100
+            </p>
+          )}
+          {showProximity && (
+            <p className="text-xs text-slate-600">
+              <span className="font-semibold text-slate-500 uppercase tracking-wider mr-2 text-[10px]">Proximity</span>
+              {(proximityDistance as number) <= 0
+                ? `In ${proximityPlace ?? "the town you searched"} — ranked above jobs further out`
+                : `${proximityDistance} mi${proximityPlace ? ` (${proximityPlace})` : ""} from where you searched — nearer jobs rank higher`}
             </p>
           )}
         </div>

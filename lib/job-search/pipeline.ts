@@ -34,6 +34,7 @@ import { buildTargets, titleRelevantAny, type TargetTitle } from "./title-match"
 import { classifyJob } from "./classify";
 import { seniorityAlignment } from "./seniority-align";
 import { wantsRemote, isRemoteEligible, remoteAlignment } from "./remote-align";
+import { proximityAlignment } from "./proximity-align";
 import { canonicalKey, dedupeByCanonicalKey } from "./canonical";
 import { parseSalaryFromText } from "./salary-parse";
 import { atsColumnsAvailable, embeddingColumnsAvailable } from "./schema-guard";
@@ -752,9 +753,16 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       // search. (The office roles it would otherwise outrank are already gone —
       // dropped by the hard filter above.)
       const remote = remoteAlignment(e.job, e.loc, input.criteria);
+      // Proximity bonus: on a place-anchored search, float the exact searched town
+      // and its nearest neighbours above jobs at the edge of the radius. Distance is
+      // computed ONCE here and threaded onto `r` so the value the bonus uses is the
+      // exact value the card displays — the two can never drift. Zero on a
+      // nationwide / remote search (isNationwide) and for any job we couldn't place.
+      const distance = origin && e.loc ? distanceMiles(origin, e.loc) : null;
+      const proximity = proximityAlignment({ distanceMiles: distance, radiusMiles: radius, isNationwide });
       const composite = Math.max(
         0,
-        Math.min(100, blended + mustHaveBonus + align.adjustment + remote.adjustment)
+        Math.min(100, blended + mustHaveBonus + align.adjustment + remote.adjustment + proximity.adjustment)
       );
       return {
         ...e,
@@ -777,6 +785,12 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
           remote_intent: remote.wants,
           remote_confirmed: remote.confirmed,
           remote_bonus: remote.remote_bonus,
+          // Proximity signal: whether the search is place-anchored, the job's
+          // distance, and the bonus it earned. distance_miles is stored here so the
+          // selection pass reuses this exact value on the card (no recompute, no drift).
+          proximity_applies: proximity.applies,
+          proximity_bonus: proximity.proximity_bonus,
+          distance_miles: distance,
           phase: semantic_score !== null ? ("fused" as const) : ("cheap-only" as const),
         },
       };
@@ -1006,7 +1020,10 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     // posting upserted below (keeps the corpus fresh) but no shortlist row.
     let rankingPayload: Record<string, unknown> | null = null;
     if (passesFilter) {
-      const distance = origin && loc ? distanceMiles(origin, loc) : null;
+      // Reuse the distance the ranker already computed (and ranked the proximity
+      // bonus on) rather than recomputing it — the number on the card is then
+      // provably the number the bonus used.
+      const distance = r.distance_miles;
       // job_shortlist's score columns are also `integer`; round them at the boundary
       // for the same reason as the posting row. These are Math.round'd upstream today,
       // but quality_score rides j.quality_score (same origin as the posting) so the
@@ -1048,6 +1065,11 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
           remote_intent: r.remote_intent,
           remote_confirmed: r.remote_confirmed,
           remote_bonus: r.remote_bonus,
+          // Proximity signal (defect #7): whether this search ranks on distance and
+          // the bonus this job's closeness earned (both 0/false on a nationwide /
+          // remote search). distance_miles / place are what the card shows.
+          proximity_applies: r.proximity_applies,
+          proximity_bonus: r.proximity_bonus,
           keyword_hits: r.hits,
           quality_reasons: j.quality_reasons,
           first_party: isAtsSource(j.source),

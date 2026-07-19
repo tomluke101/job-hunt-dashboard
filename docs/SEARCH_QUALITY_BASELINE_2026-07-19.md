@@ -234,11 +234,46 @@ not cover these sectors yet. (Indeed/LinkedIn/Google Jobs were NOT queried — n
 - **Fix direction:** tighten core-noun matching for multi-word titles; treat "Distributed"/global
   location strings as non-UK unless a UK place resolves.
 
-### 5. 🟡 MEDIUM — Recruiter detector under-catches on aggregator data
+### 5. 🟡→✅ MEDIUM — Recruiter detector under-catches on aggregator data — **FIXED 2026-07-19**
+
+> **✅ FIX LANDED (2026-07-19).** `lib/enrichment/recruiter-detect.ts` gained a curated block of the
+> UK agencies that dominate the aggregator supply for the blue-collar / education / care / trades
+> searches — matched by BRAND NAME at word boundaries, never by a bare sector word. The wiring was
+> already correct and untouched: `recruiterPenalty()` (−12 rank) and the `hide_recruiters` selection
+> filter both consume the flag (the filter via `enrichment.is_likely_recruiter`, which service.ts
+> derives from the SAME `detectRecruiter()`), so extending the detector lights up both at once.
+> Added: education (Academics, Teaching Personnel, TeacherActive, GSL / PK / Protocol / Vision for /
+> Engage / Simply / Reeson Education, Career Teachers, Aspire People, Prospero, Tradewind, Trust
+> Education, The Supply Desk), healthcare (Newcross, Medacs, Thornbury Nursing, Nurse Seekers),
+> industrial/driving (Staffline, Extrastaff, Challenge-trg, Driver Hire), plus safe generic markers
+> (`resourcing`, `personnel`, `<staffing-context> agency`, `search & selection`, `<nurse|care|…> seekers`).
+>
+> **The line held: a CARE-HOME OPERATOR or SCHOOL is the employer, not an agency.** Verified on the
+> live corpus that Care Concern Group, Hallmark Care Homes, Meallmore, Mears Group, Ian Williams,
+> Care UK, Bluebird Care and academy trusts (Oasis / United Learning / Harris / Ark) all stay
+> **un-flagged**; a pure-unit proof (`scripts/verify-selection-signals.ts`) pins 23 real employers as
+> clean and 23 agencies as flagged.
+>
+> **Proof — teacher #10 (the worst case: 100% agency supply), live re-run:**
+>
+> | metric | BEFORE | AFTER |
+> |---|---|---|
+> | recruiter_pct on #10 teacher | **0%** (Academics filled all 10, none flagged) | **90%** (9/10: Academics ×6, GSL ×2, Trust Education ×1) |
+> | overall recruiter honesty (scoreboard mean) | 4.2% (an **undercount**) | **12.8%** (agencies previously invisible now counted + penalised) |
+>
+> A rising recruiter number here is the FIX, not a regression: the detector is now HONEST about
+> agency supply, and each flagged agency takes the −12 rank penalty (and would be hidden if the user
+> turns `hide_recruiters` on). For an all-agency market like teaching the penalty **demotes uniformly**
+> rather than emptying the search (it defaults OFF) — expected, and why real first-party supply
+> (defect #6) is the only thing that ends the agency dependence.
+
 - **Evidence:** "Academics" (a well-known supply-teacher agency) filled **all 10** teacher results
   and was **not** flagged; measured recruiter rate (4.2%) is an undercount.
 - **Fix direction:** extend the agency name/SIC list; the moat's zero-recruiter guarantee only holds
   for first-party — aggregator supply needs the ranking penalty to actually fire.
+- **Known residuals (single-appearance long-tail, left un-flagged to avoid pattern creep):** bare
+  "Search" (Search Consultancy trades as just "Search" — too generic to match safely), "Find Medical",
+  "Cover People". The dominant agency (Academics) is fully caught.
 
 ### 6. 🟡 MEDIUM — Supply gap in blue-collar / education / care / trades
 - **Evidence:** first-party corpus depth 0 (warehouse Leeds, teacher Sheffield), 4 (care Cardiff);
@@ -246,7 +281,37 @@ not cover these sectors yet. (Indeed/LinkedIn/Google Jobs were NOT queried — n
 - **Fix direction:** sector-specific first-party sources (NHS Jobs, council/education boards,
   care-home groups) — or accept aggregator-primary for these and lean hard on defects #1/#2/#5.
 
-### 7. 🟢 LOW — Regional searches return surrounding towns, not the named city
+### 7. 🟢→✅ LOW — Regional searches return surrounding towns, not the named city — **FIXED 2026-07-19**
+
+> **✅ FIX LANDED (2026-07-19).** New `lib/job-search/proximity-align.ts` adds one bounded, EXPLAINED
+> proximity bonus to the composite, applied post-blend (peer of the base-title / remote bonuses):
+> full strength (**+10**) at distance 0, decaying linearly to 0 at the search radius, so the exact
+> town and its nearest neighbours float above jobs at the edge. It ranks on the `distance_miles` the
+> pipeline already computed — now computed ONCE in the ranker and threaded onto the result so the
+> number the bonus used is the exact number the card shows (no drift). Two hard no-ops, proven in the
+> unit script: a nationwide / remote search (`isNationwide`) never reorders on distance, and an
+> unplaceable job (pure-remote / country-only / unresolved → null distance) gets 0 — null is "cannot
+> speak", never a penalty. Surfaced in `ranking_explanation` (`proximity_applies`, `proximity_bonus`,
+> `distance_miles`, `place`) and on the card as a "6 mi away / In Sheffield" badge + a "Proximity" line.
+>
+> **Proof — same live corpus, nearest-town ordering before vs after:**
+>
+> | # | Search | exact-town job(s) BEFORE | AFTER |
+> |---|---|---|---|
+> | 7 | Registered Nurse / Glasgow | the two Glasgow (0 mi) roles at **#4 and #7** | **#2 and #3** — above every surrounding town (Ashgill/Cleghorn/Renton/Lanark/Falkirk); #1 is a *first-party* East Kilbride role at 6 mi, correctly held up by the +8 ATS bonus |
+> | 10 | Primary School Teacher / Sheffield | Sheffield role at **#9** | floated **up** — reached **#2** in one run; proximity also pulls Rotherham (6 mi) up to tie Wakefield (21 mi) despite Wakefield's better salary/JD match |
+>
+> **Honest limit (by design):** the bonus is bounded so it CANNOT override a materially weaker base
+> match — in a run where the only Sheffield teacher job had a genuinely weak JD match (match-to-search
+> 37 vs 47 for a Rotherham role), +10 vs +7.6 didn't leapfrog a ~9-point base deficit, and shouldn't
+> (a weak in-town role must not beat a strong nearby one). Teacher stays supply-bound (0 first-party,
+> 100% agency); #7 orders honestly where the base is comparable, but only real first-party supply
+> (defect #6) makes it *perfect*.
+>
+> **Gate:** full 10-search suite green (exit 0); proximity is a provable no-op on the remote searches
+> (#4/#8) and did not regress the location searches; #3/#6/#9 stay populated (defect #1 intact).
+> Re-run: `npx tsx scripts/audit-search-quality.ts`; pure-unit proof: `npx tsx scripts/verify-selection-signals.ts`.
+
 - **Evidence:** every Sheffield teacher result was Chesterfield/Rotherham/Doncaster/Barnsley/Wakefield
   — technically ≤25mi, but reads as "not my city". Same for Glasgow nursing.
 - **Fix direction:** rank exact-town matches above within-radius neighbours; show distance on the card.

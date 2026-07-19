@@ -32,6 +32,7 @@ import { normaliseCompanyName } from "@/lib/enrichment/normalise-company";
 import { detectRecruiter } from "@/lib/enrichment/recruiter-detect";
 import { buildTargets, titleRelevantAny, type TargetTitle } from "./title-match";
 import { classifyJob } from "./classify";
+import { seniorityAlignment } from "./seniority-align";
 import { canonicalKey, dedupeByCanonicalKey } from "./canonical";
 import { parseSalaryFromText } from "./salary-parse";
 import { atsColumnsAvailable, embeddingColumnsAvailable } from "./schema-guard";
@@ -709,10 +710,15 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
         semantic_score !== null
           ? Math.round(cheap.composite * (1 - SEMANTIC_WEIGHT) + semantic_score * SEMANTIC_WEIGHT)
           : cheap.composite;
-      // Must-have bonus rides on top of the blend, then the whole thing is clamped.
+      // Must-have bonus rides on top of the blend. So does the seniority-alignment
+      // adjustment (base-title bonus minus over-seniority penalty) — it floats the
+      // plain requested role above senior/specialist variants of it that the
+      // semantic axis, rewarding JD similarity, would otherwise let win. Then the
+      // whole thing is clamped.
       const mustHaveHits = matchMustHaves(e.job, mustHaves);
       const mustHaveBonus = Math.min(mustHaveHits.length * MUST_HAVE_BONUS_EACH, MUST_HAVE_BONUS_MAX);
-      const composite = Math.max(0, Math.min(100, blended + mustHaveBonus));
+      const align = seniorityAlignment(e.job.title, e.job.jd_text, input.criteria);
+      const composite = Math.max(0, Math.min(100, blended + mustHaveBonus + align.adjustment));
       return {
         ...e,
         r: {
@@ -726,6 +732,11 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
           hits: cheap.hits,
           must_have_hits: mustHaveHits,
           must_have_bonus: mustHaveBonus,
+          seniority_penalty: align.seniority_penalty,
+          base_title_bonus: align.base_title_bonus,
+          base_title_match: align.base_title_match,
+          asked_seniority_index: align.asked_index,
+          job_seniority_index: align.job_index,
           phase: semantic_score !== null ? ("fused" as const) : ("cheap-only" as const),
         },
       };
@@ -983,6 +994,14 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
           // mentions — shown on the card as the "matches what you asked for" chips.
           must_have_hits: r.must_have_hits,
           must_have_bonus: r.must_have_bonus,
+          // Seniority-alignment signal: how the base-title bonus and the
+          // over-seniority penalty moved this job (both 0 when it sits at the
+          // asked level and matches the plain requested title).
+          base_title_match: r.base_title_match,
+          base_title_bonus: r.base_title_bonus,
+          seniority_penalty: r.seniority_penalty,
+          asked_seniority_index: r.asked_seniority_index,
+          job_seniority_index: r.job_seniority_index,
           keyword_hits: r.hits,
           quality_reasons: j.quality_reasons,
           first_party: isAtsSource(j.source),

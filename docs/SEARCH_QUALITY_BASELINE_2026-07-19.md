@@ -136,7 +136,40 @@ not cover these sectors yet. (Indeed/LinkedIn/Google Jobs were NOT queried — n
 - **Bonus:** it is currently a bare `console.error` — the user gets a silent "no jobs". Surface it
   into `sourceWarnings` too (silent-failure rule).
 
-### 2. 🟠 HIGH — Ranking floats senior/specialist variants above the requested base role
+### 2. 🟠→✅ HIGH — Ranking floats senior/specialist variants above the requested base role — **FIXED 2026-07-19**
+
+> **✅ FIX LANDED (2026-07-19).** New `lib/job-search/seniority-align.ts` adds two pure, EXPLAINED
+> signals to the composite, applied post-blend at full strength (the same place the must-have bonus
+> rides — so the semantic axis can't dilute them):
+> 1. **Base-title bonus** — a job whose title (seniority words stripped) IS the requested base role
+>    gets **+10**; the base role plus a specialiser ("Senior Product Marketing Manager" for
+>    "Marketing Manager") gets **+4**.
+> 2. **Over-seniority penalty** — a job more senior than the asked level loses **−6 per level**
+>    (cap −18). The asked level is read from what the user ACTUALLY searched (the experience-level
+>    filter → keywords → least-senior target chip), so a search that IS for a senior/lead/director
+>    role penalises nothing at that level ("unless the user asked senior").
+>
+> Both reuse the SAME seniority classifier (`classify.ts`) and stemmer/seniority-markers
+> (`text.ts`/`title-match.ts`) the pipeline already classifies and filters with, so the ranking
+> seniority can never disagree with the one shown on the card. Surfaced in `ranking_explanation`
+> (`base_title_match`, `base_title_bonus`, `seniority_penalty`, asked/job seniority index).
+>
+> **Proof — SAME live corpus, ranking re-run before vs after (controls for live-data drift):**
+>
+> | # | Search | on-target BEFORE | on-target AFTER | what moved |
+> |---|---|---|---|---|
+> | 1 | Marketing Manager / London | **10%** (1/10), off 30% | **40%** (4/10), off **0%** | Spotify exact "Marketing Manager UK/IE" **#5 → #1**; the *Senior Procurement Category Manager - Marketing* and three *Senior Product Marketing Manager*s that held #1–#4 all sank below the plain title |
+> | 8 | Data Analyst / remote | 20% | 10%* | plain "Data Analyst" **#10 → #1**; Senior/Lead variants in the top-10 cut **5 → 2**, and **0** left in the top-3 |
+>
+> \* #8's headline on-target is a single-job flip and is **pinned by the still-open remote defect #3**,
+> not by seniority: the judge grades nearly every #8 result "loosely_related" purely for *not remote*,
+> and flipped its verdict on the *identical* Autotrader/Manchester job between the two runs. The
+> seniority REORDER is what the deterministic evidence above shows fired correctly. #8 will only clear
+> on the headline metric once #3 (enforce remote intent) lands.
+>
+> **Gate:** full 10-search suite re-run green (exit 0) — every search with kept>0 still shortlisted>0;
+> #3/#6/#9 stay populated (defect #1's salary-int fix intact). Re-run: `npx tsx scripts/audit-search-quality.ts`.
+
 - **Symptom:** on-target only ~12–20% even where supply is rich.
 - **Evidence:** "Marketing Manager" → *Senior Procurement Category Manager - Marketing* ranked #1,
   then three *Senior Product Marketing Manager*s. "Data Analyst" → Senior/Lead/Product Analyst

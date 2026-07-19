@@ -203,21 +203,39 @@ type Verdict = "on_target" | "loosely_related" | "off_target" | "unjudged";
 
 async function judgeRelevance(
   search: SearchDef,
-  results: Array<{ title: string; company: string; place: string | null; salary: string }>
+  results: Array<{ title: string; company: string; place: string | null; salary: string; working_model?: string }>
 ): Promise<Array<{ verdict: Verdict; reason: string }>> {
   if (!results.length) return [];
   const Anthropic = (await import("@anthropic-ai/sdk")).default;
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const isRemoteSearch = search.postcode === null;
   const list = results
-    .map((r, i) => `${i}. "${r.title}" @ ${r.company} — ${r.place ?? "location?"} — ${r.salary}`)
+    .map((r, i) => {
+      const wm = r.working_model && r.working_model !== "unknown" ? ` — working model: ${r.working_model}` : "";
+      return `${i}. "${r.title}" @ ${r.company} — ${r.place ?? "location?"} — ${r.salary}${wm}`;
+    })
     .join("\n");
   const sys =
     "You grade the RELEVANCE of job-search results to a user's intent. Be a strict but fair " +
     "UK recruiter. Return ONLY JSON.";
+  // For a REMOTE search the location the user cares about is the WORKING MODEL,
+  // not the office city. A role whose working model is "remote" satisfies a
+  // "Remote (UK)" search even when it lists a head-office town (that is the
+  // company HQ, not where the person must sit) — judging it "not remote" off the
+  // city alone is the exact confusion defect #3 was about, and it under-counts a
+  // correctly-enforced remote result. It must still be the right role + seniority.
+  const remoteNote = isRemoteSearch
+    ? `\nThis is a REMOTE search. A role whose stated working model is "remote" (or a UK ` +
+      `home-based / work-from-home role) is LOCATION-APPROPRIATE even if it also names a ` +
+      `head-office city — do NOT mark it off/loose for "not remote" when its working model ` +
+      `is remote. Grade it on role family + seniority. A role that is office/hybrid, or has ` +
+      `no remote signal, is a wrong-location result.\n`
+    : "";
   const prompt =
     `The user searched for the role "${search.keywords}" in "${search.place}".\n` +
-    `Their acceptable job titles are: ${search.target_titles.join(", ")}.\n\n` +
-    `Grade each result's relevance to that INTENT:\n` +
+    `Their acceptable job titles are: ${search.target_titles.join(", ")}.\n` +
+    remoteNote +
+    `\nGrade each result's relevance to that INTENT:\n` +
     `- "on_target": a job someone running this exact search would genuinely want — right role ` +
     `family AND a sensible seniority match AND plausibly the right place.\n` +
     `- "loosely_related": same broad field but wrong seniority/specialism, or an adjacent role.\n` +
@@ -347,10 +365,20 @@ async function main() {
 
   for (const s of toRun) {
     const t0 = Date.now();
+    // A search with no postcode is a REMOTE search (place = "Remote (UK)"). It
+    // must express remote intent the same way the editor does when the user picks
+    // the Remote chip: working_model.accepted = ["remote"]. Without this the search
+    // accepts all three models and is indistinguishable from "willing to relocate
+    // anywhere" — which is the exact ambiguity defect #3 is about, and why office
+    // roles UK-wide leaked in. Location-based searches keep the default (all three).
+    const isRemoteSearch = s.postcode === null;
     const criteria: any = {
       ...DEFAULT_CRITERIA,
       keywords: s.keywords,
       target_titles: s.target_titles,
+      working_model: isRemoteSearch
+        ? { ...DEFAULT_CRITERIA.working_model, accepted: ["remote"] }
+        : DEFAULT_CRITERIA.working_model,
       location: {
         ...DEFAULT_CRITERIA.location,
         postcode: s.postcode,
@@ -376,7 +404,7 @@ async function main() {
     const { data: rows } = await supabase
       .from("job_shortlist")
       .select("composite_rank, match_to_user_score, match_to_search_score, ranking_explanation, " +
-        "job_postings(source, source_url, company, title, place_name, country_code, salary_min, salary_max, salary_listed, is_remote, location_raw)")
+        "job_postings(source, source_url, company, title, place_name, country_code, salary_min, salary_max, salary_listed, is_remote, working_model, location_raw)")
       .eq("search_id", searchId)
       .order("composite_rank", { ascending: false })
       .limit(TOP_N);
@@ -399,6 +427,10 @@ async function main() {
         : true; // nationwide / remote search: distance not applicable
       const ukOk = jp.country_code == null || jp.country_code === "GB";
       const locationCorrect = ukOk && withinRadius;
+      // Remote-intent evidence (defect #3): the job's stored working model, plus
+      // whether the pipeline confirmed it remote (ranking_explanation.remote_*).
+      const workingModel = (jp.working_model ?? "unknown") as string;
+      const remoteConfirmed = re.remote_confirmed === true || jp.is_remote === true || workingModel === "remote";
       return {
         rank: r.composite_rank,
         source, firstParty, recruiter, semanticFired,
@@ -406,6 +438,8 @@ async function main() {
         title: jp.title as string,
         place: (jp.place_name ?? jp.location_raw) as string | null,
         country_code: jp.country_code as string | null,
+        working_model: workingModel,
+        remoteConfirmed,
         distance_miles: typeof re.distance_miles === "number" ? re.distance_miles : null,
         salary_listed: (jp.salary_min ?? 0) > 0 || (jp.salary_max ?? 0) > 0,
         salary: salaryStr(jp.salary_min, jp.salary_max, !!jp.salary_listed),
@@ -431,7 +465,7 @@ async function main() {
 
     // Relevance judge.
     const verdicts = doJudge
-      ? await judgeRelevance(s, results.map((r) => ({ title: r.title, company: r.company, place: r.place, salary: r.salary })))
+      ? await judgeRelevance(s, results.map((r) => ({ title: r.title, company: r.company, place: r.place, salary: r.salary, working_model: r.working_model })))
       : results.map(() => ({ verdict: "unjudged" as Verdict, reason: "" }));
     results.forEach((r, i) => ((r as any).relevance = verdicts[i]?.verdict, (r as any).relevance_reason = verdicts[i]?.reason));
 
@@ -448,12 +482,16 @@ async function main() {
     const fp = results.filter((r: any) => r.firstParty).length;
     const sem = results.filter((r: any) => r.semanticFired).length;
     const salListed = results.filter((r: any) => r.salary_listed).length;
+    // Remote-intent proof (defect #3): on a remote search this should be ~100%;
+    // on a location search it is not meaningful (not enforced) — reported anyway.
+    const remoteConfirmed = results.filter((r: any) => r.remoteConfirmed).length;
 
     const metrics = {
       n,
       relevance_on_target_pct: pct(onTarget, n),
       relevance_on_or_loose_pct: pct(onTarget + loose, n),
       off_target_pct: pct(off, n),
+      remote_confirmed_pct: pct(remoteConfirmed, n),
       bullshit_rate_pct: pct(bullshit, n),
       recruiter_pct: pct(rec, n),
       dead_link_pct: pct(dead, n),
@@ -475,9 +513,9 @@ async function main() {
       regressions.push(msg);
     }
     console.log(`   selection loss: ${JSON.stringify(runRow?.filter_drops)}`);
-    console.log(`   RESULT (top ${n}): on=${onTarget} loose=${loose} off=${off} | bullshit=${bullshit} (rec=${rec} dead=${dead} dup=${dup} wrongLoc=${wrongLoc}) | 1stParty=${fp} semantic=${sem} salary=${salListed}`);
+    console.log(`   RESULT (top ${n}): on=${onTarget} loose=${loose} off=${off} | bullshit=${bullshit} (rec=${rec} dead=${dead} dup=${dup} wrongLoc=${wrongLoc}) | 1stParty=${fp} semantic=${sem} salary=${salListed} remote=${remoteConfirmed}`);
     results.forEach((r: any, i) => {
-      const flags = [r.firstParty ? "ATS" : r.source, r.recruiter ? "REC" : "", r.semanticFired ? "sem" : "", r.liveness !== "live" ? r.liveness.toUpperCase() : "", r.duplicate ? "DUP" : "", !r.locationCorrect ? "WRONGLOC" : ""].filter(Boolean).join(",");
+      const flags = [r.firstParty ? "ATS" : r.source, r.recruiter ? "REC" : "", r.semanticFired ? "sem" : "", `wm:${r.working_model === "unknown" ? "?" : r.working_model}`, r.remoteConfirmed ? "REMOTE" : "", r.liveness !== "live" ? r.liveness.toUpperCase() : "", r.duplicate ? "DUP" : "", !r.locationCorrect ? "WRONGLOC" : ""].filter(Boolean).join(",");
       console.log(`      ${String(i + 1).padStart(2)}. [${r.relevance}] "${r.title}" @ ${r.company} — ${r.place ?? "?"} — ${r.salary}  {${flags}}  ${r.relevance_reason ? "// " + r.relevance_reason : ""}`);
     });
     console.log();
@@ -531,6 +569,7 @@ async function main() {
   console.log(`  relevance on-target:      ${agg("relevance_on_target_pct")}%`);
   console.log(`  relevance on+loose:       ${agg("relevance_on_or_loose_pct")}%`);
   console.log(`  off-target:               ${agg("off_target_pct")}%`);
+  console.log(`  remote-confirmed:         ${agg("remote_confirmed_pct")}%   (remote searches only — enforced)`);
   console.log(`  BULLSHIT rate:            ${agg("bullshit_rate_pct")}%   (recruiter+dead+dup+wrongLoc)`);
   console.log(`    - recruiter:            ${agg("recruiter_pct")}%`);
   console.log(`    - dead link:            ${agg("dead_link_pct")}%`);
@@ -549,6 +588,7 @@ async function main() {
       relevance_on_target_pct: agg("relevance_on_target_pct"),
       relevance_on_or_loose_pct: agg("relevance_on_or_loose_pct"),
       off_target_pct: agg("off_target_pct"),
+      remote_confirmed_pct: agg("remote_confirmed_pct"),
       bullshit_rate_pct: agg("bullshit_rate_pct"),
       recruiter_pct: agg("recruiter_pct"),
       dead_link_pct: agg("dead_link_pct"),

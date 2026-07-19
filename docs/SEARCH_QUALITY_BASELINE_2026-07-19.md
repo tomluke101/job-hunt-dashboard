@@ -180,11 +180,50 @@ not cover these sectors yet. (Indeed/LinkedIn/Google Jobs were NOT queried — n
 - **Fix direction:** a seniority-alignment signal (penalise seniority above the asked level unless
   the user asked senior) + a base-title exact/near-exact bonus.
 
-### 3. 🟠 HIGH — "Remote" search intent is not enforced
+### 3. 🟠→✅ HIGH — "Remote" search intent is not enforced — **FIXED 2026-07-19**
+
+> **✅ FIX LANDED (2026-07-19).** New `lib/job-search/remote-align.ts` adds a remote-intent detector
+> and enforcement, wired into `pipeline.ts`:
+> 1. **Intent** — `wantsRemote()` is TRUE only when the search accepts remote AND has de-selected
+>    office (what the editor writes when the user picks the Remote chip). The default all-three search
+>    is untouched, so every location search is a provable no-op.
+> 2. **Hard filter** — the leak was NOT the working-model filter (it already drops KNOWN office/hybrid
+>    roles); it was the `include_unknown` pass. A town-anchored office role whose JD never literally
+>    says "office-based" classifies as `working_model: "unknown"` and sailed straight through. On a
+>    remote search an unknown-model job now keeps that pass ONLY if it is positively remote
+>    (`isRemoteEligible`: geo `is_remote`, JD-derived remote model, provider flag, or a remote token —
+>    and never `is_foreign`). Foreign roles are also dropped explicitly (nationwide searches skip the
+>    distance block where the foreign drop normally lives). Counted as a new `remote_intent` drop.
+> 3. **Rank** — `remoteAlignment` floats a confirmed-remote job above a same-composite ambiguous one
+>    (bonus 10, peer of the base-title bonus). Surfaced in `ranking_explanation` (`remote_intent`,
+>    `remote_confirmed`, `remote_bonus`).
+>
+> The audit's two remote searches now express remote intent the way a real user does
+> (`working_model.accepted = ["remote"]`), and the relevance judge is fed the job's working model so a
+> confirmed-remote role listing a head-office city is no longer mis-graded "not remote" (the exact
+> confusion this defect was about — it was under-counting correctly-enforced results).
+>
+> **Proof — same live corpus, before vs after:**
+>
+> | # | Search | on-target BEFORE | on-target AFTER | remote-confirmed | office roles dropped |
+> |---|---|---|---|---|---|
+> | 4 | Head of Finance / remote | **0%** | **29%** (2/7) | 0% → **100%** | `remote_intent` = 49 |
+> | 8 | Data Analyst / remote | 10%* | **33%** (2/6) | ~10% → **100%** | `remote_intent` = 77 |
+>
+> Every surfaced result on both searches is now positively remote; the remaining off-targets are
+> GENUINE (a Debt-Finance specialism, a no-experience placement programme, a £23k outsourced role) —
+> not location artifacts. \* #8's headline was previously pinned by this very defect (per #2's note).
+>
+> **Gate:** full 10-search suite re-run green (exit 0). All 7 location searches show `remote_intent: 0`
+> (enforcement is a no-op for them) and their kept→shortlisted counts are unchanged
+> (#3/#6/#9 still 22/38/54 → 10 — defect #1 intact). Re-run: `npx tsx scripts/audit-search-quality.ts`.
+
 - **Symptom:** remote searches surface office roles scattered across the UK; on-target=0 for Head of
   Finance/remote.
 - **Cause:** a "remote" search runs `filter_mode: anywhere` (no distance filter) but does **not**
-  constrain `working_model` to remote — so office-based roles everywhere pass.
+  constrain `working_model` to remote — so office-based roles everywhere pass. Precisely: the KNOWN
+  office roles were already dropped; the ones leaking through were classified `unknown` and rescued by
+  `include_unknown`.
 - **Fix direction:** when the user picks remote, either hard-filter or strongly rank
   `working_model = remote`; make the criterion explicit in the editor.
 

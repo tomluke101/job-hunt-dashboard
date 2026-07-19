@@ -33,6 +33,7 @@ import { detectRecruiter } from "@/lib/enrichment/recruiter-detect";
 import { buildTargets, titleRelevantAny, type TargetTitle } from "./title-match";
 import { classifyJob } from "./classify";
 import { seniorityAlignment } from "./seniority-align";
+import { wantsRemote, isRemoteEligible, remoteAlignment } from "./remote-align";
 import { canonicalKey, dedupeByCanonicalKey } from "./canonical";
 import { parseSalaryFromText } from "./salary-parse";
 import { atsColumnsAvailable, embeddingColumnsAvailable } from "./schema-guard";
@@ -411,6 +412,12 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     company_size: 0, recruiter: 0,
     pruned_stale: 0,
     title_irrelevant: 0,
+    // Remote-intent enforcement (defect #3). A "remote" search that de-selected
+    // office drops a town-anchored role that only classified as "unknown" because
+    // its JD never literally said "office-based" — the include_unknown loophole
+    // the working_model filter alone can't see. Counted separately so the user can
+    // SEE how many office roles the remote filter removed.
+    remote_intent: 0,
     // The three classified dimensions. Counted separately so a user who ticks
     // "Contract" and gets three results can SEE that job_type dropped 140 — rather
     // than concluding the product has no jobs.
@@ -601,6 +608,9 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
   const now = Date.now();
   const acceptedWM = new Set<FilterableWorkingModel>(input.criteria.working_model.accepted);
   const includeUnknownWM = input.criteria.working_model.include_unknown;
+  // Remote intent: the user accepts remote AND has de-selected office. Off for the
+  // default (all-three) search, so a plain distance search is untouched.
+  const wantsRemoteIntent = wantsRemote(input.criteria);
   const excludes = input.criteria.industries_exclude.map((s) => s.toLowerCase());
 
   for (const entry of deduped) {
@@ -649,6 +659,15 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       }
     }
 
+    // A remote-intent search is nationwide, so the distance block above (which is
+    // where the foreign drop lives) is skipped entirely. But "remote" is still a
+    // UK search — a positively non-UK role (an Apeldoorn HQ, a "Remote (US)" post)
+    // is a wrong answer no matter its working model. Drop it explicitly here.
+    if (wantsRemoteIntent && loc?.is_foreign) {
+      filterDrops.location_foreign++;
+      continue;
+    }
+
     if (input.criteria.salary.floor && j.salary_max !== null && j.salary_max < input.criteria.salary.floor) {
       filterDrops.salary_floor++;
       continue;
@@ -658,6 +677,16 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       continue;
     }
     if (j.working_model === "unknown") {
+      // Remote-intent enforcement (defect #3). A KNOWN office/hybrid job is
+      // already dropped by the accepted set below; the leak is the "unknown"
+      // bucket — a town-anchored office role whose JD never literally says
+      // "office-based". For a remote search it keeps its include_unknown pass ONLY
+      // if something positively marks it remote; otherwise it is an office role in
+      // disguise and must go, or a "remote" search fills with office jobs UK-wide.
+      if (wantsRemoteIntent && !isRemoteEligible(j, loc)) {
+        filterDrops.remote_intent++;
+        continue;
+      }
       if (!includeUnknownWM) {
         filterDrops.working_model++;
         continue;
@@ -718,7 +747,15 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       const mustHaveHits = matchMustHaves(e.job, mustHaves);
       const mustHaveBonus = Math.min(mustHaveHits.length * MUST_HAVE_BONUS_EACH, MUST_HAVE_BONUS_MAX);
       const align = seniorityAlignment(e.job.title, e.job.jd_text, input.criteria);
-      const composite = Math.max(0, Math.min(100, blended + mustHaveBonus + align.adjustment));
+      // Remote-intent bonus: on a remote search, float a confirmed-remote job
+      // above a same-composite hybrid / merely-ambiguous one. Zero on every other
+      // search. (The office roles it would otherwise outrank are already gone —
+      // dropped by the hard filter above.)
+      const remote = remoteAlignment(e.job, e.loc, input.criteria);
+      const composite = Math.max(
+        0,
+        Math.min(100, blended + mustHaveBonus + align.adjustment + remote.adjustment)
+      );
       return {
         ...e,
         r: {
@@ -737,6 +774,9 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
           base_title_match: align.base_title_match,
           asked_seniority_index: align.asked_index,
           job_seniority_index: align.job_index,
+          remote_intent: remote.wants,
+          remote_confirmed: remote.confirmed,
+          remote_bonus: remote.remote_bonus,
           phase: semantic_score !== null ? ("fused" as const) : ("cheap-only" as const),
         },
       };
@@ -1002,6 +1042,12 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
           seniority_penalty: r.seniority_penalty,
           asked_seniority_index: r.asked_seniority_index,
           job_seniority_index: r.job_seniority_index,
+          // Remote-intent signal: whether the search asked for remote, whether this
+          // job is positively remote, and the bonus that floated it (all 0/false on
+          // a non-remote search).
+          remote_intent: r.remote_intent,
+          remote_confirmed: r.remote_confirmed,
+          remote_bonus: r.remote_bonus,
           keyword_hits: r.hits,
           quality_reasons: j.quality_reasons,
           first_party: isAtsSource(j.source),

@@ -715,12 +715,17 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
 
   const semanticScored = ranked.filter((e) => e.r.semantic_score !== null).length;
 
-  // ---- Companies House enrichment (best-effort, budget-capped) ----
+  // ---- Companies House enrichment — CACHE-ONLY in the hot path ----
+  // A fresh CH lookup is 3-6s each and used to block the run for up to 45s. Those
+  // fresh lookups now run in the post-response after() sweep (postRunEnrichmentSweep
+  // in searches.ts), which warms the cache so the NEXT run's size/recruiter filters
+  // see more companies. This run applies whatever enrichment is ALREADY cached — a
+  // single fast lookup, no CH round-trips on the critical path.
   const ENRICH_POOL_MAX = 50;
   const enrichPoolLen = Math.min(ENRICH_POOL_MAX, ranked.length);
   const enrichPool = ranked.slice(0, enrichPoolLen);
   const uniqueCompanies = Array.from(new Set(enrichPool.map((e) => e.job.company).filter(Boolean)));
-  const enrichmentResult = await enrichBatch(uniqueCompanies, 45_000);
+  const enrichmentResult = await enrichBatch(uniqueCompanies, 0, { cacheOnly: true });
   const enrichmentByNorm = enrichmentResult.byNormalisedName;
 
   // ---- Upsert postings + shortlist ----
@@ -751,10 +756,32 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
   };
 
   const keptPostingIds = new Set<string>();
-  let shortlisted = 0;
 
-  for (let i = 0; i < ranked.length && shortlisted < input.jobsPerRun; i++) {
+  // ---- Selection pass (pure, no I/O) ----
+  // Classify + filter every ranked job in memory, collecting a posting row for
+  // each job we examine and a shortlist payload for each that survives. The DB
+  // writes are BATCHED after this loop: the old code did two awaited round-trips
+  // PER job (a posting upsert then a shortlist insert/update), which was a big
+  // slice of the 30-50s a run took. Selection stops once jobsPerRun jobs pass.
+  const selected: Array<{
+    srcKey: string;
+    postingRow: Record<string, unknown>;
+    rankingPayload: Record<string, unknown> | null;
+  }> = [];
+  const seenSrcKeys = new Set<string>();
+  let passedFilter = 0;
+
+  for (let i = 0; i < ranked.length && passedFilter < input.jobsPerRun; i++) {
     const { job: j, loc, key, also_seen_on, r } = ranked[i];
+
+    // A duplicate (source, source_id) inside one batch upsert makes Postgres
+    // ON CONFLICT fail the WHOLE statement ("cannot affect row a second time"),
+    // which would empty the run. Dedupe defensively, keeping the higher-ranked
+    // one. (Upstream dedupe should already guarantee uniqueness here.)
+    const srcKey = `${j.source} ${j.source_id}`;
+    if (seenSrcKeys.has(srcKey)) continue;
+    seenSrcKeys.add(srcKey);
+
     const normalisedCompany = normaliseCompanyName(j.company);
     const enrichment = normalisedCompany ? enrichmentByNorm.get(normalisedCompany) : null;
 
@@ -879,106 +906,135 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     // The corpus columns only exist once supabase-ats-schema.sql has been applied.
     // Sending them to a database that lacks them makes PostgREST reject EVERY
     // upsert, which would empty every search on this deploy. Degrade instead.
-    const upsert = await supabase
+    const postingRow: Record<string, unknown> = hasAtsColumns
+      ? {
+          ...legacyColumns,
+          canonical_key: key,
+          also_seen_on,
+          lat: place?.lat ?? null,
+          lng: place?.lng ?? null,
+          place_name: place?.name ?? null,
+          country_code: place?.country ?? null,
+          is_remote: loc?.is_remote ?? null,
+          geo_resolved: !!place,
+          // Classified, not copied — identically to the ATS ingest path.
+          // Reed and Adzuna supply NO seniority and NO function at all, so
+          // without this every aggregator job is "unknown" on all three
+          // dimensions and any filter the user touches silently deletes them.
+          department: j.department ?? null,
+          employment_type: cls.employment_type,
+          seniority_hint: cls.seniority,
+          job_function: cls.job_function,
+        }
+      : legacyColumns;
+
+    // Shortlist payload only for survivors; a filtered-out job still gets its
+    // posting upserted below (keeps the corpus fresh) but no shortlist row.
+    let rankingPayload: Record<string, unknown> | null = null;
+    if (passesFilter) {
+      const distance = origin && loc ? distanceMiles(origin, loc) : null;
+      rankingPayload = {
+        quality_score: r.quality,
+        match_to_search_score: r.match_to_search,
+        // The semantic score IS the match-to-you axis: how close the JD sits to the
+        // user's own description in embedding space. Populating the existing column
+        // lights up the axis tile the UI already renders. Null when unscored.
+        match_to_user_score: r.semantic_score,
+        composite_rank: r.composite,
+        ranking_explanation: {
+          phase: r.phase,
+          match_to_search: r.match_to_search,
+          quality: r.quality,
+          salary_fit: r.salary_fit,
+          // The semantic axis. cheap_composite is the pre-blend heuristic score, kept
+          // so the panel can show exactly what the embedding match moved.
+          semantic_score: r.semantic_score,
+          semantic_similarity: r.semantic_similarity,
+          cheap_composite: r.cheap_composite,
+          semantic_weight: r.semantic_score !== null ? SEMANTIC_WEIGHT : 0,
+          // What the user said they wanted ("training programme") that this JD actually
+          // mentions — shown on the card as the "matches what you asked for" chips.
+          must_have_hits: r.must_have_hits,
+          must_have_bonus: r.must_have_bonus,
+          keyword_hits: r.hits,
+          quality_reasons: j.quality_reasons,
+          first_party: isAtsSource(j.source),
+          also_seen_on,
+          distance_miles: distance !== null ? Math.round(distance) : null,
+          place: place?.name ?? null,
+          rank_position: i + 1,
+          of: ranked.length,
+        },
+      };
+      passedFilter++;
+    }
+
+    selected.push({ srcKey, postingRow, rankingPayload });
+  }
+
+  // ---- Batch upsert postings (one round-trip instead of one per job) ----
+  // .select() returns both inserted and updated rows; map them back to the jobs
+  // by their (source, source_id) natural key so the shortlist rows below can
+  // attach posting_ids. A whole-batch failure logs and leaves postingIdByKey
+  // empty, so nothing gets shortlisted rather than half-writing a run.
+  const postingIdByKey = new Map<string, string>();
+  if (selected.length) {
+    const { data: upserted, error: upErr } = await supabase
       .from("job_postings")
       .upsert(
-        hasAtsColumns
-          ? {
-              ...legacyColumns,
-              canonical_key: key,
-              also_seen_on,
-              lat: place?.lat ?? null,
-              lng: place?.lng ?? null,
-              place_name: place?.name ?? null,
-              country_code: place?.country ?? null,
-              is_remote: loc?.is_remote ?? null,
-              geo_resolved: !!place,
-              // Classified, not copied — identically to the ATS ingest path.
-              // Reed and Adzuna supply NO seniority and NO function at all, so
-              // without this every aggregator job is "unknown" on all three
-              // dimensions and any filter the user touches silently deletes them.
-              department: j.department ?? null,
-              employment_type: cls.employment_type,
-              seniority_hint: cls.seniority,
-              job_function: cls.job_function,
-            }
-          : legacyColumns,
+        selected.map((s) => s.postingRow),
         { onConflict: "source,source_id" }
       )
-      .select("id")
-      .single();
-    if (upsert.error || !upsert.data) {
-      console.error("[runSearch] posting upsert failed", upsert.error);
-      continue;
-    }
-    const posting_id = upsert.data.id;
-    if (!passesFilter) continue;
-
-    const distance = origin && loc ? distanceMiles(origin, loc) : null;
-
-    const rankingPayload = {
-      quality_score: r.quality,
-      match_to_search_score: r.match_to_search,
-      // The semantic score IS the match-to-you axis: how close the JD sits to the
-      // user's own description in embedding space. Populating the existing column
-      // lights up the axis tile the UI already renders. Null when unscored.
-      match_to_user_score: r.semantic_score,
-      composite_rank: r.composite,
-      ranking_explanation: {
-        phase: r.phase,
-        match_to_search: r.match_to_search,
-        quality: r.quality,
-        salary_fit: r.salary_fit,
-        // The semantic axis. cheap_composite is the pre-blend heuristic score, kept
-        // so the panel can show exactly what the embedding match moved.
-        semantic_score: r.semantic_score,
-        semantic_similarity: r.semantic_similarity,
-        cheap_composite: r.cheap_composite,
-        semantic_weight: r.semantic_score !== null ? SEMANTIC_WEIGHT : 0,
-        // What the user said they wanted ("training programme") that this JD actually
-        // mentions — shown on the card as the "matches what you asked for" chips.
-        must_have_hits: r.must_have_hits,
-        must_have_bonus: r.must_have_bonus,
-        keyword_hits: r.hits,
-        quality_reasons: j.quality_reasons,
-        first_party: isAtsSource(j.source),
-        also_seen_on,
-        distance_miles: distance !== null ? Math.round(distance) : null,
-        place: place?.name ?? null,
-        rank_position: i + 1,
-        of: ranked.length,
-      },
-    } as const;
-
-    const existing = existingByPosting.get(posting_id);
-    if (existing) {
-      const short = await supabase.from("job_shortlist").update(rankingPayload).eq("id", existing.id);
-      if (short.error) console.error("[runSearch] shortlist update failed", short.error);
-      else {
-        shortlisted++;
-        keptPostingIds.add(posting_id);
-      }
+      .select("id, source, source_id");
+    if (upErr) {
+      console.error("[runSearch] batch posting upsert failed", upErr);
     } else {
-      const short = await supabase
-        .from("job_shortlist")
-        .insert({
-          user_id: input.userId,
-          search_id: input.searchId,
-          posting_id,
-          state: "new",
-          ...rankingPayload,
-        })
-        .select("id");
-      if (short.error) console.error("[runSearch] shortlist insert failed", short.error);
-      else {
-        shortlisted++;
-        keptPostingIds.add(posting_id);
+      for (const row of upserted ?? []) {
+        postingIdByKey.set(`${row.source} ${row.source_id}`, row.id as string);
       }
     }
   }
 
-  // Prune undecided leftovers that no longer match the current criteria.
-  {
+  // ---- Batch upsert shortlist (one round-trip instead of one per job) ----
+  // job_shortlist has unique(user_id, search_id, posting_id), so a single upsert
+  // covers both fresh inserts and re-ranks of existing rows. For an existing row
+  // we send its CURRENT state, so a decided job (interested / applied / …) is
+  // never reset to "new" — only the ranking columns move. Columns we don't send
+  // (seen_at, reject_reason, jd_fit_summary, …) are left untouched on conflict.
+  let shortlisted = 0;
+  let shortlistWriteOk = true;
+  const shortlistRows: Record<string, unknown>[] = [];
+  for (const s of selected) {
+    if (!s.rankingPayload) continue;
+    const posting_id = postingIdByKey.get(s.srcKey);
+    if (!posting_id) continue; // its posting upsert didn't come back — skip
+    const existing = existingByPosting.get(posting_id);
+    shortlistRows.push({
+      user_id: input.userId,
+      search_id: input.searchId,
+      posting_id,
+      state: existing ? existing.state : "new",
+      ...s.rankingPayload,
+    });
+    keptPostingIds.add(posting_id);
+  }
+  if (shortlistRows.length) {
+    const { data: written, error: slErr } = await supabase
+      .from("job_shortlist")
+      .upsert(shortlistRows, { onConflict: "user_id,search_id,posting_id" })
+      .select("id");
+    if (slErr) {
+      console.error("[runSearch] batch shortlist upsert failed", slErr);
+      shortlistWriteOk = false;
+    } else {
+      shortlisted = written?.length ?? shortlistRows.length;
+    }
+  }
+
+  // Prune undecided leftovers that no longer match the current criteria — ONLY
+  // when the shortlist write above succeeded, so a transient write failure can
+  // never delete the user's existing shortlist.
+  if (shortlistWriteOk) {
     const toPrune: string[] = [];
     for (const [postingId, row] of existingByPosting) {
       if (DECIDED_STATES.includes(row.state as (typeof DECIDED_STATES)[number])) continue;

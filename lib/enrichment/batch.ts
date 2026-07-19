@@ -24,10 +24,11 @@ export interface EnrichBatchStats {
   requested: number;      // unique normalised names in input
   cache_hits: number;     // rows served from Phase 1 lookup
   fresh_enriched: number; // rows enriched from CH in Phase 2
-  deferred: number;       // rows we ran out of budget before enriching
+  deferred: number;       // cache misses left for the background sweep (budget / cacheOnly)
   budget_ms: number;
   elapsed_ms: number;
   processed: number;      // cache_hits + fresh_enriched (for backwards compat)
+  cache_only?: boolean;   // true when Phase 2 (fresh CH work) was skipped entirely
 }
 
 export interface EnrichBatchResult {
@@ -44,8 +45,13 @@ function isFreshCachedRow(row: Pick<EnrichmentRow, "last_refreshed_at" | "enrich
 
 export async function enrichBatch(
   rawNames: string[],
-  budgetMs = 45_000
+  budgetMs = 45_000,
+  opts?: { cacheOnly?: boolean }
 ): Promise<EnrichBatchResult> {
+  // cacheOnly: serve only what's already cached (Phase 1) and skip every fresh
+  // CH lookup (Phase 2). The hot search path uses this so a run never blocks on
+  // 3-6s-per-company enrichment; the post-response sweep does the fresh work.
+  const cacheOnly = opts?.cacheOnly === true;
   const startedAt = Date.now();
   const byNorm = new Map<string, EnrichmentRow>();
 
@@ -63,7 +69,7 @@ export async function enrichBatch(
       stats: {
         requested: 0, cache_hits: 0, fresh_enriched: 0, deferred: 0,
         budget_ms: budgetMs, elapsed_ms: Date.now() - startedAt,
-        processed: 0,
+        processed: 0, cache_only: cacheOnly,
       },
     };
   }
@@ -89,18 +95,21 @@ export async function enrichBatch(
   }
 
   // PHASE 2 — serial CH-backed enrichment for the remaining names.
-  // Budget-capped: cache misses are the slow work.
+  // Budget-capped: cache misses are the slow work. Skipped entirely in cacheOnly
+  // mode (the hot path), where these misses are left for the background sweep.
   let freshEnriched = 0;
-  for (const [, raw] of uniqueNames) {
-    if (Date.now() - startedAt > budgetMs) break;
-    try {
-      const row = await enrichCompany(raw);
-      if (row) {
-        byNorm.set(row.normalised_name, row);
-        freshEnriched++;
+  if (!cacheOnly) {
+    for (const [, raw] of uniqueNames) {
+      if (Date.now() - startedAt > budgetMs) break;
+      try {
+        const row = await enrichCompany(raw);
+        if (row) {
+          byNorm.set(row.normalised_name, row);
+          freshEnriched++;
+        }
+      } catch (err) {
+        console.error("[enrichBatch] enrichCompany threw", err);
       }
-    } catch (err) {
-      console.error("[enrichBatch] enrichCompany threw", err);
     }
   }
 
@@ -115,6 +124,7 @@ export async function enrichBatch(
       budget_ms: budgetMs,
       elapsed_ms: Date.now() - startedAt,
       processed,
+      cache_only: cacheOnly,
     },
   };
 }

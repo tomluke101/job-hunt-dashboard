@@ -10,6 +10,7 @@ import {
   Loader2,
   Sparkles,
   AlertCircle,
+  AlertTriangle,
 } from "lucide-react";
 import {
   createSearch,
@@ -409,6 +410,11 @@ function RunSummary({ runs }: { runs: RunRecord[] }) {
   const sources = latest.source_counts ?? {};
   const drops = (latest.filter_drops ?? {}) as Record<string, number>;
   const dedupe = (latest.dedupe_stats ?? {}) as Record<string, unknown>;
+  // Warnings the pipeline recorded but nothing ever showed: a postcode that
+  // wouldn't resolve (distance filter silently OFF), a source that returned zero
+  // or failed, an empty ATS corpus. These are exactly the silent failures this
+  // product keeps getting bitten by, so they render loudly, not behind "details".
+  const warnings = Array.isArray(dedupe.warnings) ? (dedupe.warnings as string[]) : [];
   const dropSum = Object.values(drops).reduce((a, b) => a + (b ?? 0), 0);
   const sourceStr = Object.entries(sources).map(([k, v]) => `${k}: ${v}`).join(", ") || "—";
 
@@ -453,6 +459,21 @@ function RunSummary({ runs }: { runs: RunRecord[] }) {
         {" "}
         <span className="text-slate-400 underline decoration-dotted">{expanded ? "hide" : "details"}</span>
       </button>
+      {warnings.length > 0 && (
+        <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
+          <div className="flex items-center gap-1.5 text-amber-800">
+            <AlertTriangle size={13} className="shrink-0" />
+            <p className="text-[10px] font-semibold uppercase tracking-wider">
+              {warnings.length === 1 ? "Warning — results may be affected" : `${warnings.length} warnings — results may be affected`}
+            </p>
+          </div>
+          <ul className="mt-1.5 space-y-1 text-xs text-amber-700 list-disc list-inside">
+            {warnings.map((w, idx) => (
+              <li key={idx}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {expanded && (
         <div className="mt-2 bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
           {target && (

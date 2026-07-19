@@ -273,6 +273,21 @@ function recruiterPenalty(company: string, source: SourceType): number {
   return detectRecruiter(null, company).is_recruiter ? -12 : 0;
 }
 
+/**
+ * Coerce a value bound for an INTEGER database column to a rounded integer (null
+ * and non-finite pass through as null). Postgres rejects a fractional value for an
+ * `integer` column with `22P02 invalid input syntax for type integer`; because the
+ * posting and shortlist writes are BATCHED, ONE such row fails the WHOLE upsert
+ * atomically — so a single fractional salary empties an entire search, silently,
+ * behind a bare console.error. Adzuna ships fractional salaries (18.77, 52771.9,
+ * 14.11) straight from its API. This is the one guard at the write boundary that
+ * keeps any source's floats out of every integer column, now and for whatever
+ * source is added next.
+ */
+function toIntColumn(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? Math.round(v) : null;
+}
+
 function cheapRankScore(
   j: NormalisedJob,
   criteria: SearchCriteria,
@@ -891,9 +906,13 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       title: j.title,
       location_raw: j.location_raw,
       working_model: j.working_model,
-      hybrid_days_office: j.hybrid_days_office,
-      salary_min,
-      salary_max,
+      // Integer columns — round at the boundary (see toIntColumn). salary_min/max
+      // are the known crash (Adzuna floats); hybrid_days_office/quality_score are
+      // integer by construction today but rounded here too so no future source can
+      // reintroduce the atomic-batch failure.
+      hybrid_days_office: toIntColumn(j.hybrid_days_office),
+      salary_min: toIntColumn(salary_min),
+      salary_max: toIntColumn(salary_max),
       salary_currency: j.salary_currency,
       salary_listed,
       jd_text: j.jd_text,
@@ -901,7 +920,7 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       posted_at: j.posted_at,
       expires_at: j.expires_at,
       dedupe_hash: j.dedupe_hash,
-      quality_score: j.quality_score,
+      quality_score: toIntColumn(j.quality_score),
       normalised_company_name: normalisedCompany || null,
       enrichment_id: enrichment?.id ?? null,
       last_seen_at: new Date().toISOString(),
@@ -937,14 +956,18 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     let rankingPayload: Record<string, unknown> | null = null;
     if (passesFilter) {
       const distance = origin && loc ? distanceMiles(origin, loc) : null;
+      // job_shortlist's score columns are also `integer`; round them at the boundary
+      // for the same reason as the posting row. These are Math.round'd upstream today,
+      // but quality_score rides j.quality_score (same origin as the posting) so the
+      // guard closes the identical crash on the shortlist batch too.
       rankingPayload = {
-        quality_score: r.quality,
-        match_to_search_score: r.match_to_search,
+        quality_score: toIntColumn(r.quality),
+        match_to_search_score: toIntColumn(r.match_to_search),
         // The semantic score IS the match-to-you axis: how close the JD sits to the
         // user's own description in embedding space. Populating the existing column
         // lights up the axis tile the UI already renders. Null when unscored.
-        match_to_user_score: r.semantic_score,
-        composite_rank: r.composite,
+        match_to_user_score: toIntColumn(r.semantic_score),
+        composite_rank: toIntColumn(r.composite),
         ranking_explanation: {
           phase: r.phase,
           match_to_search: r.match_to_search,
@@ -992,6 +1015,13 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
       .select("id, source, source_id");
     if (upErr) {
       console.error("[runSearch] batch posting upsert failed", upErr);
+      // Silent-failure rule: a failed batch write leaves postingIdByKey empty, so
+      // NOTHING is shortlisted and the user sees an unexplained "no jobs". Say so.
+      sourceWarnings.push(
+        `could not save jobs to the database — no results were stored for this run: ${String(
+          (upErr as { message?: string }).message ?? upErr
+        ).slice(0, 140)}`
+      );
     } else {
       for (const row of upserted ?? []) {
         postingIdByKey.set(`${row.source} ${row.source_id}`, row.id as string);
@@ -1030,9 +1060,28 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     if (slErr) {
       console.error("[runSearch] batch shortlist upsert failed", slErr);
       shortlistWriteOk = false;
+      sourceWarnings.push(
+        `could not save your shortlist for this run: ${String(
+          (slErr as { message?: string }).message ?? slErr
+        ).slice(0, 140)}`
+      );
     } else {
       shortlisted = written?.length ?? shortlistRows.length;
     }
+  }
+
+  // Regression guard for the salary-crash bug CLASS: jobs passed every filter but
+  // none reached the shortlist ⇒ a batch write silently ate the run (the exact
+  // signature of the fractional-salary crash). Never let that surface to the user
+  // as an unexplained empty result — say it out loud. Invariant: passedFilter > 0
+  // ⇒ shortlisted > 0. scripts/audit-search-quality.ts asserts the same thing as a
+  // re-runnable gate. (When shortlistWriteOk is false a specific warning already
+  // fired above; this catches the subtler case where the write "succeeded" with 0
+  // rows because every posting id was missing.)
+  if (passedFilter > 0 && shortlisted === 0) {
+    sourceWarnings.push(
+      `${passedFilter} matching job(s) could not be saved for this run — this is a write fault, not an empty market; please try again.`
+    );
   }
 
   // Prune undecided leftovers that no longer match the current criteria — ONLY

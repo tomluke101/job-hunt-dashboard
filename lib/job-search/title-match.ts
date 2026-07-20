@@ -64,9 +64,21 @@ function tokenMatchesWord(token: string, word: string): boolean {
  *   1. Full-phrase substring match → accept.
  *   2. Strip seniority markers.
  *   3. One content word left: title must contain it (stem-matched).
- *   4. Two+ left: the LAST is the role noun, the rest are qualifiers. The role noun
- *      must appear AND a qualifier must genuinely MODIFY it — not merely appear
- *      somewhere in the string. Precision (SEARCH_QUALITY_BASELINE #4): the old
+ *   4. Two+ left: the LAST is the role noun, the rest are qualifiers. A title is
+ *      relevant if EITHER:
+ *      (a) GENERIC/HYPERNYM — a title PART is EXACTLY the role noun: "Teacher" /
+ *          "Teacher (Maternity Cover)" for a "Primary Teacher" search. The specific
+ *          search SUBSUMES the unqualified title, so it is a real candidate
+ *          (SEARCH_QUALITY_BASELINE #6: real school jobs are titled "Teacher", not
+ *          "Primary Teacher"). The part must be the bare noun and NOTHING else —
+ *          NOT seniority+noun, since a GENERIC noun over-recalls there ("Senior
+ *          Engineer" / "Staff Engineer" are not "Software Engineer"). This does NOT
+ *          reopen #4 — those false positives ("Digital Trading Manager", "…Manager -
+ *          Marketing") carry EXTRA content words in the noun's part; and a
+ *          subject-specific "Teacher of English" keeps "of"+"english", so it is
+ *          (correctly) NOT generic for a primary search.
+ *      (b) the role noun appears AND a qualifier genuinely MODIFIES it — not merely
+ *      appears somewhere in the string. Precision (SEARCH_QUALITY_BASELINE #4): the old
  *      "role-noun + any-qualifier-anywhere" rule let "Category Manager - Marketing"
  *      and "Digital Trading Manager" pass a Marketing-Manager search. Now:
  *        • ONE qualifier  → it must sit in the SAME PART as the role noun. Kills the
@@ -97,6 +109,16 @@ export function titleRelevantOne(title: string, phrase: string, askWords: string
 
   const singleQualifier = qualifiers.length === 1;
   for (const toks of titleTokenParts(t)) {
+    // (a) GENERIC/HYPERNYM: this part is EXACTLY the role noun → the unqualified
+    // form of the requested role. "Teacher" (or the first part of "Teacher
+    // (Maternity Cover)") ⟵ "Primary Teacher". The part must be the bare noun and
+    // NOTHING else — deliberately NOT stripping seniority first, because a GENERIC
+    // noun with a seniority prefix over-recalls: a construction "Senior Engineer" or
+    // "Staff Engineer" is not a "Software Engineer" (SEARCH_QUALITY_BASELINE #5-guard).
+    // A defect-#4 false positive never reaches here either — it carries other content
+    // words in the noun's part, so the part length is > 1.
+    if (toks.length === 1 && tokenMatchesWord(toks[0], roleNoun)) return true;
+
     for (let i = 0; i < toks.length; i++) {
       if (!tokenMatchesWord(toks[i], roleNoun)) continue;
       if (singleQualifier) {

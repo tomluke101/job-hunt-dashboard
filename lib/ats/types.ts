@@ -53,7 +53,13 @@ export type AtsProviderId =
   // Google for Jobs can index them. The LAST rung of the discovery ladder: it
   // only ever runs when no supported ATS embed was found, because a native API
   // adapter is always better data than scraped markup. token = the careers URL.
-  | "jsonld";
+  | "jsonld"
+  // A government FIRST-PARTY PORTAL: one endpoint carrying thousands of distinct
+  // schools' own vacancies (DfE Teaching Vacancies). Not one employer's board and
+  // not a recruiter aggregator — zero-recruiter by the portal's OWN gatekeeping
+  // (only a school / trust / LA can list). Seeded once, never discovered by name.
+  // See providers/teaching-vacancies.ts.
+  | "teaching_vacancies";
 
 /**
  * Verified = probed live and seen to return real jobs.
@@ -79,6 +85,9 @@ export const PROVIDER_STATUS: Record<AtsProviderId, "verified" | "unverified"> =
   // Probed live 2026-07-16: boots.jobs detail pages return complete JobPosting
   // JSON-LD (title, JD, geo coords, salary, validThrough) from a static fetch.
   jsonld: "verified",
+  // Probed live 2026-07-20: teaching-vacancies.service.gov.uk/api/v1/jobs.json
+  // returns ~6.4k live UK school vacancies as schema.org JobPosting, keyless.
+  teaching_vacancies: "verified",
 };
 
 export const ENABLED_PROVIDERS: AtsProviderId[] = (

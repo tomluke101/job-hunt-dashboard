@@ -151,6 +151,10 @@ const TOKEN_PROBE_TRUSTED: Record<AtsProviderId, boolean> = {
   // jsonld has no token namespace to probe at all (its candidateTokens() is
   // empty) — the crawl rung below is its only entry point.
   jsonld: false,
+  // teaching_vacancies is a fixed national portal, not a per-company token space.
+  // candidateTokens() is empty and it is seeded once (seed-teaching-vacancies.ts),
+  // so it must never be reached by guessing a company slug.
+  teaching_vacancies: false,
 };
 
 /** Recruitee/Workable trial boards ship with these. A demo board is not an employer. */

@@ -20,6 +20,10 @@ export type SourceType =
   // employer's OWN careers site. Still first-party — the employer authored the
   // markup so Google for Jobs could index it; we read the same markup.
   | "jsonld"
+  // A government first-party PORTAL (DfE Teaching Vacancies): thousands of distinct
+  // schools posting their OWN vacancies through one keyless endpoint. First-party
+  // and zero-recruiter by the portal's gatekeeping — see lib/ats/providers/teaching-vacancies.ts.
+  | "teaching_vacancies"
   | "apify_linkedin"
   | "apify_indeed"
   | "agent";
@@ -31,7 +35,7 @@ export type SourceType =
  */
 export const ATS_SOURCES: readonly SourceType[] = [
   "greenhouse", "lever", "ashby", "smartrecruiters", "recruitee", "workday", "workable",
-  "jsonld",
+  "jsonld", "teaching_vacancies",
 ] as const;
 
 export function isAtsSource(s: SourceType): boolean {

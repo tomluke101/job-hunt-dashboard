@@ -117,6 +117,21 @@ const TITLE_CASES: Array<[string, string, boolean]> = [
   ["Construction Site Manager", "Site Manager", true],                              // documented: partial-qualifier match
   ["Digital Marketing Manager", "Marketing Manager", true],
   ["Primary School Teacher", "KS2 Primary Teacher", true],
+  // ── #6 generic/hypernym: real school titles for a specific teacher search ──
+  // The unqualified role noun (the form schools actually use) must surface, WITHOUT
+  // reopening #4 (the drops below must still drop).
+  ["Primary Teacher", "Teacher", true],                        // bare role noun = generic form
+  ["Primary Teacher", "Teacher (Maternity Cover)", true],      // bare noun in its own part
+  ["Primary School Teacher", "Teacher", true],                 // 2-qualifier target, still generic-matches
+  ["Primary Teacher", "Teacher of English", false],            // subject-specific ≠ primary (keeps "english")
+  ["Primary Teacher", "Teaching Assistant", false],            // a TA is not a teacher
+  ["Primary School Teacher", "Class Teacher", false],          // documented limit: needs a synonym, not caught
+  // ── #5-guard: the generic rule must NOT rescue a SENIORITY-prefixed generic noun ──
+  // (these regressed a first pass of the #6 change and were caught by the audit).
+  ["Software Engineer", "Sales Engineer", false],              // wrong discipline
+  ["Software Engineer", "Senior Engineer", false],             // generic "Engineer" (construction) ≠ software
+  ["Software Engineer", "Staff Engineer", false],              // ditto — seniority+generic noun must not match
+  ["KS2 Teacher", "Senior Teacher", false],                    // literal-bare only: seniority+noun does not generic-match
 ];
 for (const [chip, title, keep] of TITLE_CASES) {
   const [tgt] = buildTargets([chip]);

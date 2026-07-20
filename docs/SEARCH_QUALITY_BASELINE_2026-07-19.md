@@ -324,11 +324,54 @@ not cover these sectors yet. (Indeed/LinkedIn/Google Jobs were NOT queried — n
   "Search" (Search Consultancy trades as just "Search" — too generic to match safely), "Find Medical",
   "Cover People". The dominant agency (Academics) is fully caught.
 
-### 6. 🟡 MEDIUM — Supply gap in blue-collar / education / care / trades
-- **Evidence:** first-party corpus depth 0 (warehouse Leeds, teacher Sheffield), 4 (care Cardiff);
-  semantic ranking can't fire at all for these (aggregator jobs aren't embedded).
-- **Fix direction:** sector-specific first-party sources (NHS Jobs, council/education boards,
-  care-home groups) — or accept aggregator-primary for these and lean hard on defects #1/#2/#5.
+### 6. 🟡→🟢 MEDIUM — Supply gap in blue-collar / education / care / trades — **EDUCATION ADDRESSED 2026-07-20**
+
+> **✅ EDUCATION SUPPLY SHIPPED (2026-07-20).** Added the DfE **Teaching Vacancies** national portal
+> as a first-party source — a new *kind* of source: a government PORTAL (one keyless endpoint carrying
+> thousands of DISTINCT schools' own vacancies, zero-recruiter by the portal's own gatekeeping — an
+> agency cannot pose as a state school). New `teaching_vacancies` provider
+> (`lib/ats/providers/teaching-vacancies.ts`), added to `ATS_SOURCES` so it is first-party across every
+> runtime path (the +8 bonus, recruiter-skip, unresolved-drop, corpus query — all key off `isAtsSource`).
+> Seeded as one registry board; ingested through the IDENTICAL hardened write path every other board
+> uses (geocode / dedupe / salary-parse / classify / canonical-key / upsert) — no new write code.
+>
+> **Corpus depth — was 0 across ALL of education, now:**
+> | metric | before | after |
+> |---|---|---|
+> | first-party school jobs in corpus | **0** | **2,577** |
+> | distinct hiring schools / trusts | **0** | **818** |
+> | within 25 mi of Sheffield (#10's origin) | **0** | **74** |
+>
+> **Search #10 (the worst baseline case: 0 first-party / 100% agency) — live re-run:** a REAL
+> first-party school job now ranks **#1** — *"Teacher (Maternity Cover)" @ Birley Spa Primary Academy,
+> Sheffield*, judged **on_target** — displacing the agency supply that filled every slot before.
+> on_target 2→4, off_target 1→0.
+>
+> **The supply needed a SELECTION fix to surface (SEARCH_QUALITY_BASELINE #6a).** Real school jobs are
+> titled "Teacher" / "Teacher (Maternity Cover)", not "Primary Teacher", so the #4-tightened title
+> filter dropped every one. Added a GENERIC/HYPERNYM rule to `title-match.ts`: a title part that is
+> EXACTLY the role noun matches a qualified target ("Teacher" ⟵ "Primary Teacher"; the specific search
+> subsumes the generic title). It is **literal-bare** (NOT seniority+noun): a first pass stripped
+> seniority and wrongly admitted "Senior Engineer" / "Staff Engineer" into a Software-Engineer search —
+> the live audit caught it (#5 off-target spiked), and the literal-bare restriction fixed it with **no
+> #1 / #4 regression** (Marketing Manager stayed on 40% / off 0%). Deterministic proof:
+> `scripts/verify-selection-signals.ts`; live proof: `scripts/audit-search-quality.ts`.
+>
+> **KNOWN LIMITS (honest):**
+> - The portal's `?page=N` pagination OVERLAPS (offset over a non-unique sort): one pull sees ~2.5k of
+>   the ~3.0k `meta.count` distinct vacancies, and the same URL recurs across pages. The provider
+>   **dedupes by source_id** (so the overlap can't fail the batch upsert — it did, first pass, dropping
+>   ~18 chunks), and the nightly cron + 14-day freshness converge coverage as the board churns.
+> - "Class Teacher" / "Teacher of English" are NOT generic-matched (would need role synonyms / subject
+>   awareness) — a future selection task.
+> - **Care / nursing and councils remain open.** NHS Jobs (the big one) is bot-walled and needs an
+>   employer code — a Tom-owned prerequisite before it can be built.
+
+- **Ops:** `scripts/seed-teaching-vacancies.ts` (once) · `scripts/probe-teaching-vacancies.ts` (provider
+  health) · `scripts/probe-tv-corpus-depth.ts` (depth report) · the nightly ATS cron refreshes it like
+  any other board (static render, so Vercel polls it).
+- **Still-open sectors:** warehouse / trades stay aggregator-shaped (no first-party portal); care/nursing
+  await NHS Jobs + care-home-group seeding. Lean on defects #1/#2/#5 there until first-party lands.
 
 ### 7. 🟢→✅ LOW — Regional searches return surrounding towns, not the named city — **FIXED 2026-07-19**
 

@@ -33,7 +33,9 @@ async function main() {
   const limit = parseInt(val("--limit") ?? "0", 10) || 5000;
   const budgetMs = (parseInt(val("--budget") ?? "0", 10) || 600) * 1000;
 
-  const boards = await listPollableBoards(limit);
+  const onlyProvider = val("--provider"); // e.g. teaching_vacancies — ingest one source
+  let boards = await listPollableBoards(limit);
+  if (onlyProvider) boards = boards.filter((b) => b.provider === onlyProvider);
   if (!boards.length) {
     console.error(
       "No pollable boards in the registry.\n" +

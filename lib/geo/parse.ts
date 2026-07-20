@@ -39,6 +39,18 @@ export interface JobLocation {
   /** True when we positively identified a NON-UK location and no UK one. */
   is_foreign: boolean;
   /**
+   * True when the ONLY location signal is a GLOBAL-remote qualifier — "Distributed",
+   * "Anywhere", "Worldwide", "Global" — and no UK place (or UK country/region)
+   * resolved. This is remote, but remote-GLOBAL, not remote-UK: a Cloudflare
+   * Washington-DC role labelled "Distributed" must not pass as within-25-miles of
+   * Birmingham just because is_remote short-circuits the distance check
+   * (SEARCH_QUALITY_BASELINE #4 — "treat Distributed/global strings as non-UK unless
+   * a UK place resolves"). The moment ANY UK place or "UK"/"England" qualifier
+   * resolves, this is false. The CALLER decides: a place-anchored (distance) search
+   * drops it; a nationwide search is unaffected.
+   */
+  is_global_remote: boolean;
+  /**
    * True when the posting names the UK but no point in it ("UK", "England",
    * "Remote (UK)"). NOT a place: the UK is 600 miles long, so pinning it to a
    * centroid would let a nationwide posting masquerade as a local one.
@@ -66,6 +78,22 @@ const REMOTE_PATTERNS: RegExp[] = [
 /** Does this text advertise a remote role? */
 export function isRemoteText(text: string): boolean {
   return REMOTE_PATTERNS.some((re) => re.test(text));
+}
+
+/**
+ * GLOBAL-remote qualifiers: strings that advertise "work from anywhere on Earth",
+ * not "work from home in the UK". A UK-remote role says "Remote (UK)", "UK home-based"
+ * — those resolve a UK country qualifier and are NEVER global. These are the ones
+ * that carry no UK anchor at all, so absent a resolved UK place they must be treated
+ * as non-UK (SEARCH_QUALITY_BASELINE #4). "Remote"/"WFH"/"Home-based" on their own
+ * are deliberately NOT here — those are the ordinary (UK-context) remote roles.
+ */
+const GLOBAL_REMOTE_RE =
+  /\b(?:distributed|anywhere|worldwide|global(?:ly)?|international)\b/i;
+
+/** Does this text advertise a GLOBAL-remote (work-from-anywhere) role? */
+export function isGlobalRemoteText(text: string): boolean {
+  return GLOBAL_REMOTE_RE.test(text);
 }
 
 /**
@@ -335,6 +363,7 @@ function unresolved(raw: string, isRemote: boolean): JobLocation {
     places: [],
     is_remote: isRemote,
     is_foreign: false,
+    is_global_remote: false,
     is_country_only: false,
     is_unresolved: true,
   };
@@ -389,6 +418,7 @@ export async function resolveJobLocation(
           places: [],
           is_remote: isRemote,
           is_foreign: true,
+          is_global_remote: false,
           is_unresolved: false,
           is_country_only: false,
         };
@@ -521,12 +551,21 @@ export async function resolveJobLocation(
     const is_foreign = hintIsForeign || coordsForeign || (finalPlaces.length === 0 && foreignHits > 0);
     const is_country_only = finalPlaces.length === 0 && !is_foreign && countryOnly;
     const is_unresolved = finalPlaces.length === 0 && !is_foreign && !is_country_only;
+    // GLOBAL-remote with NO UK anchor (no UK place, not "UK"/"England", not foreign):
+    // "Distributed" / "Anywhere" / "Worldwide" / "Global". Non-UK unless a UK place
+    // resolved — see the interface doc and SEARCH_QUALITY_BASELINE #4.
+    const is_global_remote =
+      finalPlaces.length === 0 &&
+      !is_foreign &&
+      !is_country_only &&
+      inputs.some((i) => isGlobalRemoteText(i));
 
     return {
       raw: rawStr,
       places: finalPlaces,
       is_remote: isRemote,
       is_foreign,
+      is_global_remote,
       is_country_only,
       is_unresolved,
     };

@@ -1,12 +1,16 @@
 /**
- * scripts/verify-selection-signals.ts — pure-unit proof for the two selection
- * signals added for SEARCH_QUALITY_BASELINE_2026-07-19 #5 (recruiter catch) and
- * #7 (proximity / exact-town). The repo has no unit-test runner, so — as with the
- * audit scoreboard — the proof is a runnable script that exits non-zero on any
- * failed assertion. Fast (no I/O, no keys): `npx tsx scripts/verify-selection-signals.ts`.
+ * scripts/verify-selection-signals.ts — pure-unit proof for the selection signals
+ * added for SEARCH_QUALITY_BASELINE_2026-07-19: #5 (recruiter catch), #7 (proximity
+ * / exact-town), and #4 (multi-word title precision + "Distributed"/global location
+ * treated as non-UK). The repo has no unit-test runner, so — as with the audit
+ * scoreboard — the proof is a runnable script that exits non-zero on any failed
+ * assertion. Fast (no keys; #4's geo cases resolve fully offline — no network):
+ *   `npx tsx scripts/verify-selection-signals.ts`.
  */
 import { detectRecruiter } from "../lib/enrichment/recruiter-detect";
 import { proximityAlignment } from "../lib/job-search/proximity-align";
+import { titleRelevantOne, titleRelevantAny, buildTargets } from "../lib/job-search/title-match";
+import { resolveJobLocation, isGlobalRemoteText } from "../lib/geo";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail = "") {
@@ -91,5 +95,73 @@ for (let i = 1; i < spread.length; i++) if (!(spread[i] < spread[i - 1])) monoto
 check("nearer town always scores strictly higher", monotonic, `bonuses=${JSON.stringify(spread)}`);
 console.log(`     Sheffield-shape bonuses (0/6/10/13/18/23 mi @ r=25): ${JSON.stringify(spread)}`);
 
-console.log(`\n${failures === 0 ? "✅ ALL SELECTION-SIGNAL ASSERTIONS PASSED" : "❌ " + failures + " ASSERTION(S) FAILED"}`);
-process.exit(failures === 0 ? 0 : 1);
+// --------------------------------------------------- #4a multi-word title precision ----
+// A qualifier must genuinely MODIFY the role noun — not merely appear in the string.
+// [chip, jobTitle, shouldKeep].
+console.log("\n#4 title precision — multi-word core-noun matching");
+const TITLE_CASES: Array<[string, string, boolean]> = [
+  // ── precision: the two documented false positives + their family MUST drop ──
+  ["Marketing Manager", "Senior Procurement Category Manager - Marketing", false], // "marketing" is a detached dept tag
+  ["Marketing Manager", "Digital Trading Manager", false],                          // a Trading Manager, not a Marketing one
+  ["Digital Marketing Manager", "Digital Trading Manager", false],                  // only the peripheral "digital" matched
+  ["Construction Site Manager", "Marketing Manager", false],                        // the documented bare-"manager" case
+  ["Software Engineer", "Sales Engineer", false],                                   // different discipline
+  // ── recall: genuine matches MUST survive ──
+  ["Marketing Manager", "Marketing Manager", true],
+  ["Marketing Manager", "Senior Marketing Manager", true],
+  ["Marketing Manager", "Digital Marketing Manager", true],
+  ["Marketing Manager", "Marketing Communications Manager", true],                  // inserted modifier, same part
+  ["Software Engineer", "Software Development Engineer", true],                      // inserted modifier, same part
+  ["Software Engineer", "Senior Software Engineer", true],
+  ["Construction Site Manager", "Construction Manager", true],                      // documented: partial-qualifier match
+  ["Construction Site Manager", "Site Manager", true],                              // documented: partial-qualifier match
+  ["Digital Marketing Manager", "Marketing Manager", true],
+  ["Primary School Teacher", "KS2 Primary Teacher", true],
+];
+for (const [chip, title, keep] of TITLE_CASES) {
+  const [tgt] = buildTargets([chip]);
+  const got = titleRelevantOne(title, tgt.phrase, tgt.words);
+  check(`${keep ? "keeps" : "drops"} "${title}"  ⟵  "${chip}"`, got === keep, `got ${got}`);
+}
+// Multi-chip, mirroring the live Marketing/London search (#1) target_titles.
+const MKT = buildTargets(["Marketing Manager", "Senior Marketing Manager", "Brand Manager", "Digital Marketing Manager"]);
+check('any(): drops "…Category Manager - Marketing"', !titleRelevantAny("Senior Procurement Category Manager - Marketing", MKT));
+check('any(): drops "Digital Trading Manager"', !titleRelevantAny("Digital Trading Manager", MKT));
+check('any(): keeps "Marketing Manager UK/IE"', titleRelevantAny("Marketing Manager UK/IE", MKT));
+check('any(): keeps "Brand Manager"', titleRelevantAny("Brand Manager", MKT));
+
+// -------------------------------- #4b location — global-remote is non-UK unless UK resolves ----
+async function geoChecks() {
+  console.log('\n#4 location — "Distributed"/global is non-UK unless a UK place resolves');
+  // Pure predicate: the global-remote qualifiers, and the ordinary (UK-context) ones that must NOT trip it.
+  for (const w of ["Distributed", "Anywhere", "Worldwide", "Global", "International"]) {
+    check(`isGlobalRemoteText("${w}")`, isGlobalRemoteText(w));
+  }
+  for (const w of ["Remote", "WFH", "Home-based", "London", "Remote (UK)"]) {
+    check(`NOT global-remote "${w}"`, !isGlobalRemoteText(w));
+  }
+  // The flag the place-anchored pipeline drops on. All of these resolve OFFLINE
+  // (no geocode call): "Distributed"/"Anywhere" strip to empty; "UK" is a qualifier;
+  // "London"/"Manchester" are gazetteer hits.
+  const LOC_CASES: Array<[string, boolean]> = [
+    ["Distributed", true],          // the Cloudflare Washington-DC case
+    ["Distributed; Hybrid", true],  // the other Cloudflare case
+    ["Remote (UK)", false],         // UK named → country-only, a genuine UK remote role
+    ["Anywhere, UK", false],        // "Anywhere" but a UK qualifier resolves → NOT global
+    ["London", false],              // a real UK place → NOT global
+    ["Manchester", false],
+  ];
+  for (const [raw, want] of LOC_CASES) {
+    const loc = await resolveJobLocation(raw);
+    check(
+      `resolveJobLocation("${raw}").is_global_remote === ${want}`,
+      loc.is_global_remote === want,
+      `got ${loc.is_global_remote} (foreign=${loc.is_foreign} countryOnly=${loc.is_country_only} places=${loc.places.length})`
+    );
+  }
+}
+
+geoChecks().then(() => {
+  console.log(`\n${failures === 0 ? "✅ ALL SELECTION-SIGNAL ASSERTIONS PASSED" : "❌ " + failures + " ASSERTION(S) FAILED"}`);
+  process.exit(failures === 0 ? 0 : 1);
+});

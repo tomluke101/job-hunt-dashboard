@@ -338,6 +338,7 @@ async function resolveLocations(
           places: [],
           is_remote: false,
           is_foreign: false,
+          is_global_remote: false,
           is_unresolved: true,
           is_country_only: false,
         });
@@ -427,6 +428,7 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     // search server-side and we trusted it.
     location_distance: 0,   // resolved, but further away than the user asked
     location_foreign: 0,    // not a UK job at all (an ATS board is global)
+    location_global: 0,     // "Distributed"/"Anywhere" global-remote, no UK anchor (defect #4)
     location_unresolved: 0, // couldn't place it, and its source doesn't vouch for it
     // Cross-source duplicates collapsed into one shortlist row.
     cross_source_dupe: 0,
@@ -636,6 +638,16 @@ export async function runSearch(input: RunSearchInput): Promise<RunSearchResult>
     if (!isNationwide && loc) {
       if (loc.is_foreign) {
         filterDrops.location_foreign++;
+        continue;
+      }
+      // A globally-distributed / "anywhere" role with NO UK anchor is not a local
+      // job. "Distributed" is remote, but remote-GLOBAL, not remote-UK — a Cloudflare
+      // Washington-DC role labelled "Distributed" must not ride the is_remote
+      // short-circuit into "within 25 miles of Birmingham" (SEARCH_QUALITY_BASELINE
+      // #4). It IS still surfaced by a nationwide/remote search (this block is
+      // skipped there); only a place-anchored search drops it.
+      if (loc.is_global_remote) {
+        filterDrops.location_global++;
         continue;
       }
       const remoteOk = loc.is_remote && acceptRemote;

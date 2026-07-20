@@ -41,7 +41,7 @@
 export type { GeoPoint, ResolvedPlace } from "./gazetteer";
 export type { JobLocation, JobLocationHints } from "./parse";
 
-export { resolveJobLocation, isRemoteText, splitSegments } from "./parse";
+export { resolveJobLocation, isRemoteText, isGlobalRemoteText, splitSegments } from "./parse";
 export { resolveOrigin, geocodeUk, warmCache, clearMemoryCache } from "./geocode";
 export { distanceMiles, haversineMiles } from "./distance";
 

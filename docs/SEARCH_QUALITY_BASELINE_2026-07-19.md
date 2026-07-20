@@ -227,7 +227,56 @@ not cover these sectors yet. (Indeed/LinkedIn/Google Jobs were NOT queried — n
 - **Fix direction:** when the user picks remote, either hard-filter or strongly rank
   `working_model = remote`; make the criterion explicit in the editor.
 
-### 4. 🟡 MEDIUM — Title filter admits adjacent/off-target roles + a location leak
+### 4. 🟡→✅ MEDIUM — Title filter admits adjacent/off-target roles + a location leak — **FIXED 2026-07-20**
+
+> **✅ FIX LANDED (2026-07-20).** Two independent tightenings, each with a deterministic
+> pure-unit proof (`scripts/verify-selection-signals.ts`, no keys/network) AND a live-corpus
+> confirmation.
+>
+> **(a) Multi-word title precision** — `lib/job-search/title-match.ts`. The old multi-word rule
+> was "title contains the role noun AND *any* qualifier *anywhere*", so a qualifier that did not
+> actually modify the noun still passed. The role noun's qualifier must now genuinely MODIFY it:
+> 1. **One qualifier** → it must sit in the SAME PART as the role noun (parts split on the
+>    comma / slash / brackets / SPACED dash an employer uses to bolt on a department tag). This
+>    kills the detached-tag case — *"Senior Procurement Category Manager **- Marketing**"* — while
+>    still keeping an inserted modifier (*"Software Development Engineer"* for "Software Engineer";
+>    software + engineer share the part).
+> 2. **Two+ qualifiers** → at least one must be ADJACENT to the role noun (its own modifier —
+>    immediately before, or immediately after when the noun leads the part). This kills
+>    *"Digital Trading Manager"* for a "Digital Marketing Manager" chip (only the peripheral
+>    "digital" matched; the noun's own modifier "trading" is off-target) while still accepting
+>    *"Construction Manager"* and *"Site Manager"* for a "Construction Site Manager" chip.
+>
+> It is the SAME `titleRelevantAny()` the pipeline (line 629) and the ATS-corpus prefilter
+> (`ats-corpus.ts` line 120) both call, so an employer's own board and an aggregator apply the
+> identical rule — no drift.
+>
+> **(b) "Distributed"/global location is non-UK unless a UK place resolves** — `lib/geo/parse.ts` +
+> `pipeline.ts`. A Cloudflare Washington-DC role with `location_raw: "Distributed"` resolved to
+> `country_code: null`, `is_remote: true`, and rode the `remoteOk = is_remote && acceptRemote`
+> short-circuit straight past the Birmingham distance filter (marked `locationCorrect: true`, judged
+> off_target). New `JobLocation.is_global_remote` is TRUE only when the sole location signal is a
+> GLOBAL-remote qualifier (`Distributed` / `Anywhere` / `Worldwide` / `Global` / `International`) and
+> **no** UK place or "UK"/"England" qualifier resolved. A place-anchored search now drops such a job
+> (`filter_drops.location_global`) *before* the remote short-circuit. Deliberately scoped: a
+> nationwide / remote search skips the distance block entirely, so a genuine remote role — and a
+> plain "Remote" / "WFH" / "Home-based" / "Remote (UK)" one, none of which are global qualifiers — is
+> completely untouched.
+>
+> **Proof — live re-run, same 10 searches (`npx tsx scripts/audit-search-quality.ts`):**
+>
+> | # | Search | what fired | effect |
+> |---|---|---|---|
+> | 1 | Marketing Manager / London | `title_irrelevant` +28, `location_global` = **2** | the "Senior Procurement Category Manager - Marketing" and "Digital Trading Manager" adjacents are gone; top-10 all genuine Marketing-Manager / marketing roles; **off_target = 0%**, wrongLoc 0 |
+> | 5 | Graduate SW Engineer / Birmingham | `location_global` = **2** | the two Cloudflare **"Distributed"** roles — incl. *"Senior Solution Engineer … Washington DC"* — DROPPED before ranking; the US/global leak is gone; wrongLoc 0 |
+>
+> **Gate:** full 10-search suite green (exit 0); regression gate intact (every kept>0 ⇒ shortlisted>0);
+> #3/#6/#9 still 22/38/54 → 10 (defect #1 intact); `location_global` = 0 on every other search,
+> including the remote searches #4/#8 (enforcement is a provable no-op there). Deterministic proof of
+> the exact keep/drop decisions (both documented FPs drop; "Software Development Engineer",
+> "Construction/Site Manager", "Marketing Communications Manager" all keep; "Distributed" flagged,
+> "Remote (UK)"/"London" not): `npx tsx scripts/verify-selection-signals.ts`.
+
 - **Evidence:** "…Marketing" procurement roles and "Digital Trading Manager" passed the Marketing
   title filter; a Cloudflare **Washington DC** role (location "Distributed") ranked **#1** in the
   Birmingham graduate search.

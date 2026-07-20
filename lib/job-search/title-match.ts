@@ -37,14 +37,48 @@ export function buildTargets(raw: string[]): TargetTitle[] {
 }
 
 /**
+ * PART delimiters for a job TITLE. An employer bolts a department tag onto a role
+ * with a comma, a slash, brackets, or a SPACED dash ("Category Manager - Marketing"),
+ * and that tag is NOT a qualifier of the role noun — it is a different segment. We
+ * split on those so a qualifier is only credited to the noun it actually sits with.
+ * A BARE hyphen is deliberately kept (never "front-end" → "front"+"end", never
+ * "Stoke-on-Trent" shredded); only a dash with whitespace on a side is a separator.
+ */
+const TITLE_PART_SPLIT = /[,/()|;:]|\s[-–—]|[-–—]\s|\n/;
+
+/** A title split into parts, each a list of word tokens (lower-cased). */
+function titleTokenParts(titleLower: string): string[][] {
+  return titleLower
+    .split(TITLE_PART_SPLIT)
+    .map((p) => p.split(/[^a-z0-9]+/).filter(Boolean))
+    .filter((toks) => toks.length > 0);
+}
+
+/** One title TOKEN vs one ask WORD, stem-compared (same primitive as titleContainsStem). */
+function tokenMatchesWord(token: string, word: string): boolean {
+  return token === word || stemWord(token) === stemWord(word);
+}
+
+/**
  * True if a job title is relevant to one target chip. The rule:
  *   1. Full-phrase substring match → accept.
  *   2. Strip seniority markers.
  *   3. One content word left: title must contain it (stem-matched).
- *   4. Two+ left: the LAST is the role noun, the rest are qualifiers. The title
- *      must contain the role noun AND at least one qualifier. This is what stops
- *      a "Construction Site Manager" chip matching "Marketing Manager" via a bare
- *      "manager", while still accepting "Site Manager" and "Construction Manager".
+ *   4. Two+ left: the LAST is the role noun, the rest are qualifiers. The role noun
+ *      must appear AND a qualifier must genuinely MODIFY it — not merely appear
+ *      somewhere in the string. Precision (SEARCH_QUALITY_BASELINE #4): the old
+ *      "role-noun + any-qualifier-anywhere" rule let "Category Manager - Marketing"
+ *      and "Digital Trading Manager" pass a Marketing-Manager search. Now:
+ *        • ONE qualifier  → it must sit in the SAME PART as the role noun. Kills the
+ *          detached department-tag case ("… Manager - Marketing") while still
+ *          keeping an inserted modifier ("Software Development Engineer" for
+ *          "Software Engineer" — software and engineer share the part).
+ *        • TWO+ qualifiers → at least one must be ADJACENT to the role noun (its own
+ *          modifier: immediately before, or immediately after when the noun leads
+ *          the part). Kills "Digital Trading Manager" (only the peripheral "digital"
+ *          matched; the noun's own modifier "trading" is off-target) while still
+ *          accepting "Construction Manager" and "Site Manager" for a
+ *          "Construction Site Manager" chip.
  *   5. Pure-seniority chip ("Senior") → match any of its words.
  */
 export function titleRelevantOne(title: string, phrase: string, askWords: string[]): boolean {
@@ -58,8 +92,26 @@ export function titleRelevantOne(title: string, phrase: string, askWords: string
 
   const roleNoun = contentWords[contentWords.length - 1];
   const qualifiers = contentWords.slice(0, -1);
+  // The role noun must appear at all — the cheapest reject.
   if (!titleContainsStem(t, roleNoun)) return false;
-  return qualifiers.some((q) => titleContainsStem(t, q));
+
+  const singleQualifier = qualifiers.length === 1;
+  for (const toks of titleTokenParts(t)) {
+    for (let i = 0; i < toks.length; i++) {
+      if (!tokenMatchesWord(toks[i], roleNoun)) continue;
+      if (singleQualifier) {
+        // Same-part: the one qualifier must accompany the noun in this segment.
+        if (toks.some((tk) => tokenMatchesWord(tk, qualifiers[0]))) return true;
+      } else {
+        // Adjacency: the noun's own modifier must be one of the chip's qualifiers.
+        const before = i > 0 ? toks[i - 1] : null;
+        const after = i === 0 && toks.length > 1 ? toks[1] : null;
+        if (before && qualifiers.some((q) => tokenMatchesWord(before, q))) return true;
+        if (after && qualifiers.some((q) => tokenMatchesWord(after, q))) return true;
+      }
+    }
+  }
+  return false;
 }
 
 /** True if the title matches ANY of the user's target chips (multi-role search). */

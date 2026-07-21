@@ -13,8 +13,33 @@
 // Only ATS sources are embedded — that's the moat, and the only supply the semantic
 // axis scores. Reed/Adzuna rows are deliberately skipped (see pipeline.ts).
 
-import { config } from "dotenv";
-config({ path: ".env.local" });
+import { readFileSync, existsSync } from "node:fs";
+import { resolve } from "node:path";
+
+// Env: cwd .env.local first (wins), then the canonical HuntHQ key store (OneDrive
+// clone) as a fallback — identical to audit-search-quality.ts. The Desktop clone's
+// .env.local carries only Clerk+Supabase, so without the fallback OPENAI_API_KEY is
+// absent and the --commit run aborts on the embeddingsConfigured() guard. Never
+// writes secrets anywhere.
+function loadEnvFiles(paths: string[]) {
+  for (const p of paths) {
+    if (!p || !existsSync(p)) continue;
+    for (const line of readFileSync(p, "utf8").split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t || t.startsWith("#")) continue;
+      const eq = t.indexOf("=");
+      if (eq === -1) continue;
+      const k = t.slice(0, eq).trim();
+      let v = t.slice(eq + 1).trim();
+      if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+      if (!process.env[k]) process.env[k] = v; // first file wins
+    }
+  }
+}
+loadEnvFiles([
+  resolve(process.cwd(), ".env.local"),
+  "C:/Users/tomlu/OneDrive/Desktop/Money/Job hunt SaaS/job-hunt-dashboard/.env.local",
+]);
 
 import { createServerSupabaseClient } from "../lib/supabase-server";
 import { ATS_SOURCES } from "../lib/job-search/types";

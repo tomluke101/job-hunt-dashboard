@@ -59,7 +59,16 @@ export type AtsProviderId =
   // not a recruiter aggregator — zero-recruiter by the portal's OWN gatekeeping
   // (only a school / trust / LA can list). Seeded once, never discovered by name.
   // See providers/teaching-vacancies.ts.
-  | "teaching_vacancies";
+  | "teaching_vacancies"
+  // The NHS Business Services Authority's national FIRST-PARTY PORTAL for the whole
+  // NHS + social-care sector (jobs.nhs.uk): thousands of distinct trusts, GP
+  // practices, hospices and CQC care providers posting their OWN vacancies through
+  // one public candidate-facing site. Zero-recruiter by the portal's OWN gatekeeping
+  // (only an approved NHS Jobs employer account may post — an agency cannot pose as
+  // an NHS trust). Seeded once, never discovered by name. Read from the public
+  // candidate HTML (NOT the employer-code-walled integration API). See
+  // providers/nhs-jobs.ts.
+  | "nhs_jobs";
 
 /**
  * Verified = probed live and seen to return real jobs.
@@ -88,6 +97,9 @@ export const PROVIDER_STATUS: Record<AtsProviderId, "verified" | "unverified"> =
   // Probed live 2026-07-20: teaching-vacancies.service.gov.uk/api/v1/jobs.json
   // returns ~6.4k live UK school vacancies as schema.org JobPosting, keyless.
   teaching_vacancies: "verified",
+  // Probed live 2026-07-21: jobs.nhs.uk/candidate/search/results returns ~13.3k
+  // live UK NHS + social-care vacancies as server-rendered cards (no employer code).
+  nhs_jobs: "verified",
 };
 
 export const ENABLED_PROVIDERS: AtsProviderId[] = (

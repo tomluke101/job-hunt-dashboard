@@ -146,7 +146,7 @@ const TEST_USER_ID = process.env.VERIFY_CLERK_USER_ID ?? "user_3GOvhiCIGhdEIkKSJ
 const TOP_N = 10;
 
 // ATS-direct sources (first-party). Mirrors lib/job-search/types.ts ATS_SOURCES.
-const ATS = new Set(["greenhouse", "lever", "ashby", "smartrecruiters", "recruitee", "workday", "workable", "jsonld", "teaching_vacancies"]);
+const ATS = new Set(["greenhouse", "lever", "ashby", "smartrecruiters", "recruitee", "workday", "workable", "jsonld", "teaching_vacancies", "nhs_jobs"]);
 
 // -------------------------------------------------------- HTTP liveness ----
 // "blocked" matters: aggregator redirect services (Adzuna, Reed) return 401/403/

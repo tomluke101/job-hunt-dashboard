@@ -155,6 +155,9 @@ const TOKEN_PROBE_TRUSTED: Record<AtsProviderId, boolean> = {
   // candidateTokens() is empty and it is seeded once (seed-teaching-vacancies.ts),
   // so it must never be reached by guessing a company slug.
   teaching_vacancies: false,
+  // nhs_jobs is likewise a fixed national portal — seeded once (seed-nhs-jobs.ts),
+  // candidateTokens() is empty, never reached by guessing a company slug.
+  nhs_jobs: false,
 };
 
 /** Recruitee/Workable trial boards ship with these. A demo board is not an employer. */

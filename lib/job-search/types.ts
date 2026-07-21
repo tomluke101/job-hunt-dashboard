@@ -24,6 +24,11 @@ export type SourceType =
   // schools posting their OWN vacancies through one keyless endpoint. First-party
   // and zero-recruiter by the portal's gatekeeping — see lib/ats/providers/teaching-vacancies.ts.
   | "teaching_vacancies"
+  // The NHS Business Services Authority's national first-party PORTAL for NHS +
+  // social care (jobs.nhs.uk): thousands of distinct trusts / GP practices / care
+  // providers posting their OWN vacancies. First-party and zero-recruiter by the
+  // portal's gatekeeping — see lib/ats/providers/nhs-jobs.ts.
+  | "nhs_jobs"
   | "apify_linkedin"
   | "apify_indeed"
   | "agent";
@@ -35,7 +40,7 @@ export type SourceType =
  */
 export const ATS_SOURCES: readonly SourceType[] = [
   "greenhouse", "lever", "ashby", "smartrecruiters", "recruitee", "workday", "workable",
-  "jsonld", "teaching_vacancies",
+  "jsonld", "teaching_vacancies", "nhs_jobs",
 ] as const;
 
 export function isAtsSource(s: SourceType): boolean {
